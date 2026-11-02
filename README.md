@@ -11,7 +11,7 @@ git clone https://github.com/sryo/yapa && cd yapa
 ```
 
 ## Use
-Open the pad in Safari on the phone and add it to the home screen. When Claude Code asks for permission, the phone buzzes: tap Allow or Deny. Hold the big button to talk to the session, and let go to send.
+Open the yapa app on the phone. In the Claude desktop app, turn on Help → Troubleshooting → Enable Developer Mode, then Developer → Open Hardware Buddy → Connect, and pick the phone. From then on the face on the phone shows what your agents are doing. When one asks for permission, the phone buzzes: tap Allow or Deny. Hold the big button to talk to the session, and let go to send.
 
 ```bash
 yapa status        # each service, up or down, and since when

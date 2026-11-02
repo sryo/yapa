@@ -13,25 +13,27 @@ For sryo: turn a 2016 iPhone SE that would otherwise sit in a drawer into an alw
 When two goals conflict, the higher one wins.
 
 1. **Comes back on its own, keeps itself going.** After a reboot and one tap on Dopamine's Jailbreak, every service is up again with nothing else to do. Between reboots it looks after itself: a crashed daemon restarts, logs and caches don't fill the disk, blocklists and certificates stay fresh, and when something does need a hand, the pad says what and what to do.
-2. **Answering an agent takes one tap.** A permission prompt reaches the pad, buzzes, and the tap gets back to Claude Code fast enough that you never go to the terminal instead.
+2. **Answering an agent takes one tap.** The pad is a Claude Hardware Buddy: it pairs with the Claude desktop app over Bluetooth, shows what the agents are doing, buzzes on a permission prompt, and the tap gets back fast enough that you never go to the app instead. It feels alive: a face that blinks, glances, eases between moods and reacts to being touched, tilted and picked up, without draining the battery.
 3. **Talking to an agent works.** Hold, speak, release: the words arrive in the session as text, fast and accurate enough to replace typing short replies.
 4. **Light on an old phone.** Every daemon together fits comfortably in 2 GB of RAM and leaves the CPU idle when nothing is happening, so the phone stays cool on the charger.
-5. **Small.** Few binaries, a pad page that loads fast on iOS 15 Safari, little code to keep working.
+5. **Small.** Few binaries, a small pad app, little code to keep working.
 
 ## How we know
 | Goal | Metric | Where | Run |
 |---|---|---|---|
 | 1 | seconds from jailbreak to every health check green; services up | `bench/health` over SSH to the phone | live: `bench/health` |
 | 1 | seconds for a killed daemon to come back; disk growth MB/day; days since a hand was needed | `bench/health` over SSH to the phone | live: `bench/health` |
-| 2 | ms from hook fired to pad notified, and from tap to hook answered (p50) | `bench/pad`, a headless pad client on the Mac | `bench/pad` |
+| 2 | protocol checks passed against the Hardware Buddy spec | `bench/pad`, the pad's protocol core run on the Mac | `bench/pad` |
+| 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/pad-live`, the Mac acting as the desktop over Bluetooth | live: `bench/pad-live` |
 | 3 | ms from release to text; word error rate on fixture clips | `bench/ptt` with `bench/clips/` | `bench/ptt` |
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/health` over SSH to the phone | live: `bench/health` |
-| 5 | bytes of the pad page; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |
+| 5 | bytes of the pad app; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |
 
 Caps: `all=ask quality=hard time=ask+10%`
 
 ## Non-goals
 - Pi-hole itself: it's Linux-only. AdGuard Home does the same job as one binary.
 - Running untethered or surviving a reboot without the tap: no jailbreak for this phone does that.
+- Hooks for terminal `claude` sessions in the first version: the Hardware Buddy link covers desktop-app sessions only, and hooks come later.
 - Running models on the phone: the A9 is too slow for speech-to-text or an LLM. The heavy work runs on the Mac or the API.
 - Any device other than the iPhone SE (1st gen) on iOS 15.
