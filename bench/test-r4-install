@@ -1,0 +1,33 @@
+#!/bin/sh
+# R4: ./install puts yapad, its services.json and its launchd plist on the phone, and rerunning it is safe.
+# A fake ssh runs the phone's side here, under a temp dir standing in for /var/jb, with launchctl and chown logged.
+cd "$(dirname "$0")/.." || exit 1
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
+mkdir -p "$tmp/bin" "$tmp/jb"
+printf 'fake yapad' > "$tmp/yapad"
+cat > "$tmp/bin/ssh" <<FAKE
+#!/bin/sh
+while [ \$# -gt 1 ]; do shift; done
+YAPA_JB="$tmp/jb" PATH="$tmp/bin:\$PATH" sh -c "\$1"
+FAKE
+printf '#!/bin/sh\necho "launchctl $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/launchctl"
+printf '#!/bin/sh\necho "chown $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/chown"
+chmod +x "$tmp/bin/"*
+run() { PATH="$tmp/bin:$PATH" YAPA_BIN="$tmp/yapad" ./install root@phone > "$tmp/out" 2>&1 || { echo "R4: ./install failed:"; cat "$tmp/out"; exit 1; }; }
+
+run
+jb=$tmp/jb
+[ "$(cat "$jb/usr/libexec/yapa/yapad")" = 'fake yapad' ] || { echo "R4: yapad not in /var/jb/usr/libexec/yapa"; exit 1; }
+[ -x "$jb/usr/libexec/yapa/yapad" ] || { echo "R4: yapad isn't executable"; exit 1; }
+grep -q '"tcp:127.0.0.1:8077"' "$jb/etc/yapa/services.json" || { echo "R4: services.json doesn't watch yapad on 8077"; exit 1; }
+plist=$jb/Library/LaunchDaemons/com.sryo.yapa.yapad.plist
+cmp -s "$plist" launchd/com.sryo.yapa.yapad.plist || { echo "R4: plist not installed in /var/jb/Library/LaunchDaemons"; exit 1; }
+grep -q "chown root:wheel .*com.sryo.yapa.yapad.plist" "$tmp/log" || { echo "R4: plist must be owned by root:wheel or launchd refuses it"; exit 1; }
+tail -1 "$tmp/log" | grep -q "launchctl load .*com.sryo.yapa.yapad.plist" || { echo "R4: plist isn't loaded last"; cat "$tmp/log"; exit 1; }
+
+# A service added by hand survives a rerun, and the rerun unloads before it loads again.
+echo '[{"name":"web","check":"tcp:127.0.0.1:80"}]' > "$jb/etc/yapa/services.json"
+: > "$tmp/log"
+run
+grep -q '"web"' "$jb/etc/yapa/services.json" || { echo "R4: rerun overwrote services.json"; exit 1; }
+[ "$(grep -c launchctl "$tmp/log")" = 2 ] && head -1 "$tmp/log" | grep -q "launchctl unload" || { echo "R4: rerun must unload, then load"; cat "$tmp/log"; exit 1; }

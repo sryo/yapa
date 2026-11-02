@@ -7,3 +7,4 @@ test/che-talk
 swift test --package-path mac
 test/scripts-parse
 test/che-say
+bench/test-r4-install

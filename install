@@ -1,0 +1,33 @@
+#!/bin/sh
+# Installs yapa's daemons on a jailbroken (rootless Dopamine) phone over ssh. Safe to rerun.
+#   ./install root@<phone-ip>
+#   YAPA_BIN  a yapad already built for the phone, which skips ./build-ios
+set -e
+cd "$(dirname "$0")"
+host=${1:?usage: ./install root@<phone-ip>}
+if [ -z "$YAPA_BIN" ]; then ./build-ios >/dev/null; YAPA_BIN=build/ios/yapad; fi
+
+stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
+cp "$YAPA_BIN" "$stage/yapad"
+cp launchd/com.sryo.yapa.yapad.plist "$stage/"
+echo '[{"name":"yapad","check":"tcp:127.0.0.1:8077"}]' > "$stage/services.json"
+# Runs on the phone. /var/jb is Dopamine's rootless prefix; launchd refuses a plist not owned by root:wheel.
+cat > "$stage/setup" <<'PHONE'
+set -e
+cd "$1"
+jb=${YAPA_JB:-/var/jb}
+plist=$jb/Library/LaunchDaemons/com.sryo.yapa.yapad.plist
+launchctl unload "$plist" 2>/dev/null || true
+mkdir -p "$jb/usr/libexec/yapa" "$jb/etc/yapa" "$jb/Library/LaunchDaemons" "$jb/var/log"
+cp yapad "$jb/usr/libexec/yapa/yapad.new"
+chmod 755 "$jb/usr/libexec/yapa/yapad.new"
+mv -f "$jb/usr/libexec/yapa/yapad.new" "$jb/usr/libexec/yapa/yapad"
+[ -f "$jb/etc/yapa/services.json" ] || cp services.json "$jb/etc/yapa/services.json"
+cp com.sryo.yapa.yapad.plist "$plist"
+chmod 644 "$plist"
+chown root:wheel "$plist"
+launchctl load "$plist"
+PHONE
+
+tar -cf - -C "$stage" . | ssh "$host" 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d/setup" "$d"; s=$?; rm -rf "$d"; exit $s'
+echo "yapad installed on $host; check it with: curl http://${host#*@}:8077/health"
