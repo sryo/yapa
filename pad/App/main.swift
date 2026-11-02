@@ -1,6 +1,6 @@
 import UIKit
 
-/// Draws a Face: each eye is one white, round-capped stroke straight from the model.
+/// Draws a Face: each eye is one white oval, filled from the model's outline.
 final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
     private let eyes = [CAShapeLayer(), CAShapeLayer()]
@@ -10,9 +10,7 @@ final class FaceView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         for eye in eyes {
-            eye.fillColor = nil
-            eye.strokeColor = UIColor(white: 0.96, alpha: 1).cgColor
-            eye.lineCap = .round
+            eye.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
             layer.addSublayer(eye)
         }
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(nextMood)))
@@ -39,10 +37,9 @@ final class FaceView: UIView {
         CATransaction.setDisableActions(true)
         for (eye, s) in zip(eyes, f.eyes) {
             let path = CGMutablePath()
-            path.move(to: point(s.p0))
-            path.addQuadCurve(to: point(s.p1 + SIMD2(1e-4, 0)), control: point(s.c))
+            path.addLines(between: s.outline().map(point))
+            path.closeSubpath()
             eye.path = path
-            eye.lineWidth = CGFloat(s.width * u)
         }
         CATransaction.commit()
     }

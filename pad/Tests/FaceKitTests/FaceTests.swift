@@ -167,6 +167,25 @@ final class FaceTests: XCTestCase {
         }
     }
 
+    // R7: a straight eye is drawn as a true oval, not a capsule with flat sides.
+    func testR7_StraightEyeIsAnOval() {
+        let s = Stroke(p0: SIMD2(0, -0.03), c: .zero, p1: SIMD2(0, 0.03), width: 0.06)
+        let a = 0.03 + 0.03, b = 0.03
+        for p in s.outline() {
+            XCTAssertEqual((p.x / b) * (p.x / b) + (p.y / a) * (p.y / a), 1, accuracy: 0.02, "\(p) is off the oval")
+        }
+    }
+
+    // R7: a curved eye tapers to soft points, and a dot is a circle.
+    func testR7_ArcTapersAndDotIsRound() {
+        let arc = Stroke(p0: SIMD2(-0.045, 0), c: SIMD2(0, -0.06), p1: SIMD2(0.045, 0), width: 0.045).outline()
+        let n = arc.count / 2
+        XCTAssertLessThan(simd_length(arc[0] - arc[arc.count - 1]), 0.002, "tips aren't pointed")
+        XCTAssertGreaterThan(simd_length(arc[n / 2] - arc[arc.count - 1 - n / 2]), 0.04, "middle isn't full width")
+        let dot = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06).outline()
+        for p in dot { XCTAssertEqual(simd_length(p), 0.03, accuracy: 0.001) }
+    }
+
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
     func testR4_SleepIsThinWideArc() {
         let e = Mood.sleep.pose.left

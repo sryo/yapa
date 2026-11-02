@@ -1,14 +1,15 @@
 import Foundation
+import simd
 
 /// One eye: a white stroke with round caps, in fractions of the screen's short side. It runs from (-ax, -ay) to
 /// (ax, ay) around its centre and bows up by `bend` (down when negative). With ax and ay at 0 it is a dot `width`
 /// across; with only ay it is a tall pill; with only ax and a bend it is an arc. Round caps mean nothing is ever cut off.
 public struct EyePose: Equatable {
-    public var ax = 0.0, ay = 0.065, bend = 0.0, width = 0.06, y = 0.0
+    public var ax = 0.0, ay = 0.035, bend = 0.0, width = 0.06, y = 0.0
 
     var fields: [Double] { [ax, ay, bend, width, y] }
     init(fields f: [Double]) { (ax, ay, bend, width, y) = (f[0], f[1], f[2], f[3], f[4]) }
-    init(ax: Double = 0, ay: Double = 0.065, bend: Double = 0, width: Double = 0.06, y: Double = 0) {
+    init(ax: Double = 0, ay: Double = 0.035, bend: Double = 0, width: Double = 0.06, y: Double = 0) {
         (self.ax, self.ay, self.bend, self.width, self.y) = (ax, ay, bend, width, y)
     }
 }
@@ -37,22 +38,52 @@ public enum Mood: String, CaseIterable {
         switch self {
         case .sleep: Pose(EyePose(ax: 0.05, ay: 0, bend: -0.013, width: 0.02, y: 0.02), depth: -0.1)
         case .idle: Pose(EyePose())
-        case .busy: Pose(EyePose(ay: 0.04, y: 0.012), depth: -0.25)
-        case .attention: Pose(EyePose(ay: 0.085, width: 0.07, y: -0.006), depth: 0.2)
+        case .busy: Pose(EyePose(ay: 0.022, y: 0.012), depth: -0.25)
+        case .attention: Pose(EyePose(ay: 0.05, width: 0.07, y: -0.006), depth: 0.2)
         case .celebrate: Pose(EyePose(ax: 0.045, ay: 0, bend: 0.03, width: 0.045, y: -0.01))
-        case .dizzy: Pose(EyePose(ay: 0.045), spin: 0.6)
+        case .dizzy: Pose(EyePose(ay: 0.026), spin: 0.6)
         case .heart: Pose(EyePose(ax: 0.05, ay: 0, bend: 0.036, width: 0.05, y: -0.015))
-        case .curious: Pose(left: EyePose(ay: 0.066, width: 0.08, y: -0.006), right: EyePose(ay: 0.032, width: 0.07, y: 0.01), depth: 0.4)
+        case .curious: Pose(left: EyePose(ay: 0.045, width: 0.08, y: -0.006), right: EyePose(ay: 0.018, width: 0.07, y: 0.01), depth: 0.4)
         case .focused: Pose(EyePose(ax: 0.022, ay: 0, width: 0.06), depth: -0.3)
-        case .impatient: Pose(EyePose(ay: 0.06, width: 0.08, y: -0.022))
+        case .impatient: Pose(EyePose(ay: 0.04, width: 0.08, y: -0.022))
         case .proud: Pose(EyePose(ax: 0.035, ay: 0, bend: 0.018, width: 0.05, y: -0.006))
         case .bored: Pose(EyePose(ax: 0.03, ay: 0, bend: -0.004, width: 0.055, y: 0.02), depth: -0.1)
         }
     }
 }
 
-/// A quadratic stroke from p0 through control c to p1, `width` thick with round caps, around the screen centre.
-public struct Stroke { public var p0, c, p1: SIMD2<Double>; public var width: Double }
+/// A quadratic stroke from p0 through control c to p1, `width` thick, around the screen centre.
+public struct Stroke {
+    public var p0, c, p1: SIMD2<Double>; public var width: Double
+
+    /// The eye's filled outline: the curve extended by half the width at each end, with a half-width that falls
+    /// off like an ellipse (`a·√(1-u²)` along the spine). A straight stroke comes out as an exact oval, a curved
+    /// one as a bent oval tapering to soft points, and a stroke of zero length as a circle. Left side first, then
+    /// the right side back, so point i and point count-1-i face each other across the spine.
+    public func outline(samples n: Int = 41) -> [SIMD2<Double>] {
+        let a = width / 2
+        let d0 = 2 * (c - p0), d1 = 2 * (p1 - c)
+        let still = simd_length(p1 - p0) < 1e-9 && simd_length(c - p0) < 1e-9
+        func spine(_ u: Double) -> (SIMD2<Double>, SIMD2<Double>) {
+            if still { return (p0 + SIMD2(0, u * a), SIMD2(0, 1)) }
+            let e0 = a / max(simd_length(d0), 1e-9), e1 = a / max(simd_length(d1), 1e-9)
+            let t = -e0 + (1 + e0 + e1) * (u + 1) / 2
+            if t < 0 { return (p0 + d0 * t, d0) }
+            if t > 1 { return (p1 + d1 * (t - 1), d1) }
+            let m = 1 - t
+            return (m * m * p0 + 2 * m * t * c + t * t * p1, 2 * m * (c - p0) + 2 * t * (p1 - c))
+        }
+        var left: [SIMD2<Double>] = [], right: [SIMD2<Double>] = []
+        for i in 0..<n {
+            // Bunch samples toward the ends, where the oval turns fastest, so the tips stay round.
+            let u = -cos(.pi * Double(i) / Double(n - 1))
+            let (p, d) = spine(u), len = max(simd_length(d), 1e-12)
+            let normal = SIMD2(-d.y, d.x) / len, h = a * max(0, 1 - u * u).squareRoot()
+            left.append(p + normal * h); right.append(p - normal * h)
+        }
+        return left + right.reversed()
+    }
+}
 
 public struct Frame {
     public var eyes: [Stroke]
