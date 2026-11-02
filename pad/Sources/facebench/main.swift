@@ -11,7 +11,7 @@ for batch in 0..<30 {
     let start = DispatchTime.now().uptimeNanoseconds
     for _ in 0..<600 {
         t += 1.0 / 60
-        sink += face.frame(at: t).openness
+        sink += face.frame(at: t).blinkHeight
     }
     samples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 600 / 1000)
 }
