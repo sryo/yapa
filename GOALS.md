@@ -12,7 +12,7 @@ For sryo: turn a 2016 iPhone SE that would otherwise sit in a drawer into an alw
 ## Goals, in priority order
 When two goals conflict, the higher one wins.
 
-1. **Comes back on its own.** After a reboot and one tap on Dopamine's Jailbreak, every service is up again with nothing else to do.
+1. **Comes back on its own, keeps itself going.** After a reboot and one tap on Dopamine's Jailbreak, every service is up again with nothing else to do. Between reboots it looks after itself: a crashed daemon restarts, logs and caches don't fill the disk, blocklists and certificates stay fresh, and when something does need a hand, the pad says what and what to do.
 2. **Answering an agent takes one tap.** A permission prompt reaches the pad, buzzes, and the tap gets back to Claude Code fast enough that you never go to the terminal instead.
 3. **Talking to an agent works.** Hold, speak, release: the words arrive in the session as text, fast and accurate enough to replace typing short replies.
 4. **Light on an old phone.** Every daemon together fits comfortably in 2 GB of RAM and leaves the CPU idle when nothing is happening, so the phone stays cool on the charger.
@@ -22,6 +22,7 @@ When two goals conflict, the higher one wins.
 | Goal | Metric | Where | Run |
 |---|---|---|---|
 | 1 | seconds from jailbreak to every health check green; services up | `bench/health` over SSH to the phone | live: `bench/health` |
+| 1 | seconds for a killed daemon to come back; disk growth MB/day; days since a hand was needed | `bench/health` over SSH to the phone | live: `bench/health` |
 | 2 | ms from hook fired to pad notified, and from tap to hook answered (p50) | `bench/pad`, a headless pad client on the Mac | `bench/pad` |
 | 3 | ms from release to text; word error rate on fixture clips | `bench/ptt` with `bench/clips/` | `bench/ptt` |
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/health` over SSH to the phone | live: `bench/health` |
