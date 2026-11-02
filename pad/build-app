@@ -1,0 +1,23 @@
+#!/bin/sh
+# Builds the pad app without an Xcode project: build-app sim -> build/pad/sim/yapa.app (ad-hoc signed),
+# build-app device -> build/pad/yapa.ipa for TrollStore (signed with ldid).
+set -e
+cd "$(dirname "$0")"
+out=../build/pad
+case "${1:-sim}" in
+  sim) sdk=iphonesimulator; target=arm64-apple-ios15.0-simulator; app=$out/sim/yapa.app ;;
+  device) sdk=iphoneos; target=arm64-apple-ios15.0; app=$out/device/Payload/yapa.app ;;
+  *) echo "usage: build-app [sim|device]"; exit 1 ;;
+esac
+rm -rf "$app" && mkdir -p "$app"
+xcrun --sdk $sdk swiftc -O -target $target -sdk "$(xcrun --sdk $sdk --show-sdk-path)" \
+  -o "$app/yapa" Sources/FaceKit/*.swift App/main.swift
+cp App/Info.plist "$app/"
+if [ "$1" = device ]; then
+  ldid -S "$app/yapa"
+  (cd $out/device && rm -f ../yapa.ipa && zip -qr ../yapa.ipa Payload)
+  ls -l $out/yapa.ipa
+else
+  codesign -s - "$app" 2>/dev/null
+  echo "$app"
+fi

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Measures goal 2's face cost on this Mac: µs of CPU per frame, and prints the path of a K1 run file.
+cd "$(dirname "$0")/.." || exit 1
+s=$(swift run -q -c release --package-path pad facebench | tail -1) || exit 1
+mkdir -p bench/runs
+out=bench/runs/face-$(date +%s).json
+cat > "$out" <<JSON
+{"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
+ "metrics": {"face_frame_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$s]}},
+ "limits": {}}
+JSON
+echo "$out"
