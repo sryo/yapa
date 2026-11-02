@@ -3,3 +3,5 @@ bench/test-r2-keepalive
 bench/test-r3-health
 swift test --package-path jeta
 bench/test-names
+bench/test-r4-talk
+swift test --package-path mac

@@ -6,6 +6,7 @@ final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
     private let eyes = [CAShapeLayer(), CAShapeLayer()]
     private var link: CADisplayLink?
+    private var talk: Talk?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -15,8 +16,8 @@ final class FaceView: UIView {
             layer.addSublayer(eye)
         }
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(poke)))
-        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(nextMood)))
         isMultipleTouchEnabled = true
+        talk = Talk(face: face, in: self)
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
@@ -24,15 +25,9 @@ final class FaceView: UIView {
 
     // A tap wakes the face and draws its eyes to the finger.
     @objc private func poke(_ g: UITapGestureRecognizer) {
+        if talk?.tapped() == true { return }
         let p = g.location(in: self), u = Double(min(bounds.width, bounds.height))
         face.poke(at: SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u), t: CACurrentMediaTime())
-    }
-
-    // A long press shows the next mood, to try them out.
-    @objc private func nextMood(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began else { return }
-        let all = Mood.allCases, i = all.firstIndex(of: face.mood)!
-        face.set(all[(i + 1) % all.count], at: CACurrentMediaTime())
     }
 
     // Two or more fingers are a chord. Until the Buddy link lands, the attention mood stands in for a prompt.

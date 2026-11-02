@@ -22,6 +22,14 @@
 	<array>
 		<integer>1</integer>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hold the face and speak to send words to Claude on your Mac.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>yapa sends what you say to yapa-talk on your Mac.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_yapa-talk._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

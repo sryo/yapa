@@ -1,0 +1,6 @@
+{"commit": "c5b3299aadd386b9f32682406662aec34b410a30", "dirty": false,
+ "metrics": {
+  "ptt_release_to_text_ms": {"dir": "lower", "kind": "time", "noisy": true, "samples": [283,163,95,90,97,78,91,97,98,107,130,150,87,83,89,88,94,107,102,104]},
+  "ptt_word_error_rate": {"dir": "lower", "kind": "quality", "samples": [0.000,0.000,0.000,0.333,0.333,0.000,0.000,0.200,0.167,0.000]}
+ },
+ "limits": {"ptt_release_to_text_ms": 1000}}

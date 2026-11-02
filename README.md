@@ -11,7 +11,11 @@ git clone https://github.com/sryo/yapa && cd yapa
 ```
 
 ## Use
-Open the yapa app on the phone. In the Claude desktop app, turn on Help → Troubleshooting → Enable Developer Mode, then Developer → Open Hardware Buddy → Connect, and pick the phone. From then on the face on the phone shows what your agents are doing. When one asks for permission, the phone buzzes: tap Allow or Deny. Hold the big button to talk to the session, and let go to send.
+Open the yapa app on the phone. In the Claude desktop app, turn on Help → Troubleshooting → Enable Developer Mode, then Developer → Open Hardware Buddy → Connect, and pick the phone. From then on the face on the phone shows what your agents are doing. When one asks for permission, the phone buzzes: tap Allow or Deny. Hold the face to talk, and let go: your words appear in the Claude app (or the terminal in front) and send themselves two seconds later, unless you tap to stop them. English and Spanish both work. For talking, run this once on the Mac with the phone's address:
+
+```bash
+YAPA_TALK_FROM=<phone-ip> mac/install
+```
 
 ```bash
 yapa status        # each service, up or down, and since when
@@ -20,4 +24,5 @@ yapa logs gitea    # one service's recent log
 
 ## Known gaps
 - After the phone restarts, open Dopamine and tap Jailbreak. Until you do, nothing runs.
+- The first time you talk, macOS asks to let yapa-talk control the computer (Accessibility). Until you allow it, your words land on the clipboard instead.
 - Keep a second DNS server set on your router: when the phone is off, that one answers.
