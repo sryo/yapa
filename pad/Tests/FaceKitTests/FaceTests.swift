@@ -186,6 +186,15 @@ final class FaceTests: XCTestCase {
         for p in dot { XCTAssertEqual(simd_length(p), 0.03, accuracy: 0.001) }
     }
 
+    // R7: the eyes sit close together: the gap between them is no wider than one eye.
+    func testR7_EyesSitClose() {
+        let f = Face(seed: 1, now: 0, lively: false).frame(at: 1)
+        let l = f.eyes[0].outline(), r = f.eyes[1].outline()
+        let gap = r.map(\.x).min()! - l.map(\.x).max()!, width = l.map(\.x).max()! - l.map(\.x).min()!
+        XCTAssertGreaterThan(gap, width * 0.5, "eyes touch")
+        XCTAssertLessThanOrEqual(gap, width * 1.05, "eyes too far apart")
+    }
+
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
     func testR4_SleepIsThinWideArc() {
         let e = Mood.sleep.pose.left

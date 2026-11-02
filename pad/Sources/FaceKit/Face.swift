@@ -155,7 +155,7 @@ public final class Face {
             let ay = max(0, e.ay) * (1 - b) * (1 + sq)
             let ax = max(0, e.ax, 0.03 * b) * (1 - 0.5 * sq) * (1 - smoothstep(0, 0.012, ay))
             let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1))
-            let c = SIMD2(side * 0.08 * (1 - 0.3 * sq), e.y + breath) + look
+            let c = SIMD2(side * 0.06 * (1 - 0.3 * sq), e.y + breath) + look
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
             return Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
         }
