@@ -31,6 +31,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         if d.batteryLevel >= 0 { buddy.battery = (Int(d.batteryLevel * 100), d.batteryState == .charging || d.batteryState == .full) }
         // Once the link drops the face sleeps, and taps go back to showing moods.
         if connected || wasConnected { view.face.set(buddy.mood(at: t), at: t) }
+        if connected != wasConnected { log(connected ? "heartbeats" : "no heartbeat for 30 s") }
         wasConnected = connected
         let id = buddy.prompt(at: t)?.id
         if let id, id != promptID { AudioServicesPlaySystemSound(kSystemSoundID_Vibrate) }
@@ -58,7 +59,16 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         while let d = outbox.first, manager.updateValue(d, for: tx, onSubscribedCentrals: nil) { outbox.removeFirst() }
     }
 
+    /// Appends to Documents/buddy.log, which is how to see the link's state on the phone (over SSH).
+    private func log(_ s: String) {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("buddy.log")
+        let line = Data("\(Date()) \(s)\n".utf8)
+        if let h = try? FileHandle(forWritingTo: url), (try? h.seekToEnd()) ?? 0 < 1_000_000 { h.write(line); try? h.close() }
+        else { try? line.write(to: url) }
+    }
+
     func peripheralManagerDidUpdateState(_ m: CBPeripheralManager) {
+        log("bluetooth state \(m.state.rawValue)")
         guard m.state == .poweredOn else { return }
         let s = CBMutableService(type: Self.service, primary: true)
         s.characteristics = [rx, tx]
@@ -67,11 +77,17 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ m: CBPeripheralManager, didAdd _: CBService, error: Error?) {
+        log("service added \(error.map { "\($0)" } ?? "ok")")
         guard error == nil else { return }
         m.startAdvertising([CBAdvertisementDataLocalNameKey: "Claude-yapa", CBAdvertisementDataServiceUUIDsKey: [Self.service]])
     }
 
+    func peripheralManagerDidStartAdvertising(_: CBPeripheralManager, error: Error?) {
+        log("advertising \(error.map { "\($0)" } ?? "ok")")
+    }
+
     func peripheralManager(_ m: CBPeripheralManager, central: CBCentral, didSubscribeTo _: CBCharacteristic) {
+        log("subscribed, mtu \(central.maximumUpdateValueLength)")
         mtu = central.maximumUpdateValueLength
     }
 
