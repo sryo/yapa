@@ -1,4 +1,6 @@
-import JetaKit
+#if canImport(JetaKit)
+import JetaKit // the app compiles JetaKit and BuddyKit into one module
+#endif
 import Foundation
 
 /// Joins the fragments a BLE link delivers into newline-terminated UTF-8 lines.

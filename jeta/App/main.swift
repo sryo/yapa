@@ -11,6 +11,8 @@ final class FaceView: UIView {
     private var texts: [CATextLayer] = []
     /// Holding to talk; che hooks in here with the session to reach (nil: the manager).
     var onTalk: ((String?) -> Void)?
+    /// Takes a tap first while the Hardware Buddy link is up; returns true when it used it.
+    var onTap: ((CGPoint) -> Bool)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -45,7 +47,9 @@ final class FaceView: UIView {
     // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         guard screen.mode == .face else { screen.tap(); return }
-        let p = g.location(in: self), u = Double(min(bounds.width, bounds.height))
+        let p = g.location(in: self)
+        if onTap?(p) == true { return }
+        let u = Double(min(bounds.width, bounds.height))
         face.poke(at: SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u), t: CACurrentMediaTime())
     }
 
@@ -166,11 +170,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 @objc(SceneDelegate)
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+    var buddy: BuddyLink?
     func scene(_ scene: UIScene, willConnectTo _: UISceneSession, options _: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         window = UIWindow(windowScene: scene)
         let controller = FaceController()
         window?.rootViewController = controller
+        buddy = BuddyLink(view: controller.view as! FaceView)
         window?.makeKeyAndVisible()
         // To try the screens without the Buddy link: launch with `-jeta "jeta: server needs you · Which hostname?"`.
         let args = CommandLine.arguments
