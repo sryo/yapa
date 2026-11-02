@@ -1,0 +1,5 @@
+#!/bin/sh
+# R2: launchd starts yapad at load and brings it back when it dies.
+p="$(dirname "$0")/../launchd/com.sryo.yapa.yapad.plist"
+[ "$(plutil -extract KeepAlive raw "$p" 2>/dev/null)" = true ] || { echo "R2: $p must set KeepAlive true"; exit 1; }
+[ "$(plutil -extract RunAtLoad raw "$p" 2>/dev/null)" = true ] || { echo "R2: $p must set RunAtLoad true"; exit 1; }

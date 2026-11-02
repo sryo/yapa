@@ -1,0 +1,80 @@
+#!/bin/sh
+# Measures goals 1 and 4 on a running yapa and prints the path of a K1 run file.
+#   YAPA_HOST   ssh destination of the phone (root@192.168.1.20), or "local" for this Mac
+#   YAPA_PORT   yapad's port (8077)
+#   YAPA_IDLE_S seconds to sample idle CPU (60)
+#   YAPA_KILL   1 to kill each daemon once and time its return (default 1 on the phone, 0 locally)
+#   YAPA_DAEMONS process names that make up yapa (yapad)
+cd "$(dirname "$0")/.." || exit 1
+host=${YAPA_HOST:?set YAPA_HOST to the phone over ssh, like root@192.168.1.20, or to local}
+port=${YAPA_PORT:-8077}
+idle=${YAPA_IDLE_S:-60}
+daemons=${YAPA_DAEMONS:-yapad}
+if [ "$host" = local ]; then
+  ip=127.0.0.1; kill_default=0
+  on() { sh -c "$1"; }
+else
+  ip=${host#*@}; kill_default=1
+  on() { ssh -o ConnectTimeout=5 "$host" "$1"; }
+fi
+killing=${YAPA_KILL:-$kill_default}
+url="http://$ip:$port/health"
+mkdir -p bench/runs
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+
+get() { plutil -extract "$1" raw -o - "$tmp" 2>/dev/null; }
+curl -fsS -m 5 "$url" > "$tmp" || { echo "bench/health: no answer from $url; is yapad running on the phone? (launchctl list | grep yapa)" >&2; exit 1; }
+up=$(get up)
+green=$(get green_after_s)
+
+# ps prints "<rss KB> <cputime> <command>"; keep yapa's daemons only.
+procs() {
+  on "ps -axo rss=,time=,comm=" | awk -v names="$daemons" '
+    BEGIN { split(names, w, " "); for (i in w) want[w[i]] = 1 }
+    { n = split($3, p, "/"); if (p[n] in want) print }'
+}
+secs() { awk '{ n = split($2, t, ":"); s = 0; for (i = 1; i <= n; i++) s = s * 60 + t[i]; c += s } END { printf "%.2f", c }'; }
+
+before=$(procs)
+rss=$(printf '%s\n' "$before" | awk '{ k += $1 } END { printf "%.1f", k / 1024 }')
+sleep "$idle"
+cpu=$(awk -v a="$(printf '%s\n' "$before" | secs)" -v b="$(procs | secs)" -v w="$idle" 'BEGIN { printf "%.2f", (b - a) / w * 100 }')
+
+restart=
+if [ "$killing" = 1 ]; then
+  for d in $daemons; do
+    t0=$(date +%s)
+    on "killall -9 $d" >/dev/null 2>&1
+    sleep 1
+    until curl -fsS -m 1 "$url" >/dev/null 2>&1 && [ -n "$(procs | awk -v d="$d" '{ n = split($3, p, "/"); if (p[n] == d) print }')" ]; do
+      [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "bench/health: $d didn't come back within 60 s" >&2; break; }
+      sleep 0.2
+    done
+    restart="$restart${restart:+, }$(( $(date +%s) - t0 ))"
+  done
+fi
+
+# Disk growth compares used space with the last run against the same host, kept in bench/runs.
+state="bench/runs/disk-$(printf '%s' "$host" | tr -c 'A-Za-z0-9' _).txt"
+used=$(on "df -k /var 2>/dev/null || df -k /" | awk 'NR == 2 { print $3 }')
+now=$(date +%s)
+growth=
+if [ -f "$state" ]; then
+  read -r t0 u0 < "$state"
+  [ $(( now - t0 )) -ge 3600 ] && growth=$(awk -v d=$(( used - u0 )) -v s=$(( now - t0 )) 'BEGIN { printf "%.2f", d / 1024 / (s / 86400) }')
+fi
+[ -z "$growth" ] && [ -f "$state" ] || echo "$now $used" > "$state"
+
+metric() { printf ',\n  "%s": {"dir": "%s", "kind": "%s", %s"samples": [%s]}' "$1" "$2" "$3" "$4" "$5"; }
+out=bench/runs/health-$now.json
+{
+  printf '{"commit": "%s", "dirty": %s,\n "metrics": {\n  "services_up": {"dir": "higher", "kind": "count", "samples": [%s]}' \
+    "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain)" ] && echo true || echo false)" "$up"
+  [ -n "$green" ] && metric green_after_s lower time '"noisy": true, ' "$green"
+  metric rss_mb lower bytes '"noisy": true, ' "$rss"
+  metric idle_cpu_pct lower time '"noisy": true, ' "$cpu"
+  [ -n "$restart" ] && metric restart_s lower time '"noisy": true, ' "$restart"
+  [ -n "$growth" ] && metric disk_mb_per_day lower bytes '"noisy": true, ' "$growth"
+  printf '\n },\n "limits": {}}\n'
+} > "$out"
+echo "$out"

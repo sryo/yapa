@@ -1,0 +1,18 @@
+#!/bin/sh
+# R3: bench/health measures a running yapad and writes a run file fium reads.
+cd "$(dirname "$0")/.." || exit 1
+tmp=$(mktemp -d)
+trap 'kill $pid 2>/dev/null; rm -rf "$tmp"' EXIT INT TERM
+port=18077
+go build -o "$tmp/yapad" ./cmd/yapad || exit 1
+printf '[{"name":"self","check":"tcp:127.0.0.1:%s"}]' $port > "$tmp/services.json"
+"$tmp/yapad" -addr 127.0.0.1:$port -config "$tmp/services.json" -poll 200ms & pid=$!
+i=0; until curl -fs "http://127.0.0.1:$port/health" | grep -q "\"up\":1"; do i=$((i+1)); [ $i -gt 50 ] && { echo "R3: yapad never came up"; exit 1; }; sleep 0.1; done
+run=$(YAPA_HOST=local YAPA_PORT=$port YAPA_IDLE_S=2 bench/health | tail -1)
+[ -f "$run" ] || { echo "R3: bench/health printed no run file"; exit 1; }
+up=$(plutil -extract metrics.services_up.samples.0 raw "$run")
+[ "$up" = 1 ] || { echo "R3: services_up = $up, want 1"; exit 1; }
+for m in green_after_s rss_mb idle_cpu_pct; do
+  plutil -extract metrics.$m.samples.0 raw "$run" >/dev/null || { echo "R3: $m missing"; exit 1; }
+done
+rm -f "$run"
