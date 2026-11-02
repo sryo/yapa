@@ -1,0 +1,9 @@
+{
+  "metrics": {
+    "p50_ms": {"dir": "lower", "kind": "time", "samples": []},
+    "tokens_total": {"dir": "lower", "kind": "tokens", "samples": []},
+    "calls_per_task": {"dir": "lower", "kind": "count", "samples": []},
+    "pass_rate": {"dir": "higher", "kind": "quality", "samples": []}
+  },
+  "limits": {}
+}

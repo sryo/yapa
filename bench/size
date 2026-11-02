@@ -1,0 +1,20 @@
+#!/bin/sh
+# Prints a K1 run file for goal 5 (Small): pad page bytes, daemon binary bytes, LOC.
+cd "$(dirname "$0")/.." || exit 1
+page=$(cat pad/*.html pad/*.js pad/*.css 2>/dev/null | wc -c | tr -d ' ')
+bins=$(cat build/ios/* 2>/dev/null | wc -c | tr -d ' ')
+loc=$(git ls-files -- '*.go' '*.js' '*.html' '*.css' '*.sh' | grep -v '^bench/' | xargs cat 2>/dev/null | grep -cv '^[[:space:]]*$')
+commit=$(git rev-parse HEAD 2>/dev/null || echo none)
+dirty=$([ -n "$(git status --porcelain)" ] && echo true || echo false)
+out=bench/runs/size-$(date +%s).json
+mkdir -p bench/runs
+cat > "$out" <<JSON
+{"commit": "$commit", "dirty": $dirty,
+ "metrics": {
+  "pad_page_bytes": {"dir": "lower", "kind": "bytes", "samples": [$page]},
+  "daemon_bytes": {"dir": "lower", "kind": "bytes", "samples": [$bins]},
+  "loc": {"dir": "lower", "kind": "loc", "samples": [$loc]}
+ },
+ "limits": {}}
+JSON
+echo "$out"
