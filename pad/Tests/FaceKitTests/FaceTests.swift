@@ -12,16 +12,30 @@ final class FaceTests: XCTestCase {
         }.max()!
     }
 
-    // R1: changing mood flows: no frame moves an eye more than a sliver, and it settles within half a second.
+    // R1: changing mood flows: at 240 fps no step moves an eye more than a sliver, and it settles within 0.9 s.
     func testR1_MoodChangesFlowAndSettle() {
         for (a, b) in [(Mood.idle, Mood.celebrate), (.celebrate, .sleep), (.sleep, .attention), (.curious, .focused)] {
             let face = Face(seed: 1, now: 0, lively: false)
             face.set(a, at: 0)
             face.set(b, at: 1)
-            let fs = frames(face, from: 1, to: 1.6, hz: 60)
-            for (x, y) in zip(fs, fs.dropFirst()) { XCTAssertLessThan(jump(x, y), 0.03, "\(a)→\(b) jumps") }
-            XCTAssertLessThan(face.pose(at: 1.6).distance(to: b.pose), 0.004, "\(a)→\(b) hasn't settled")
+            let fs = frames(face, from: 1, to: 1.9)
+            for (x, y) in zip(fs, fs.dropFirst()) { XCTAssertLessThan(jump(x, y), 0.012, "\(a)→\(b) jumps") }
+            XCTAssertLessThan(face.pose(at: 1.9).distance(to: b.pose), 0.004, "\(a)→\(b) hasn't settled")
         }
+    }
+
+    // R1: changes are exaggerated: the eyes overshoot past the new shape, squash, and hop before settling.
+    func testR1_ChangesAreExaggerated() {
+        let face = Face(seed: 1, now: 0, lively: false)
+        face.set(.attention, at: 0.5)
+        let fs = frames(face, from: 0.5, to: 1.5)
+        let from = Mood.idle.pose.left.ay, to = Mood.attention.pose.left.ay
+        let peak = fs.map { f in (f.eyes[0].p1.y - f.eyes[0].p0.y) / 2 }.max()!
+        XCTAssertGreaterThan(peak - to, (to - from) * 0.15, "no overshoot")
+        let rest = face.frame(at: 3).eyes[0].c.y
+        XCTAssertGreaterThan(rest - fs.map { $0.eyes[0].c.y }.min()!, 0.015, "no hop")
+        let heights = fs.map { f in (f.eyes[0].p1.y - f.eyes[0].p0.y) / 2 }
+        XCTAssertLessThan(heights.prefix(24).min()!, from * 0.9, "no squash before stretching")
     }
 
     // R1: changing mood mid-change continues from where the eyes are, with no jump.
@@ -30,7 +44,7 @@ final class FaceTests: XCTestCase {
         face.set(.attention, at: 0)
         let before = face.frame(at: 0.0999)
         face.set(.celebrate, at: 0.1)
-        XCTAssertLessThan(jump(before, face.frame(at: 0.1001)), 0.01)
+        XCTAssertLessThan(jump(before, face.frame(at: 0.1001)), 0.012)
     }
 
     // R2: blinks every 3–10 s and glances every 1–2.25 s, over ten simulated minutes.
@@ -108,11 +122,48 @@ final class FaceTests: XCTestCase {
             face.set(m, at: t)
             for f in frames(face, from: t, to: t + 0.7) {
                 for e in f.eyes {
-                    let d = e.p1 - e.p0
+                    let r = e.p1 - e.p0, (cs, sn) = (cos(-f.tilt), sin(-f.tilt))
+                    let d = SIMD2(r.x * cs - r.y * sn, r.x * sn + r.y * cs) / f.scale
                     XCTAssertLessThanOrEqual(min(abs(d.x), abs(d.y)), 0.025, "\(m) leans at \(d)")
                 }
             }
             t += 0.7
+        }
+    }
+
+    // R5: the face wanders all over the screen, never past its edges, and stays put while asleep.
+    func testR5_WandersTheWholeScreen() {
+        let face = Face(seed: 11, now: 0)
+        face.bounds = SIMD2(0.7, 0.35)
+        let centres = frames(face, from: 0, to: 90, hz: 30).map { ($0.eyes[0].c + $0.eyes[1].c) / 2 }
+        let xs = centres.map(\.x), ys = centres.map(\.y)
+        XCTAssertGreaterThan(xs.max()! - xs.min()!, 0.7, "doesn't roam sideways")
+        XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.35, "doesn't roam up and down")
+        XCTAssert(centres.allSatisfy { abs($0.x) < 0.8 && abs($0.y) < 0.45 }, "leaves the screen")
+        face.set(.sleep, at: 90)
+        let resting = frames(face, from: 93, to: 103, hz: 10).map { ($0.eyes[0].c.x + $0.eyes[1].c.x) / 2 }
+        XCTAssertLessThan(resting.max()! - resting.min()!, 0.002, "wanders in its sleep")
+    }
+
+    // R6: curious steps closer to you and tilts its head like a dog, then to the other side if it stays curious.
+    func testR6_CuriousLeansInAndTilts() {
+        let face = Face(seed: 2, now: 0)
+        face.set(.curious, at: 0)
+        let fs = frames(face, from: 0, to: 8, hz: 30)
+        XCTAssertGreaterThan(fs.last!.scale, 1.25, "doesn't step closer")
+        let tilts = fs.map(\.tilt)
+        XCTAssertGreaterThan(tilts.max()!, 0.15, "doesn't tilt one way")
+        XCTAssertLessThan(tilts.min()!, -0.15, "doesn't tilt the other way")
+    }
+
+    // R6: when it doesn't want to be reached (focused, busy) it steps back; otherwise it holds its head straight.
+    func testR6_StepsBackWhenBusy() {
+        for m in [Mood.focused, .busy] {
+            let face = Face(seed: 2, now: 0)
+            face.set(m, at: 0)
+            let f = face.frame(at: 3)
+            XCTAssertLessThan(f.scale, 0.85, "\(m) doesn't step back")
+            XCTAssertEqual(f.tilt, 0, accuracy: 0.01)
         }
     }
 

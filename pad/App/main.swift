@@ -32,6 +32,8 @@ final class FaceView: UIView {
         // Asleep only breathes, so 30 fps keeps it smooth for less power.
         l.preferredFramesPerSecond = face.isActive(at: t) ? 60 : 30
         let u = Double(min(bounds.width, bounds.height)), mid = SIMD2(Double(bounds.midX), Double(bounds.midY))
+        // Let the face wander anywhere its eyes still fit, even when it steps up close.
+        face.bounds = SIMD2(max(0, Double(bounds.width) / u / 2 - 0.27), 0.3)
         let point = { (p: SIMD2<Double>) in CGPoint(x: mid.x + p.x * u, y: mid.y + p.y * u) }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
