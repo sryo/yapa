@@ -36,9 +36,13 @@ final class Talk: NSObject {
         return true
     }
 
+    /// Where the finger is while it's held down to talk.
+    private(set) var heldAt: CGPoint?
+
     @objc private func held(_ g: UILongPressGestureRecognizer) {
+        heldAt = g.location(in: g.view)
         if g.state == .began { to = session?(g.location(in: g.view)); record() }
-        if [.ended, .cancelled, .failed].contains(g.state) { send() }
+        if [.ended, .cancelled, .failed].contains(g.state) { heldAt = nil; send() }
     }
 
     private func record() {

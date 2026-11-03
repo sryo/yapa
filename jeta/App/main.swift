@@ -1,10 +1,10 @@
 import AudioToolbox
 import UIKit
 
-/// Draws a Face: each eye is one white oval, filled from the model's outline, with its trail when it moves fast.
+/// Draws the colony: one white ant per Claude Code session, each acting out its session's mood. The faces are still
+/// the mood models (blinks, moods, dozing off), but only their ants are drawn.
 final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
-    private let eyes = [CAShapeLayer(), CAShapeLayer()]
     private var link: CADisplayLink?
     /// The manager's notices, and what the screen shows of them.
     private var board = NoticeBoard(), screen = Screen()
@@ -22,16 +22,15 @@ final class FaceView: UIView {
     private var talk: Talk?
     /// One face per Claude Code session, when two or more report through the hooks; with one, the face above.
     let crowd = Crowd(seed: UInt64(Date().timeIntervalSince1970) &+ 1, now: CACurrentMediaTime())
-    private var crowdEyes: [String: [CAShapeLayer]] = [:], crowdNames: [String: CATextLayer] = [:]
+    private var names: [String: CATextLayer] = [:]
     private let more = CATextLayer()
+    /// An ant for each face: the crowd's, or the single face's.
+    let colony = Colony(seed: UInt64(Date().timeIntervalSince1970) &+ 2, now: CACurrentMediaTime())
+    private var antLayers: [String: [CAShapeLayer]] = [:]
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
-        for eye in eyes {
-            eye.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
-            layer.addSublayer(eye)
-        }
         more.contentsScale = UIScreen.main.scale
         more.fontSize = 13
         more.foregroundColor = UIColor(white: 0.55, alpha: 1).cgColor
@@ -50,7 +49,7 @@ final class FaceView: UIView {
         talk = Talk(face: face, in: self)
         onChoose = { [weak self] in self?.talk?.say($0, to: $1) }
         talk?.onNote = { [weak self] in self?.screen.note = $0 }
-        talk?.session = { [weak self] p in self.flatMap { $0.crowd.session(at: $0.unit(p), t: CACurrentMediaTime()) } }
+        talk?.session = { [weak self] p in self?.session(at: p) }
         // The face hops as it says a question and gulps when its words come back.
         motion.onSay = { [weak self] in self?.speaker.say(at: CACurrentMediaTime()) }
         motion.onSwallow = { [weak self] in self?.speaker.swallow(at: CACurrentMediaTime()) }
@@ -105,7 +104,7 @@ final class FaceView: UIView {
         // With a face per session, a touch on one shows its folder name for a moment. One that isn't forward is
         // also picked: one that needs you steps forward (its prompt is then the one answered), another opens its
         // question if it has one, else just looks at you.
-        let t = CACurrentMediaTime(), hit = crowd.single ? nil : crowd.hit(unit(p), at: t)
+        let t = CACurrentMediaTime(), hit = crowd.single ? nil : colony.hit(SIMD2(Double(p.x), Double(p.y)))
         if let id = hit { crowd.touch(id, at: t) }
         if let id = hit, id != crowd.front {
             if crowd.slots(at: t).first(where: { $0.id == id }).flatMap({ s in crowd.face(s.id)?.mood }) == .attention {
@@ -120,10 +119,9 @@ final class FaceView: UIView {
         poke(at: p)
     }
 
-    /// A point on screen in fractions of the short side from the centre.
-    private func unit(_ p: CGPoint) -> SIMD2<Double> {
-        let u = Double(min(bounds.width, bounds.height))
-        return SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u)
+    /// The session a finger at `p` means: the ant under it, else the one forward, else the only one.
+    private func session(at p: CGPoint) -> String? {
+        crowd.single ? crowd.session(at: .zero, t: CACurrentMediaTime()) : colony.hit(SIMD2(Double(p.x), Double(p.y))) ?? crowd.front
     }
 
     private func poke(at p: CGPoint) {
@@ -143,7 +141,8 @@ final class FaceView: UIView {
     @objc private func swiped(_ g: UISwipeGestureRecognizer) {
         // On the bare faces, swiping one away hides it until its session's next event; nothing changes in Claude.
         let t = CACurrentMediaTime()
-        if screen.mode == .face, !crowd.single, let id = crowd.hit(unit(g.location(in: self)), at: t) {
+        let p = g.location(in: self)
+        if screen.mode == .face, !crowd.single, let id = colony.hit(SIMD2(Double(p.x), Double(p.y))) {
             crowd.hide(id, at: t)
             return
         }
@@ -203,7 +202,7 @@ final class FaceView: UIView {
         // Fingers held still still settle into a chord.
         if !fingers.isEmpty { feedChord(at: t) }
         // Asleep only breathes, so 30 fps keeps it smooth for less power.
-        l.preferredFramesPerSecond = face.isActive(at: t) ? 60 : 30
+        l.preferredFramesPerSecond = colony.isActive ? 60 : 30
         let u = Double(min(bounds.width, bounds.height)), mid = SIMD2(Double(bounds.midX), Double(bounds.midY))
         // Let the face wander anywhere its eyes still fit, even when it steps up close.
         face.bounds = SIMD2(max(0, Double(bounds.width) / u / 2 - 0.27), 0.3)
@@ -212,7 +211,17 @@ final class FaceView: UIView {
         crowd.screen = face.screen
         let slots = crowd.single ? [] : crowd.slots(at: t)
         // Text comes out of the face it's about: the one forward, else the single face.
-        let anchor = slots.first(where: \.front).map { $0.centre + crowd.face($0.id)!.frame(at: t).centre * $0.scale } ?? f.centre
+        var anchor = slots.first(where: \.front).map { $0.centre + crowd.face($0.id)!.frame(at: t).centre * $0.scale } ?? f.centre
+        do {
+            colony.screen = SIMD2(Double(bounds.width), Double(bounds.height))
+            // While talking, every ant turns to the finger held down.
+            colony.listenAt = face.mood == .listening
+                ? (talk?.heldAt).map { SIMD2(Double($0.x), Double($0.y)) } ?? SIMD2(Double(bounds.midX), Double(bounds.height) - 120) : nil
+            // With one session or none, a single ant plays the big face's mood.
+            colony.update(slots.isEmpty ? [("face", face.mood, true, crowd.sessions.first?.events)]
+                          : slots.map { s in (s.id, crowd.face(s.id)!.mood, s.front, crowd.sessions.first { $0.id == s.id }?.events) }, at: t)
+            if let p = colony.position(of: slots.first(where: \.front)?.id ?? (slots.isEmpty ? "face" : "")) { anchor = (p - mid) / u }
+        }
         face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
         face.lift(screen.mode == .question, at: t)
         placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
@@ -225,8 +234,8 @@ final class FaceView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         drawText(motion.frame(at: t))
-        for (eye, s) in zip(eyes, f.eyes) { eye.path = slots.isEmpty ? path(s, point) : nil }
-        drawCrowd(slots, at: t, point: point, unit: u)
+        drawAnts(colony.shapes(at: t))
+        drawNames(slots)
         CATransaction.commit()
     }
 }
@@ -235,53 +244,58 @@ extension FaceView {
     /// The face the text comes from: the one in front when several sessions show, else the single face.
     var speaker: Face { crowd.single ? face : crowd.front.flatMap(crowd.face) ?? face }
 
-    /// An eye's oval, with its trail, as a path on screen.
-    func path(_ s: Stroke, _ point: (SIMD2<Double>) -> CGPoint) -> CGPath {
-        let path = CGMutablePath()
-        for shape in [s.outline()] + s.trailOutlines() {
-            path.addLines(between: shape.map(point))
-            path.closeSubpath()
-        }
-        return path
-    }
-
-    /// Each session's face where its slot is, its folder name under it in white while touched, and "+N" for the ones
-    /// folded away.
-    func drawCrowd(_ slots: [Slot], at t: Double, point: (SIMD2<Double>) -> CGPoint, unit u: Double) {
+    /// Each session's folder name under its ant in white while touched, and "+N" at the bottom for the ones folded away.
+    func drawNames(_ slots: [Slot]) {
         let ids = Set(slots.map(\.id))
-        for id in Array(crowdEyes.keys) where !ids.contains(id) {
-            crowdEyes[id]?.forEach { $0.removeFromSuperlayer() }; crowdEyes[id] = nil
-            crowdNames[id]?.removeFromSuperlayer(); crowdNames[id] = nil
-        }
+        for (id, n) in names where !ids.contains(id) { n.removeFromSuperlayer(); names[id] = nil }
         for s in slots {
-            let layers = crowdEyes[s.id] ?? (0..<2).map { _ in
-                let l = CAShapeLayer()
-                l.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
-                layer.addSublayer(l)
-                return l
-            }
-            crowdEyes[s.id] = layers
-            let frame = crowd.face(s.id)!.frame(at: t)
-            for (l, e) in zip(layers, frame.eyes) { l.path = path(e, { point(s.centre + $0 * s.scale) }) }
-            let name = crowdNames[s.id] ?? {
+            guard let at = colony.position(of: s.id) else { continue }
+            let name = names[s.id] ?? {
                 let n = CATextLayer()
                 n.contentsScale = UIScreen.main.scale
                 n.fontSize = 11
                 n.foregroundColor = UIColor(white: 0.96, alpha: 1).cgColor
                 n.alignmentMode = .center
                 layer.addSublayer(n)
-                crowdNames[s.id] = n
+                names[s.id] = n
                 return n
             }()
             name.string = s.name
             name.bounds = CGRect(x: 0, y: 0, width: 120, height: 16)
-            name.position = point(s.centre + SIMD2(0, 0.17 * s.scale + 0.03))
-            name.opacity = Float(min(1, s.scale / 0.2) * s.named)
+            name.position = CGPoint(x: at.x, y: at.y + 28)
+            name.opacity = Float(s.named)
         }
         more.string = crowd.overflow > 0 && !slots.isEmpty ? "+\(crowd.overflow)" : ""
-        if let last = slots.filter({ !$0.front }).max(by: { $0.centre.x < $1.centre.x }) {
-            more.bounds = CGRect(x: 0, y: 0, width: 40, height: 18)
-            more.position = point(last.centre + SIMD2(0.2 * last.scale + 0.05, 0))
+        more.bounds = CGRect(x: 0, y: 0, width: 40, height: 18)
+        more.position = CGPoint(x: bounds.midX, y: bounds.height - 24)
+    }
+
+    /// Each ant as four layers: its body filled, then its thighs, shins and antennae stroked, each at its own width.
+    func drawAnts(_ shapes: [AntShape]) {
+        let ids = Set(shapes.map(\.id))
+        for (id, ls) in antLayers where !ids.contains(id) { ls.forEach { $0.removeFromSuperlayer() }; antLayers[id] = nil }
+        let white = UIColor(white: 0.96, alpha: 1).cgColor
+        for a in shapes {
+            let ls = antLayers[a.id] ?? (0..<4).map { i in
+                let l = CAShapeLayer()
+                l.fillColor = i == 0 ? white : nil
+                l.strokeColor = i == 0 ? nil : white
+                l.lineCap = .round
+                l.lineJoin = .round
+                layer.insertSublayer(l, at: 0)
+                return l
+            }
+            antLayers[a.id] = ls
+            let body = CGMutablePath()
+            for f in a.fills { body.addLines(between: f.map { CGPoint(x: $0.x, y: $0.y) }); body.closeSubpath() }
+            ls[0].path = body
+            // Six thighs, six shins, two antennae.
+            for (n, part) in [a.strokes.prefix(6), a.strokes.dropFirst(6).prefix(6), a.strokes.suffix(2)].enumerated() {
+                let p = CGMutablePath()
+                for s in part { p.addLines(between: s.points.map { CGPoint(x: $0.x, y: $0.y) }) }
+                ls[n + 1].path = p
+                ls[n + 1].lineWidth = CGFloat(part.first?.width ?? 1)
+            }
         }
     }
 

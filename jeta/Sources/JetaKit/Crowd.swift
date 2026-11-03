@@ -132,6 +132,8 @@ public final class Crowd {
 
 
     private var visible: [SessionInfo] { members.filter { hidden[$0.id] == nil } }
+    /// The sessions not swiped away, with their hook event counts.
+    public var sessions: [SessionInfo] { visible }
 
     /// The faces on screen, in the order their sessions started: past `most`, quiet ones are the ones left out.
     private var shown: [SessionInfo] {

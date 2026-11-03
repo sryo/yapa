@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jeta ants</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --dim: #888; --line: #333; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 -apple-system, system-ui, sans-serif;
+         display: flex; gap: 24px; padding: 16px; min-height: 100vh; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+  #phone { background: #000; border: 1px solid var(--line); border-radius: 18px; touch-action: none; }
+  #side { max-width: 340px; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  p { color: var(--dim); margin: 0 0 12px; }
+  #scenes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  button { background: #1c1c1c; color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; text-align: left; cursor: pointer; font: inherit; }
+  button.on { border-color: var(--fg); }
+  button small { display: block; color: var(--dim); font-size: 11px; }
+  #note { margin-top: 12px; color: var(--dim); min-height: 3em; }
+</style>
+</head>
+<body>
+<canvas id="phone"></canvas>
+<div id="side">
+  <h1>jeta, as a colony</h1>
+  <p>One ant per Claude Code session, white on black at the SE's 320×568 pt. Tap anywhere to add an ant (a new session); hold to talk.</p>
+  <div id="scenes"></div>
+  <div id="note"></div>
+</div>
+<script>
+const W = 320, H = 568, MID = { x: 160, y: 284 };
+const SIZE = 1.45;  // the body is ~15 units nose to tail, so an ant is ~22 pt; one that needs you grows 2.2 times that
+// Where each foot rests, in body units: hip x, foot forward, foot out.
+// All six hips sit on the thorax, close together; the legs are long and nearly straight, as in a real ant.
+const LEGS = [[1.3, 8.6, 6.4], [0.7, 0.6, 8.8], [0.1, -9.6, 7.2]];
+// A stride, in body units (about two thirds of a leg), and how long a foot is in the air.
+const STRIDE = 4.6, STEP = 0.1;
+const cv = document.getElementById('phone'), g = cv.getContext('2d');
+function fit() {
+  const s = Math.min(1.25, (innerHeight - 32) / H, (innerWidth - 32) / W), dpr = devicePixelRatio || 1;
+  cv.style.width = W * s + 'px'; cv.style.height = H * s + 'px';
+  cv.width = W * s * dpr; cv.height = H * s * dpr; g.setTransform(s * dpr, 0, 0, s * dpr, 0, 0);
+}
+addEventListener('resize', fit); fit();
+
+let seed = 7;
+const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// Every visual value moves through a spring, never jumps.
+class Spring { constructor(v, k = 120, d = 14) { this.v = v; this.t = v; this.vel = 0; this.k = k; this.d = d; }
+  step(dt) { this.vel += (this.k * (this.t - this.v) - this.d * this.vel) * dt; this.v += this.vel * dt; return this.v; }
+  kick(v) { this.vel += v; } }
+
+// ---------- the ant ----------
+class Ant {
+  constructor(x, y, h = rnd() * 6.28) {
+    Object.assign(this, { x, y, h, v: 0, goal: null, cruise: 44, phase: rnd() * 6, twitchAt: 0, turn: 0, pauseTo: 0,
+      tap: 0, wave: 0, tuck: 0, still: false, nervous: true, face: null, mill: null, think: null, mem: {} });
+    this.size = new Spring(1); this.rear = new Spring(0, 60, 11);
+    this.ant = new Spring(0, 80, 12); // antennae: -1 drooped .. 1 up
+    this.curl = new Spring(0, 14, 7);  // asleep: 1 is curled into a C, abdomen and head bent round to meet, legs gathered in
+    // After RujiK's "wonky salamanders": each foot has a step spot, where it would be had it just finished a step
+    // (half a stride ahead of its rest spot while walking). A planted foot stays put until that spot is a stride away,
+    // then steps there, and the step gives the body a little torque. Legs are in two tripods (L1 R2 L3, R1 L2 R3) and
+    // a tripod steps only while the other is planted, so the body always stands on three.
+    this.feet = []; this.spin = 0;
+    // The body is a rope too: the abdomen trails the thorax at a fixed distance, so it swings out on turns.
+    this.tail = { x: x - Math.cos(h) * 6.6 * SIZE, y: y - Math.sin(h) * 6.6 * SIZE };
+    for (const side of [-1, 1]) LEGS.forEach((_, i) => {
+      const p = this.rest(i, side, 0); this.feet.push({ i, side, grp: (i + (side > 0 ? 1 : 0)) % 2, x: p.x, y: p.y, fx: p.x, fy: p.y, tx: p.x, ty: p.y, s: 1 });
+    });
+  }
+  // A foot's rest spot on the ground, `ahead` body units forward along the heading.
+  rest(i, side, ahead) {
+    const [, fx, fy] = LEGS[i], k = SIZE * this.size.v * (1 - Math.max(this.tuck, this.curl.v) * 0.55), c = Math.cos(this.h), s = Math.sin(this.h);
+    const lx = fx * k + ahead * SIZE * this.size.v, ly = fy * side * k;
+    return { x: this.x + c * lx - s * ly + c * ahead, y: this.y + s * lx + c * ly + s * ahead };
+  }
+  stepFeet(dt) {
+    const unit = SIZE * this.size.v, moving = this.v > 2;
+    const busy = [0, 1].map(g => this.feet.some(f => f.grp === g && f.s < 1));
+    for (const f of this.feet) {
+      if (f.s < 1) {   // mid-step: ease from where it lifted to where it lands
+        f.s = Math.min(1, f.s + dt / STEP); const e = f.s * f.s * (3 - 2 * f.s);
+        f.x = f.fx + (f.tx - f.fx) * e; f.y = f.fy + (f.ty - f.fy) * e; continue;
+      }
+      // Walking, the step spot is half a stride ahead; standing, it's right under, so a foot left out settles back.
+      const half = moving ? STRIDE / 2 : 0, spot = this.rest(f.i, f.side, half), far = Math.hypot(f.x - spot.x, f.y - spot.y);
+      if (far > (moving ? STRIDE : 0.9) * unit && !busy[1 - f.grp] && (moving || !busy[f.grp])) {
+        // Land where the step spot will be when the foot comes down.
+        const land = this.rest(f.i, f.side, half + (moving ? this.v * STEP / unit : 0));
+        Object.assign(f, { fx: f.x, fy: f.y, tx: land.x, ty: land.y, s: 0 }); busy[f.grp] = true;
+        if (moving) this.spin -= f.side * (f.i === 1 ? 0.25 : 0.45);   // pushing off one side turns the body to the other
+      }
+    }
+  }
+  update(dt, t) {
+    let want = null;
+    if (this.mill) { const m = this.mill, a = Math.atan2(this.y - m.y, this.x - m.x) + 0.6;
+      want = { x: m.x + Math.cos(a) * m.r, y: m.y + Math.sin(a) * m.r }; }
+    else if (this.goal) want = this.goal;
+    // The GIF's walk: sharp heading jumps every few frames, and short dead stops.
+    if (t > this.twitchAt) {
+      this.turn = (rnd() - 0.5) * (want ? 0.8 : 2.2); this.twitchAt = t + 0.1 + rnd() * 0.28;
+      if (this.nervous && !this.mill && rnd() < (want ? 0.05 : 0.14)) this.pauseTo = t + 0.15 + rnd() * 0.45;
+    }
+    let speed = this.still || t < this.pauseTo ? 0 : this.cruise;
+    if (want) {
+      const d = dist(this, want), a = Math.atan2(want.y - this.y, want.x - this.x);
+      this.h += clamp(wrap(a - this.h) * 6, -9, 9) * dt;
+      if (!this.mill) speed *= d < 3 ? 0 : clamp(d / 30, 0.3, 1);
+    } else if (this.face) this.h += clamp(wrap(Math.atan2(this.face.y - this.y, this.face.x - this.x) - this.h) * 7, -7, 7) * dt;
+    if (speed > 0) this.h += this.turn * dt * 2.5;
+    else if (this.nervous && !this.face && !want) this.h += this.turn * dt * 1.2;   // stopped, it still swivels
+    const m = 36; if (!this.leaving && (this.x < m || this.x > W - m || this.y < m || this.y > H - m))
+      this.h += clamp(wrap(Math.atan2(MID.y - this.y, MID.x - this.x) - this.h), -1, 1) * 5 * dt;
+    this.v += (speed - this.v) * Math.min(1, dt * 12);
+    this.h += this.spin * dt; this.spin *= Math.exp(-dt * 9);
+    this.x += Math.cos(this.h) * this.v * dt; this.y += Math.sin(this.h) * this.v * dt;
+    this.gait = (this.gait || 0) + this.v * dt / (STRIDE * SIZE * Math.max(0.2, this.size.v)) * Math.PI;   // half a turn per stride
+    const len = 6.6 * SIZE * this.size.v, tx = this.x - this.tail.x, ty = this.y - this.tail.y, tl = Math.hypot(tx, ty) || 1;
+    this.tail.x = this.x - tx / tl * len; this.tail.y = this.y - ty / tl * len;
+    this.phase += dt;
+    this.size.step(dt); this.rear.step(dt); this.ant.step(dt); this.curl.step(dt);
+    this.stepFeet(dt);
+    if (this.think) this.think(this, dt, t);
+  }
+  draw(t) {
+    const s = this.size.v * SIZE, r = this.rear.v;
+    if (s <= 0.01) return;
+    g.save(); g.translate(this.x, this.y); g.rotate(this.h); g.scale(s, s);
+    g.fillStyle = g.strokeStyle = '#fff'; g.lineCap = 'round'; g.lineJoin = 'round';
+    // Legs: each foot is where it was planted on the ground; two-bone IK finds the knee, bent outward. Rearing
+    // lifts the front pair off the ground to wave.
+    g.lineWidth = 0.75;
+    const c = Math.cos(-this.h), sn = Math.sin(-this.h);
+    for (const f of this.feet) {
+      const [hip, rx, ry] = LEGS[f.i], hy = 0.9 * f.side;
+      let dx = (f.x - this.x) / s, dy = (f.y - this.y) / s, x = dx * c - dy * sn, y = dx * sn + dy * c;
+      if (f.i === 0 && r > 0.05) {
+        const wx = rx + 2.5, wy = (ry - 2.2 + Math.sin(t * 9 + f.side) * 1.5) * f.side;
+        x += (wx - x) * r; y += (wy - y) * r;
+      }
+      if (f.s < 1) { const lift = Math.sin(f.s * Math.PI) * 0.7; y += lift * f.side * 0.4; }   // a raised foot swings a little wide
+      // Seen from above, a leg's knee is raised, so it shows as a nearly straight line with a slight outward bend.
+      const reach = Math.hypot(rx - hip, ry - 0.9), vx = x - hip, vy = y - hy, d = Math.hypot(vx, vy) || 1e-6;
+      let px = -vy / d, py = vx / d; if (py * f.side < 0) { px = -px; py = -py; }
+      const bulge = 0.35 + Math.max(0, reach - d) * 0.3, kx = hip + vx * 0.42 + px * bulge, ky = hy + vy * 0.42 + py * bulge;
+      g.lineWidth = 0.85; g.beginPath(); g.moveTo(hip, hy); g.lineTo(kx, ky); g.stroke();
+      g.lineWidth = 0.5; g.beginPath(); g.moveTo(kx, ky); g.lineTo(x, y); g.stroke();
+    }
+    // Body: abdomen, waist, thorax, head. Rearing pushes head and thorax forward and bigger.
+    // Curling bends the abdomen round at the waist and the head round at the neck, toward each other.
+    const lift = 1 + 0.18 * r, cu = this.curl.v;
+    const bend = clamp(wrap(Math.atan2(this.y - this.tail.y, this.x - this.tail.x) - this.h), -0.7, 0.7);
+    g.save(); g.translate(-1.9, 0); g.rotate(bend + cu * 0.95);
+    g.beginPath(); g.ellipse(-4.7, 0, 4.2, 2.6 * (1 + 0.03 * Math.sin(t * 2 + this.phase)), 0, 0, 7); g.fill();
+    g.beginPath(); g.ellipse(0, 0, 0.8, 0.7, 0, 0, 7); g.fill(); g.restore();
+    g.beginPath(); g.ellipse(0.8 + r, 0, 2.2 * lift, 1.4 * lift, 0, 0, 7); g.fill();
+    // Walking, the head bobs with each step: a nod forward and a slight swing to the side.
+    const walking = Math.min(1, this.v / 20), sway = Math.sin(this.gait || 0) * 0.14 * walking;
+    g.translate(3.0 + r, 0); g.rotate(-cu * 0.7 + sway); g.translate(-3.0 - r, 0);
+    const hx = 5.1 + 1.6 * r + this.tap * 0.4 * Math.sin(t * 30) + Math.abs(Math.cos(this.gait || 0)) * 0.35 * walking;
+    g.beginPath(); g.ellipse(hx, 0, 2.3 * lift, 2.2 * lift, 0, 0, 7); g.fill();
+    // Antennae, elbowed: up or drooped, drumming (tap), or the big wave.
+    g.lineWidth = 0.7;
+    for (const side of [-1, 1]) {
+      const base = 0.7 + cu * 0.6 - this.ant.v * 0.35 + this.tap * 0.25 * Math.sin(t * 28 + side * 1.7) + this.wave * 0.6 * Math.sin(t * 7 + side);
+      // Curled up, they fold back flat against the head and come in shorter.
+      const sc = 4.2 * (1 - 0.35 * cu), fu = 5.2 * (1 - 0.45 * cu);
+      const ex = hx + 1.6 + Math.cos(base) * sc, ey = side * (1.0 + Math.sin(base) * sc), tip = base - 0.9 - this.ant.v * 0.2 + cu * 1.6;
+      g.beginPath(); g.moveTo(hx + 1.6, side * 1.0); g.lineTo(ex, ey); g.lineTo(ex + Math.cos(tip) * fu, ey + side * Math.sin(tip) * fu); g.stroke();
+    }
+    g.restore();
+  }
+}
+
+// ---------- scenes: one ant per session, each showing only its own state ----------
+let ants = [], scene = null, sceneT = 0, touch = null, held = null;
+function one(x = MID.x, y = MID.y) { ants = [new Ant(x, y)]; return ants[0]; }
+
+const SCENES = {
+  idle: { name: 'Idle', sub: 'three quiet sessions', note: 'Three sessions with nothing going on: the GIF\'s walk, sharp heading jumps, dead stops, swivelling in place.',
+    setup() { ants = [new Ant(100, 200), new Ant(220, 300), new Ant(140, 420)]; } },
+  work: { name: 'Working', sub: 'hurries, stops to read', note: 'A busy session: it walks fast and straight, antennae forward. Reading is a stop where it drums its antennae on the ground, then hurries on.',
+    setup() { const a = one(); a.cruise = 72; a.nervous = false; a.ant.t = 0.3;
+      const next = () => ({ x: 50 + rnd() * 220, y: 70 + rnd() * 430 }); a.goal = next();
+      a.think = (a, dt, t) => {
+        if (a.mem.readTo) { if (t > a.mem.readTo) { a.mem.readTo = 0; a.tap = 0; a.still = false; a.goal = next(); } return; }
+        if (dist(a, a.goal) < 6) { a.goal = null; a.still = true; a.tap = 1; a.mem.readTo = t + 0.9 + rnd() * 1.2; } }; } },
+  needs: { name: 'Needs you', sub: 'comes forward, rears up', note: 'A permission prompt: the ant runs to the middle, grows, rears up and waves its front legs and antennae at you until you answer.',
+    setup() { const a = one(80, 470); a.cruise = 90; a.nervous = false; a.goal = { x: MID.x, y: MID.y - 30 };
+      a.think = (a) => { if (!a.mem.up && dist(a, a.goal) < 4) { a.mem.up = 1; a.goal = null; a.still = true; a.face = { x: a.x, y: a.y + 100 };
+        a.size.t = 2.2; a.rear.t = 1; a.wave = 1; a.ant.t = 1; } }; } },
+  allow: { name: 'Allow', sub: 'hops, back to work', note: 'You tapped Allow: the ant drops back to the ground and to its size with a hop, and hurries off to work.',
+    loop: 4,
+    setup() { const a = one(MID.x, MID.y - 30); a.h = Math.PI / 2; a.still = true; a.nervous = false; a.size.v = a.size.t = 2.2; a.rear.v = a.rear.t = 1; a.wave = 1; a.ant.v = 1;
+      a.think = (a, dt, t) => { if (t > 0.6 && !a.mem.go) { a.mem.go = 1; a.wave = 0; a.rear.t = 0; a.size.t = 1; a.size.kick(-6); a.ant.t = 0.6; }
+        if (t > 1.1 && a.still) { a.still = false; a.cruise = 80; a.goal = { x: 250, y: 90 }; } }; } },
+  deny: { name: 'Deny', sub: 'droops, turns away', note: 'You tapped Deny: the ant sinks back to its size, antennae drooping, turns around and walks slowly away.',
+    loop: 5,
+    setup() { const a = one(MID.x, MID.y - 30); a.h = Math.PI / 2; a.still = true; a.nervous = false; a.size.v = a.size.t = 2.2; a.rear.v = a.rear.t = 1; a.wave = 1; a.ant.v = 1;
+      a.think = (a, dt, t) => { if (t > 0.6 && !a.mem.go) { a.mem.go = 1; a.wave = 0; a.rear.t = 0; a.size.t = 1; a.ant.t = -0.8; a.face = { x: a.x, y: a.y - 200 }; }
+        if (t > 1.5 && a.still) { a.still = false; a.face = null; a.cruise = 26; a.goal = { x: MID.x + 20, y: 60 }; } }; } },
+  done: { name: 'Finished', sub: 'hops, spins, settles', note: 'A session finished: the ant stops, hops twice (squash and overshoot), turns a happy circle on the spot with antennae up, then goes back to wandering.',
+    loop: 6,
+    setup() { const a = one(); a.nervous = false; a.still = true; a.ant.t = 1;
+      a.think = (a, dt, t) => { if (t > 0.3 && !a.mem.h1) { a.mem.h1 = 1; a.size.kick(9); } if (t > 0.75 && !a.mem.h2) { a.mem.h2 = 1; a.size.kick(7); }
+        if (t > 1.1 && t < 2.4) a.h += dt * 6;
+        if (t > 2.6 && !a.mem.free) { a.mem.free = 1; a.still = false; a.nervous = true; a.ant.t = 0; } }; } },
+  failed: { name: 'Failed', sub: 'mills, then dazed', note: 'A session errored: the ant walks a tight circle twice (the ant mill), then stops with antennae drooped, swaying.',
+    loop: 7,
+    setup() { const a = one(140, 284); a.nervous = false; a.cruise = 72; a.mill = { x: 160, y: 284, r: 24 };
+      a.think = (a, dt, t) => { if (a.mill && t > 2.6) { a.mill = null; a.still = true; a.ant.t = -1; a.size.t = 0.92; }
+        if (a.still) a.h += Math.sin(t * 2.2) * dt * 0.8; }; } },
+  sleep: { name: 'Asleep', sub: 'curls up where it is', note: 'A session gone quiet for a while: the ant stops where it is and slowly curls into a C, abdomen and head bent round to meet, legs gathered in with small steps, antennae folded back. It breathes slowly. Now and then it twitches.',
+    setup() { const a = one(); a.nervous = false;
+      a.think = (a, dt, t) => { if (t > 1 && !a.still) { a.still = true; a.ant.t = -1; a.curl.t = 1; }
+        if (a.still) { a.size.t = 1 + 0.04 * Math.sin(t * 1.3); if (rnd() < dt * 0.15) { a.phase += 1.6; a.size.kick(1.5); } } }; } },
+  listen: { name: 'Listening', sub: 'turns to your finger', note: 'Holding to talk: the ant freezes, turns to the finger, raises its antennae and quivers. Drag to move it.',
+    setup() { const a = one(); touch = { x: MID.x, y: 440 }; a.think = (a) => { a.still = true; a.face = touch; a.ant.t = 1; a.tap = 0.35; }; } },
+  gone: { name: 'Ended', sub: 'walks off the edge', note: 'A session that ended: its ant walks off the nearest edge and is gone.',
+    loop: 6,
+    setup() { const a = one(); a.nervous = false; a.cruise = 50; a.leaving = true; a.goal = { x: W + 60, y: MID.y + 40 }; } },
+};
+
+function play(key) {
+  seed = 7; touch = null; scene = SCENES[key]; sceneT = 0; scene.setup();
+  document.querySelectorAll('#scenes button').forEach(b => b.classList.toggle('on', b.dataset.k === key));
+  document.getElementById('note').textContent = scene.note;
+}
+const box = document.getElementById('scenes');
+for (const [k, s] of Object.entries(SCENES)) {
+  const b = document.createElement('button'); b.dataset.k = k; b.innerHTML = `${s.name}<small>${s.sub}</small>`;
+  b.onclick = () => play(k); box.appendChild(b);
+}
+
+// A tap anywhere is a new session: its ant grows in under the finger and wanders off.
+function pt(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
+cv.addEventListener('pointerdown', e => { held = { p: pt(e), at: performance.now() }; if (touch) touch = held.p; });
+cv.addEventListener('pointermove', e => { if (held && touch) touch = pt(e); });
+cv.addEventListener('pointerup', () => {
+  if (held && performance.now() - held.at < 250 && !touch) { const a = new Ant(held.p.x, held.p.y); a.size.v = 0; a.size.t = 1; ants.push(a); }
+  held = null;
+});
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; sceneT += dt;
+  ants.forEach(a => a.update(dt, sceneT));
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  ants.slice().sort((a, b) => a.size.v - b.size.v).forEach(a => a.draw(sceneT));
+  if (scene.loop && sceneT > scene.loop && !held) play(Object.keys(SCENES).find(k => SCENES[k] === scene));
+  requestAnimationFrame(frame);
+}
+play('idle'); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
