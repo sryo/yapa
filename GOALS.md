@@ -30,6 +30,7 @@ When two goals conflict, the higher one wins.
 | 2 | seconds from the manager writing a `jeta:` line to the face showing it | `bench/jeta-notice-live`, the manager writes, the phone's log says when it showed | live: `bench/jeta-notice-live` |
 | 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/jeta-buddy-live`, the Mac acting as the desktop over Bluetooth | live: `bench/jeta-buddy-live` |
 | 2 | ms from a Claude Code permission hook to the buzz, and from a tap to the hook's answer (p50); ms each status hook runs in the background | `bench/jeta-hook-live`, this Mac sending hooks to the phone over Wi-Fi, someone tapping allow | live: `bench/jeta-hook-live` |
+| 2 | frames where a session's face jumps, and where faces overlap, per 1,000 replayed runs; ms from a session's event to its face reacting (p50); µs per frame for every face | `bench/jeta-crowd`, seeded sessions coming, going and changing state, replayed through the faces on the Mac | `bench/jeta-crowd` |
 | 3 | ms from release to text; word error rate on fixture clips | `bench/che` with `bench/che-clips/` | `bench/che` |
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/yata` over SSH to the phone | live: `bench/yata` |
 | 5 | bytes of the pad app; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |

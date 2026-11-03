@@ -5,20 +5,6 @@ import XCTest
 final class CrowdTests: XCTestCase {
     func s(_ id: String, _ state: SessionState, events: Int = 1) -> SessionInfo { SessionInfo(id: id, name: "dir-\(id)", state: state, events: events) }
 
-    /// Each face's eyes as drawn this frame, on the screen: its slot's centre plus its own frame, scaled.
-    func boxes(_ c: Crowd, at t: Double) -> [(String, SIMD2<Double>, SIMD2<Double>)] {
-        c.slots(at: t).map { slot in
-            let pts = c.face(slot.id)!.frame(at: t).eyes.flatMap { $0.outline() }.map { slot.centre + $0 * slot.scale }
-            return (slot.id, pts.reduce(pts[0]) { simd_min($0, $1) }, pts.reduce(pts[0]) { simd_max($0, $1) })
-        }
-    }
-
-    func overlaps(_ b: [(String, SIMD2<Double>, SIMD2<Double>)]) -> Bool {
-        for i in b.indices { for j in b.indices where j > i {
-            if b[i].1.x < b[j].2.x && b[j].1.x < b[i].2.x && b[i].1.y < b[j].2.y && b[j].1.y < b[i].2.y { return true }
-        } }
-        return false
-    }
 
     // R1: each session's face shows its state: working is busy, needs you is attention, finished is proud and then
     // dozes, failed is dizzy, quiet is asleep.
@@ -73,11 +59,12 @@ final class CrowdTests: XCTestCase {
         XCTAssertNil(c.front, "nobody needs you: nobody stands forward")
     }
 
-    // R2: faces never overlap and never jump, whatever comes and goes, and the group drifts so nothing burns in.
-    func testR2_NoOverlapNoJumpsDrifts() {
+    // R2: faces never jump, whatever comes and goes, and the group drifts so nothing burns in. Passing over each other
+    // now and then is fine (sryo: "it's playful"); bench/jeta-crowd counts how often.
+    func testR2_NoJumpsAndDrifts() {
         let c = Crowd(seed: 7, now: 0)
         var ids: [String] = [], states: [String: SessionState] = [:], rng = SplitMix(3)
-        var last: [String: SIMD2<Double>] = [:], worst = 0.0, overlapped = 0
+        var last: [String: SIMD2<Double>] = [:], worst = 0.0
         for frame in 0..<(60 * 120) {
             let t = Double(frame) / 60
             if frame % 90 == 0 {
@@ -90,14 +77,11 @@ final class CrowdTests: XCTestCase {
                 }
                 c.update(ids.map { s($0, states[$0]!, events: frame) }, at: t)
             }
-            let b = boxes(c, at: t)
-            if overlaps(b) { overlapped += 1 }
             for slot in c.slots(at: t) {
                 if let p = last[slot.id] { worst = max(worst, simd_length(slot.centre - p)) }
                 last[slot.id] = slot.centre
             }
         }
-        XCTAssertEqual(overlapped, 0, "frames where faces overlap")
         XCTAssertLessThan(worst, 0.05, "the most a face's place moved in one frame at 60 fps")
         let d = Crowd(seed: 2, now: 0)
         d.update([s("a", .quiet), s("b", .quiet)], at: 0)

@@ -34,6 +34,7 @@ public final class Crowd {
 
     private var faces: [String: Face] = [:], places: [String: [Spring]] = [:]
     private var members: [SessionInfo] = [], hidden: [String: Int] = [:], focused: String?, standing: String?, leaving: String?
+    private var order: [String: Int] = [:], started = 0
     private var now: Double, rng: SplitMix, phase: SIMD2<Double>
 
     public init(seed: UInt64, now: Double) {
@@ -63,10 +64,11 @@ public final class Crowd {
         advance(to: t)
         members = sessions
         for m in sessions where hidden[m.id] != nil && hidden[m.id] != m.events { hidden[m.id] = nil }
+        // A session that ended keeps its face until it has shrunk away.
         let ids = Set(sessions.map(\.id))
-        faces = faces.filter { ids.contains($0.key) }
-        places = places.filter { ids.contains($0.key) }
+        faces = faces.filter { ids.contains($0.key) || places[$0.key] != nil }
         hidden = hidden.filter { ids.contains($0.key) }
+        for m in sessions where order[m.id] == nil { started += 1; order[m.id] = started }
         for m in sessions where faces[m.id] == nil {
             let f = Face(seed: rng.next(), now: t, lively: false)
             // The crowd decides when a face sleeps, and where it is.
@@ -102,12 +104,16 @@ public final class Crowd {
     public func slots(at t: Double) -> [Slot] {
         advance(to: t)
         moods(at: t)
-        let f = front
-        return shown.compactMap { m in
-            let p = places[m.id]!
-            return p[2].x < 0.02 ? nil : Slot(id: m.id, name: m.name, centre: SIMD2(p[0].x, p[1].x), scale: p[2].x, front: m.id == f)
+        let f = front, on = shown, names = Dictionary(members.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        // Faces leaving (ended, hidden, folded away) are drawn too, shrinking where they were.
+        let ids = on.map(\.id) + places.keys.filter { id in !on.contains { $0.id == id } }.sorted()
+        return ids.compactMap { id in
+            guard let p = places[id], p[2].x >= 0.02 else { return nil }
+            return Slot(id: id, name: names[id] ?? "", centre: SIMD2(p[0].x, p[1].x), scale: p[2].x, front: id == f)
         }
     }
+
+    public func isHidden(_ id: String) -> Bool { hidden[id] != nil }
 
     private var visible: [SessionInfo] { members.filter { hidden[$0.id] == nil } }
 
@@ -148,13 +154,16 @@ public final class Crowd {
 
     private func layout(raising f: String?, at t: Double) -> [String: SIMD3<Double>] {
         let drift = SIMD2(0.04 * sin(2 * .pi * t / 900 + phase.x), 0.03 * sin(2 * .pi * t / 660 + phase.y))
-        let row = shown.filter { $0.id != f }
+        // A face leaving keeps its place in the row while it shrinks, so the others close up only once it's gone.
+        let on = Set(shown.map(\.id)), leaving = Set(places.keys).subtracting(on)
+        let row = on.union(leaving).subtracting([f].compactMap { $0 }).sorted { (order[$0] ?? 0, $0) < (order[$1] ?? 0, $1) }
         var out: [String: SIMD3<Double>] = [:]
         if let f { out[f] = SIMD3(drift.x, drift.y - 0.1, 0.7) }
         let spacing = 2 * screen.x * 0.9 / Double(max(1, row.count))
         let scale = min(f == nil ? 0.45 : 0.28, spacing / (2 * Crowd.reach * 1.2))
-        for (i, m) in row.enumerated() {
-            out[m.id] = SIMD3(drift.x + (Double(i) - Double(row.count - 1) / 2) * spacing, drift.y + (f == nil ? 0 : 0.32), scale)
+        for (i, id) in row.enumerated() {
+            out[id] = SIMD3(drift.x + (Double(i) - Double(row.count - 1) / 2) * spacing, drift.y + (f == nil ? 0 : 0.32),
+                            leaving.contains(id) ? 0 : scale)
         }
         return out
     }
@@ -165,7 +174,9 @@ public final class Crowd {
         for (id, g) in goal where places[id] == nil { places[id] = [Spring(x: g.x), Spring(x: g.y), Spring(x: 0)] }
         while now < t {
             let dt = min(Crowd.step, t - now)
-            for (id, g) in goal {
+            for id in Array(places.keys) {
+                // Faces not shown shrink away where they are, so one coming back grows in again.
+                let g = goal[id] ?? SIMD3(places[id]![0].x, places[id]![1].x, 0)
                 places[id]![0].step(to: g.x, k: 40, damping: 1, dt: dt)
                 places[id]![1].step(to: g.y, k: 40, damping: 1, dt: dt)
                 // Growing is slower than moving and shrinking, so a face stepping forward clears the row before it's big.
@@ -173,7 +184,10 @@ public final class Crowd {
             }
             now += dt
         }
-        // Faces not shown shrink away where they were, so one coming back grows in again.
-        for id in places.keys where goal[id] == nil { places[id] = nil }
+        let on = Set(shown.map(\.id))
+        for id in Array(places.keys) where !on.contains(id) && places[id]![2].x < 0.02 {
+            places[id] = nil
+            if !members.contains(where: { $0.id == id }) { faces[id] = nil; order[id] = nil }
+        }
     }
 }
