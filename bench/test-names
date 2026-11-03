@@ -1,0 +1,13 @@
+#!/bin/sh
+# The project's names: yata watches the phone's services (plain ASCII, no accent, in every file and command),
+# jeta is the face app with JetaKit inside. Old names must not linger.
+cd "$(dirname "$0")/.." || exit 1
+fail() { echo "names: $1"; exit 1; }
+[ -d cmd/yata ] || fail "the watcher daemon lives in cmd/yata"
+[ -f launchd/com.sryo.yapa.yata.plist ] || fail "launchd/com.sryo.yapa.yata.plist is yata's launchd job"
+[ "$(plutil -extract Label raw launchd/com.sryo.yapa.yata.plist)" = com.sryo.yapa.yata ] || fail "yata's launchd label"
+[ -f jeta/Package.swift ] && grep -q '"JetaKit"' jeta/Package.swift || fail "jeta/ holds the app and its JetaKit library"
+[ "$(plutil -extract CFBundleDisplayName raw jeta/App/Info.plist)" = jeta ] || fail "the app shows as jeta on the phone"
+left=$(git grep -nIE 'yapad|FaceKit|package-path pad|build/pad|yatá' -- . ':!bench/test-names' ':!README.md' ':!GOALS.md' | head -5)
+[ -z "$left" ] || fail "old names remain:
+$left"

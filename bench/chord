@@ -2,7 +2,7 @@
 # Measures goal 2's chord reading on this Mac: misreads and misfired decisions per 1,000 replayed gestures, ms to lock a chord and µs of CPU per touch
 # update, and prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
-out=$(swift run -q -c release --package-path pad chordbench) || exit 1
+out=$(swift run -q -c release --package-path jeta chordbench) || exit 1
 miss=$(echo "$out" | sed -n 1p | tr -d '[]'); fire=$(echo "$out" | sed -n 2p | tr -d '[]'); lock=$(echo "$out" | sed -n 3p | tr -d '[]'); us=$(echo "$out" | sed -n 4p | tr -d '[]')
 runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 file=$runs/chord-$(date +%s).json

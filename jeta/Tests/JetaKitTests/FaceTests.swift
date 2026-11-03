@@ -1,6 +1,6 @@
 import simd
 import XCTest
-@testable import FaceKit
+@testable import JetaKit
 
 final class FaceTests: XCTestCase {
     func frames(_ face: Face, from a: Double, to b: Double, hz: Double = 240) -> [Frame] {

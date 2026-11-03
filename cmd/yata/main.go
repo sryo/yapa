@@ -1,4 +1,4 @@
-// yapad watches yapa's services on the phone and reports them on /health.
+// yata watches yapa's services on the phone and reports them on /health.
 package main
 
 import (
@@ -22,7 +22,7 @@ func main() {
 		err = json.Unmarshal(b, &svcs)
 	}
 	if err != nil {
-		log.Fatalf("yapad: can't read %s (%v); it lists the services to watch, like [{\"name\":\"web\",\"check\":\"tcp:127.0.0.1:80\"}]", *config, err)
+		log.Fatalf("yata: can't read %s (%v); it lists the services to watch, like [{\"name\":\"web\",\"check\":\"tcp:127.0.0.1:80\"}]", *config, err)
 	}
 
 	m := NewMonitor(svcs, time.Now)

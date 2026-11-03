@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.sryo.yapa.yapad</string>
+	<string>com.sryo.yapa.yata</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/var/jb/usr/libexec/yapa/yapad</string>
+		<string>/var/jb/usr/libexec/yapa/yata</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -15,6 +15,6 @@
 	<key>ThrottleInterval</key>
 	<integer>2</integer>
 	<key>StandardErrorPath</key>
-	<string>/var/jb/var/log/yapad.log</string>
+	<string>/var/jb/var/log/yata.log</string>
 </dict>
 </plist>

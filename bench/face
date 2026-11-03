@@ -1,7 +1,7 @@
 #!/bin/sh
 # Measures goal 2's face cost on this Mac: µs of CPU per frame, and prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
-s=$(swift run -q -c release --package-path pad facebench | tail -1) || exit 1
+s=$(swift run -q -c release --package-path jeta facebench | tail -1) || exit 1
 runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 out=$runs/face-$(date +%s).json
 cat > "$out" <<JSON

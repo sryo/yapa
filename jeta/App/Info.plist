@@ -5,11 +5,11 @@
 	<key>CFBundleIdentifier</key>
 	<string>com.sryo.yapa</string>
 	<key>CFBundleName</key>
-	<string>yapa</string>
+	<string>jeta</string>
 	<key>CFBundleDisplayName</key>
-	<string>yapa</string>
+	<string>jeta</string>
 	<key>CFBundleExecutable</key>
-	<string>yapa</string>
+	<string>jeta</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

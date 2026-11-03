@@ -1,4 +1,4 @@
-import FaceKit
+import JetaKit
 import Foundation
 
 // Prints µs of CPU per face frame, one sample per simulated 10 s at 60 fps, as a JSON array.

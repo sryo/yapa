@@ -43,7 +43,7 @@ func TestR1_ReflectsServiceUpAndDown(t *testing.T) {
 	}
 }
 
-// R1: /health reports how long it took from yapad starting to every service up.
+// R1: /health reports how long it took from yata starting to every service up.
 func TestR1_RecordsGreenAfter(t *testing.T) {
 	clock := &fakeClock{time.Unix(1000, 0)}
 	l := listen(t)

@@ -1,5 +1,5 @@
 import XCTest
-@testable import FaceKit
+@testable import JetaKit
 
 final class ChordTests: XCTestCase {
     typealias P = SIMD2<Double>

@@ -7,6 +7,6 @@ sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 export GOOS=ios GOARCH=arm64 CGO_ENABLED=1
 export CC="$(xcrun --sdk iphoneos -f clang) -isysroot $sdk -arch arm64 -miphoneos-version-min=15.0"
 mkdir -p build/ios
-go build -trimpath -ldflags="-s -w" -o build/ios/yapad ./cmd/yapad
-ldid -S build/ios/yapad
+go build -trimpath -ldflags="-s -w" -o build/ios/yata ./cmd/yata
+ldid -S build/ios/yata
 ls -l build/ios

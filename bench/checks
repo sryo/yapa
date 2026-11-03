@@ -1,4 +1,5 @@
 go test ./...
 bench/test-r2-keepalive
 bench/test-r3-health
-swift test --package-path pad
+swift test --package-path jeta
+bench/test-names

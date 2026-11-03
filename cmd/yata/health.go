@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Service is one thing yapad watches. Check is "tcp:host:port".
+// Service is one thing yata watches. Check is "tcp:host:port".
 type Service struct {
 	Name  string `json:"name"`
 	Check string `json:"check"`
@@ -86,7 +86,7 @@ func (m *Monitor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
 	if ip == nil || !(ip.IsLoopback() || ip.IsPrivate()) {
-		http.Error(w, "yapad answers the home network only", http.StatusForbidden)
+		http.Error(w, "yata answers the home network only", http.StatusForbidden)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -1,15 +1,15 @@
 #!/bin/sh
 # Measures goals 1 and 4 on a running yapa and prints the path of a K1 run file.
 #   YAPA_HOST   ssh destination of the phone (root@192.168.1.20), or "local" for this Mac
-#   YAPA_PORT   yapad's port (8077)
+#   YAPA_PORT   yata's port (8077)
 #   YAPA_IDLE_S seconds to sample idle CPU (60)
 #   YAPA_KILL   1 to kill each daemon once and time its return (default 1 on the phone, 0 locally)
-#   YAPA_DAEMONS process names that make up yapa (yapad)
+#   YAPA_DAEMONS process names that make up yapa (yata)
 cd "$(dirname "$0")/.." || exit 1
 host=${YAPA_HOST:?set YAPA_HOST to the phone over ssh, like root@192.168.1.20, or to local}
 port=${YAPA_PORT:-8077}
 idle=${YAPA_IDLE_S:-60}
-daemons=${YAPA_DAEMONS:-yapad}
+daemons=${YAPA_DAEMONS:-yata}
 if [ "$host" = local ]; then
   ip=127.0.0.1; kill_default=0
   on() { sh -c "$1"; }
@@ -23,7 +23,7 @@ runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 
 get() { plutil -extract "$1" raw -o - "$tmp" 2>/dev/null; }
-curl -fsS -m 5 "$url" > "$tmp" || { echo "bench/health: no answer from $url; is yapad running on the phone? (launchctl list | grep yapa)" >&2; exit 1; }
+curl -fsS -m 5 "$url" > "$tmp" || { echo "bench/health: no answer from $url; is yata running on the phone? (launchctl list | grep yapa)" >&2; exit 1; }
 up=$(get up)
 green=$(get green_after_s)
 

@@ -1,13 +1,13 @@
 #!/bin/sh
-# R3: bench/health measures a running yapad and writes a run file fium reads.
+# R3: bench/health measures a running yata and writes a run file fium reads.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; rm -rf "$tmp"' EXIT INT TERM
 port=18077
-go build -o "$tmp/yapad" ./cmd/yapad || exit 1
+go build -o "$tmp/yata" ./cmd/yata || exit 1
 printf '[{"name":"self","check":"tcp:127.0.0.1:%s"}]' $port > "$tmp/services.json"
-"$tmp/yapad" -addr 127.0.0.1:$port -config "$tmp/services.json" -poll 200ms & pid=$!
-i=0; until curl -fs "http://127.0.0.1:$port/health" | grep -q "\"up\":1"; do i=$((i+1)); [ $i -gt 50 ] && { echo "R3: yapad never came up"; exit 1; }; sleep 0.1; done
+"$tmp/yata" -addr 127.0.0.1:$port -config "$tmp/services.json" -poll 200ms & pid=$!
+i=0; until curl -fs "http://127.0.0.1:$port/health" | grep -q "\"up\":1"; do i=$((i+1)); [ $i -gt 50 ] && { echo "R3: yata never came up"; exit 1; }; sleep 0.1; done
 run=$(YAPA_HOST=local YAPA_PORT=$port YAPA_IDLE_S=2 bench/health | tail -1)
 [ -f "$run" ] || { echo "R3: bench/health printed no run file"; exit 1; }
 up=$(plutil -extract metrics.services_up.samples.0 raw "$run")
