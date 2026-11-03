@@ -1,0 +1,66 @@
+#!/bin/sh
+# Parts: each is parts/<name>/part (key=value, readable by sh), and a down file beside it means installed but off.
+# ./ya parts lists them; ./ya on and ./ya off switch one; everything on the phone is generated from the parts on.
+T=ya-parts; . "$(dirname "$0")/fake-phone"
+mkdir -p "$tmp/site"; echo home > "$tmp/site/index.html"
+ok install root@phone
+ok add service hello api
+ok add service app
+ok add site "$tmp/site" blog
+
+# A part file is plain key=value that the phone's sh can read.
+( . "$parts/hello/part"; [ "$name" = hello ] && [ "$port" = 9000 ] && [ "$address" = api ] ) || fail "hello's part file isn't key=value sh can read"
+
+ok parts
+for n in hello app blog; do grep -E "^$n +[a-z]+ +on" "$tmp/out" >/dev/null || { cat "$tmp/out"; fail "./ya parts doesn't list $n as on"; }; done
+says "https://api.example.com/" "./ya parts must show a part's address"
+
+# Off: the down file, here and on the phone; no launchd job, no watch, no address. The part itself stays.
+ok off hello
+[ -f "$parts/hello/down" ] && [ -f "$etc/parts/hello/down" ] || fail "off must leave a down file on the Mac and on the phone"
+grep -q "launchctl unload .*com.sryo.yapa.hello.plist" "$tmp/log" || fail "off didn't stop hello"
+[ -e "$ld/com.sryo.yapa.hello.plist" ] && fail "off left hello's launchd job"
+grep -q '"hello"' "$etc/services.json" && fail "yata still watches hello after off"
+grep -q 'api.example.com' "$etc/Caddyfile" && fail "Caddy still serves hello's address after off"
+[ -f "$parts/hello/part" ] || fail "off removed the part"
+ok parts; grep -E "^hello +[a-z]+ +off" "$tmp/out" >/dev/null || fail "./ya parts doesn't show hello off"
+grep -q "launchctl unload .*com.sryo.yapa.app.plist" "$tmp/log" && fail "turning hello off stopped app"
+
+# On brings all of it back.
+ok on hello
+[ -e "$parts/hello/down" ] || [ -e "$etc/parts/hello/down" ] && fail "on must remove the down file everywhere"
+grep -q "launchctl load .*com.sryo.yapa.hello.plist" "$tmp/log" || fail "on didn't start hello"
+grep -q '"name":"hello","check":"tcp:127.0.0.1:9000"' "$etc/services.json" || fail "on didn't put hello back under yata's watch"
+block api.example.com | grep -q 'reverse_proxy 127.0.0.1:9000' || fail "on didn't give hello its address back"
+
+# A site turned off isn't served.
+ok off blog
+grep -q 'blog.example.com' "$etc/Caddyfile" && fail "Caddy still serves blog after off"
+ok on blog
+
+# needs=: a part won't come on while a part it needs is off, and says which to turn on first.
+echo needs=hello >> "$parts/app/part"
+ok off app; ok off hello
+no on app; says "./ya on hello" "on must say which needed part to turn on first"
+[ -f "$parts/app/down" ] || fail "a refused on still turned app on"
+ok on hello; ok on app
+echo needs=nothing-here >> "$parts/app/part"
+no on app; says "nothing-here" "a need that isn't a part must be named"
+sed -i '' '/needs=nothing-here/d' "$parts/app/part"
+
+no on ghost; says "no part" "on for a part that doesn't exist must say so"
+no off ghost
+
+# A part file ya can't read is named, with what's wrong, before anything changes.
+printf 'name=broken\nthis is not a key\n' > "$parts/app/part"
+no on app; says "parts/app/part" "a bad part file must be named"; says "key=value" "a bad part file must say what a line should look like"
+
+# Generated, not hand-written: the phone's own edits to services.json or the Caddyfile don't survive a sync,
+# while a block in the core template (phone/Caddyfile) is kept.
+printf 'name=app\nkind=service\nrun=app\nport=9001\ncheck=tcp:127.0.0.1:9001\n' > "$parts/app/part"
+echo '[{"name":"stray","check":"tcp:127.0.0.1:1"}]' > "$etc/services.json"; echo '# stray' >> "$etc/Caddyfile"
+ok install
+grep -q stray "$etc/services.json" "$etc/Caddyfile" && fail "services.json and the Caddyfile must be generated from the parts"
+grep -q '^http://:8080 {' "$etc/Caddyfile" || fail "the core template is missing from the Caddyfile"
+for n in yata caddy hello app; do grep -q "\"name\":\"$n\"" "$etc/services.json" || fail "services.json doesn't watch $n"; done
+exit 0

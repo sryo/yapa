@@ -20,12 +20,14 @@ CHE_FROM=<phone-ip> mac/install
 Put things on it from the Mac, one command each:
 
 ```bash
-./ya site ~/Sites/blog            # https://yapa.yadarola.com.ar/blog/
-./ya site ~/Sites/blog blog       # https://blog.yadarola.com.ar/
-./ya service hello api            # builds cmd/hello, runs it, https://api.yadarola.com.ar/
+./ya add site ~/Sites/blog        # https://yapa.yadarola.com.ar/blog/
+./ya add site ~/Sites/blog blog   # https://blog.yadarola.com.ar/
+./ya add service hello api        # builds cmd/hello, runs it, https://api.yadarola.com.ar/
+./ya parts                        # what's on the phone, on or off, and where
+./ya off hello                    # stop it, keep it; ./ya on hello brings it back
 ```
 
-A service is a Go main package in `cmd/<name>` that listens on `127.0.0.1:$PORT`. Run either command again to update it.
+Each of these is a part, kept in `~/.config/yapa/parts`. A service is a Go main package in `cmd/<name>` that listens on `127.0.0.1:$PORT`. Add it again to update it.
 
 ```bash
 yapa status        # each service, up or down, and since when

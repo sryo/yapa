@@ -1,0 +1,87 @@
+#!/bin/sh
+# ./ya add site and ./ya add service make a part and put it on the phone with one command each, with no ssh to
+# type: ya remembers the phone from ./ya install, and says in plain words what went wrong.
+T=ya-add; . "$(dirname "$0")/fake-phone"
+mkdir -p "$tmp/My Site/css"; echo home > "$tmp/My Site/index.html"; echo body > "$tmp/My Site/css/a.css"
+
+# Before ./ya install, ya doesn't know the phone, and says how to tell it.
+no add site "$tmp/My Site"; says "ya install" "a site before any install must say to run ./ya install"
+[ -e "$parts/my-site" ] && fail "a site that didn't reach the phone was still added"
+ok install root@phone
+[ "$(cat "$tmp/conf/host")" = root@phone ] || fail "./ya install doesn't remember the phone"
+
+# A site with no name is a part served under the main address at its folder's name; Cloudflare isn't touched.
+ok add site "$tmp/My Site"
+grep -qx kind=site "$parts/my-site/part" || fail "no site part in parts/my-site"
+[ "$(cat "$etc/parts/my-site/www/index.html")" = home ] && [ -f "$etc/parts/my-site/www/css/a.css" ] || fail "the folder isn't on the phone"
+grep -q 'handle_path /my-site/\*' "$etc/Caddyfile" || fail "Caddy doesn't serve /my-site/"
+says "https://yapa.example.com/my-site/" "ya add site must print the public address"
+grep -q cloudflared "$tmp/log" && fail "a site under the main address needs no new DNS name"
+
+# With a name, it gets its own address: a Caddy block on the phone, a DNS name through the tunnel.
+ok add site "$tmp/My Site" blog
+grep -qx address=blog "$parts/blog/part" || fail "the blog part has no address"
+block blog.example.com | grep -q 'bind 127.0.0.1' || fail "blog's Caddy block must listen on the phone only"
+block blog.example.com | grep -q "root \* /var/jb/etc/yapa/parts/blog/www" || fail "blog's Caddy block must serve its part's files"
+grep -q 'cloudflared tunnel route dns yapa blog.example.com' "$tmp/log" || fail "blog.example.com wasn't routed to the tunnel"
+grep -q 'launchctl load .*com.sryo.yapa.caddy.plist' "$tmp/log" || fail "Caddy wasn't restarted to serve blog"
+says "https://blog.example.com/" "ya add site blog must print its address"
+# Adding it again replaces the files and adds nothing twice.
+rm "$tmp/My Site/css/a.css"; echo v2 > "$tmp/My Site/index.html"
+ok add site "$tmp/My Site" blog
+[ "$(cat "$etc/parts/blog/www/index.html")" = v2 ] && [ ! -e "$etc/parts/blog/www/css/a.css" ] || fail "adding again didn't replace the old files"
+[ "$(grep -c '^http://blog.example.com:8080 {' "$etc/Caddyfile")" -eq 1 ] || fail "adding again duplicated blog's Caddy block"
+
+# Names that aren't ours or aren't web names are refused before anything changes.
+no add site "$tmp/My Site" www; says "www" "refusing www must say why"
+no add site "$tmp/My Site" yapa
+no add site "$tmp/My Site" "Blog!"; says "lowercase" "a bad name must say what a good one looks like"
+no add site "$tmp/nope"; says "no folder" "a missing folder must say so"
+no add thing x; says "add site" "an unknown kind must say which ones there are"
+
+# A service: built, given its own launchd job and port, watched by yata, its log tidied with the rest.
+no add service missing; says "cmd/missing" "a service with no binary must say where its code goes"
+no add service caddy; says "caddy" "yapa's own daemons can't be replaced through ya add service"
+ok add service hello
+grep -qx port=9000 "$parts/hello/part" && grep -qx check=tcp:127.0.0.1:9000 "$parts/hello/part" || fail "hello's part needs port 9000 and its check"
+[ "$(cat "$bin/hello")" = "fake hello" ] && [ -x "$bin/hello" ] || fail "hello not installed executable"
+p=$ld/com.sryo.yapa.hello.plist
+[ "$(plutil -extract ProgramArguments.0 raw "$p")" = /var/jb/usr/libexec/yapa/yapa-run ] || fail "hello must start through yapa-run"
+[ "$(plutil -extract ProgramArguments.2 raw "$p")" = /var/jb/usr/libexec/yapa/hello ] || fail "hello's plist must run hello"
+[ "$(plutil -extract EnvironmentVariables.PORT raw "$p")" = 9000 ] || fail "the first service gets PORT 9000"
+[ "$(plutil -extract EnvironmentVariables.GODEBUG raw "$p")" = netdns=cgo ] || fail "a service must resolve names through iOS"
+[ "$(plutil -extract KeepAlive raw "$p")" = true ] || fail "launchd must keep hello alive"
+[ "$(plutil -extract StandardErrorPath raw "$p")" = /var/jb/var/log/yapa/hello.log ] || fail "hello's log must be where yata tidies"
+grep -q "chown root:wheel .*com.sryo.yapa.hello.plist" "$tmp/log" || fail "hello's plist must be owned by root:wheel"
+grep -q "launchctl load .*com.sryo.yapa.hello.plist" "$tmp/log" || fail "hello wasn't started"
+grep -q '"name":"hello","check":"tcp:127.0.0.1:9000"' "$etc/services.json" || fail "yata doesn't watch hello"
+grep -q "launchctl load .*com.sryo.yapa.yata.plist" "$tmp/log" || fail "yata wasn't restarted to read hello"
+grep -q cloudflared "$tmp/log" && fail "a service with no address stays off the internet"
+says "9000" "ya add service must say where hello listens"
+ok add service other
+grep -qx port=9001 "$parts/other/part" || fail "the second service gets the next port"
+ok add service hello
+grep -qx port=9000 "$parts/hello/part" && [ "$(grep -o '"name":"hello"' "$etc/services.json" | wc -l)" -eq 1 ] || fail "adding hello again must keep its port and one entry"
+# With an address, a service gets it the same way a site does.
+ok add service hello api
+block api.example.com | grep -q 'reverse_proxy 127.0.0.1:9000' || fail "api.example.com isn't sent to hello"
+grep -q 'cloudflared tunnel route dns yapa api.example.com' "$tmp/log" || fail "api.example.com wasn't routed to the tunnel"
+says "https://api.example.com/" "ya add service hello api must print its address"
+# One address, one part.
+no add service other blog; says "blog" "a taken address must say which"
+grep -q "reverse_proxy 127.0.0.1:9001" "$etc/Caddyfile" && fail "a taken address still changed the Caddyfile"
+
+# ./ya install keeps the parts, and leaves them running.
+ok install
+[ -x "$bin/hello" ] && [ -f "$ld/com.sryo.yapa.hello.plist" ] || fail "install removed a part"
+grep -q "unload .*com.sryo.yapa.hello.plist" "$tmp/log" && fail "install stopped hello"
+grep -q '"name":"hello"' "$etc/services.json" || fail "install dropped hello from services.json"
+
+# A phone that can't be reached gets a plain answer, not ssh's, and nothing is added on the Mac either.
+touch "$tmp/down"; : > "$tmp/log"
+ya add site "$tmp/My Site" later && fail "ya add site worked with the phone unreachable"
+says "can't reach the phone" "an unreachable phone must be said plainly"
+says "Dopamine" "an unreachable phone must say what to check"
+grep -q "Operation timed out" "$tmp/out" && fail "ssh's own error leaked through"
+[ -e "$parts/later" ] && fail "a part that never reached the phone was kept on the Mac"
+exit 0

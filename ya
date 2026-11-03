@@ -1,29 +1,37 @@
 #!/bin/sh
-# ya puts yapa on a jailbroken (rootless Dopamine) phone and publishes things through it. Safe to rerun.
-#   ./ya install root@<phone-ip>   install or update yapa's daemons, and remember the phone (./ya root@<ip> works too)
-#   ./ya site <folder> [name]      publish a folder at https://yapa.<domain>/<folder>/, or with a name at https://<name>.<domain>/
-#   ./ya service <name> [address]  build cmd/<name>, run it on the phone with PORT set and yata watching it;
-#                                  with an address it's public at https://<address>.<domain>/
+# ya puts yapa on a jailbroken (rootless Dopamine) phone and runs its parts. Safe to rerun.
+#   ./ya install root@<phone-ip>        install or update yapa's core (yata, Caddy, cloudflared) and every part
+#   ./ya add site <folder> [name]       a site part: https://yapa.<domain>/<folder>/, or with a name https://<name>.<domain>/
+#   ./ya add service <name> [address]   a service part built from cmd/<name>, listening on 127.0.0.1:$PORT
+#   ./ya parts                          each part, on or off, and where it answers
+#   ./ya on <name>, ./ya off <name>     turn a part on or off on the phone
+# A part is a folder in ~/.config/yapa/parts: <name>/part holds key=value lines (name, kind, run, port, check,
+# address, needs, mem), and a down file beside it means installed but off. Everything on the phone (launchd jobs,
+# yata's services.json, the Caddyfile) is generated from the core and the parts that are on.
 #   YAPA_TUNNEL_TOKEN_FILE  a file holding the Cloudflare tunnel token; turns on cloudflared (kept on later runs)
 #   YAPA_BUILD              a folder of daemons already built for the phone, which skips ./build-ios
 #   YAPA_DOMAIN, YAPA_TUNNEL  the domain the tunnel serves (yadarola.com.ar) and the tunnel's name (yapa)
-#   YAPA_HOST, YAPA_CONFIG    the phone, instead of the one remembered in YAPA_CONFIG (~/.config/yapa)
+#   YAPA_HOST, YAPA_CONFIG    the phone, instead of the one ./ya install remembered in YAPA_CONFIG (~/.config/yapa)
 set -e
 cd "$(dirname "$0")"
 conf=${YAPA_CONFIG:-$HOME/.config/yapa}
+parts=$conf/parts
 domain=${YAPA_DOMAIN:-yadarola.com.ar} tunnel=${YAPA_TUNNEL:-yapa}
 die() { echo "ya: $*" >&2; exit 1; }
-usage() { sed -n '3,6s/^#  //p' "$0" >&2; exit 2; }
+usage() { sed -n '3,7s/^#  //p' "$0" >&2; exit 2; }
+get() { sed -n "s/^$1=//p" "$2" | tail -1; }
 
 phone_host() {
   host=${YAPA_HOST:-$(cat "$conf/host" 2>/dev/null || true)}
   [ -n "$host" ] || die "I don't know where the phone is yet. Run ./ya install root@<phone-ip> once; the phone's IP is in Settings > Wi-Fi > (i)."
 }
+name_ok() { printf %s "$1" | grep -qE '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; }
 # A web address name of ours: never the domain itself, www or the main site, which aren't yapa's to give.
 address() {
   case $1 in www|"$tunnel") die "$1.$domain can't be used: pick another name, like blog." ;; esac
-  printf %s "$1" | grep -qE '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' ||
-    die "\"$1\" can't be part of a web address: use lowercase letters, digits and dashes, like blog or my-app."
+  name_ok "$1" || die "\"$1\" can't be part of a web address: use lowercase letters, digits and dashes, like blog or my-app."
+  taken=$(grep -lx "address=$1" "$stage"/parts/*/part 2>/dev/null | grep -v "/$2/part" | head -1 || true)
+  [ -z "$taken" ] || { t=${taken%/part}; die "$1.$domain is already ${t##*/}'s address; pick another name."; }
 }
 # Gives <name>.<domain> a DNS name pointing at the tunnel, which hands every hostname to Caddy.
 dns() {
@@ -34,15 +42,31 @@ dns() {
     *) die "Cloudflare didn't add $1 ($out). If it says you're not logged in, run cloudflared tunnel login, then this again." ;;
   esac
 }
+# Every part file must be key=value lines, or the phone can't generate anything from it.
+check_parts() {
+  for pf in "$stage"/parts/*/part; do
+    [ -f "$pf" ] || continue
+    bad=$(grep -nvE '^([a-z]+=.*|#.*|[[:space:]]*)$' "$pf" | head -1 || true)
+    p=${pf%/part}; p=${p##*/}
+    [ -z "$bad" ] || die "parts/$p/part line ${bad%%:*} reads \"${bad#*:}\"; each line is key=value, like port=9000. Fix it in $parts/$p/part."
+  done
+}
+url() {
+  f=$parts/$1/part; a=$(get address "$f")
+  if [ -n "$a" ]; then echo "https://$a.$domain/"
+  elif [ "$(get kind "$f")" = site ]; then echo "https://$tunnel.$domain/$1/"
+  else echo "127.0.0.1:$(get port "$f") on the phone"; fi
+}
 
+# Every change is made to a copy of the parts, which replaces the Mac's only once the phone has taken it.
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-# Runs the phone's side of a command over one ssh connection, with $stage's files beside it.
+mkdir -p "$stage/parts"; [ -d "$parts" ] && cp -R "$parts/." "$stage/parts/"
+# Runs the phone's side over one ssh connection, with $stage's files beside it.
 on_phone() {
   key=; [ -f "$HOME/.ssh/yapa_ed25519" ] && key="-i $HOME/.ssh/yapa_ed25519"
-  args=; for a; do args="$args '$a'"; done
   rc=0
   tar -cf - -C "$stage" . | ssh -o ConnectTimeout=5 -o BatchMode=yes $key "$host" \
-    "d=\$(mktemp -d) && tar -xf - -C \"\$d\" && sh \"\$d/setup\" \"\$d\"$args; s=\$?; rm -rf \"\$d\"; exit \$s" 2> "$stage.err" || rc=$?
+    "d=\$(mktemp -d) && tar -xf - -C \"\$d\" && sh \"\$d/setup\" \"\$d\" '$1' '$domain'; s=\$?; rm -rf \"\$d\"; exit \$s" 2> "$stage.err" || rc=$?
   if [ $rc = 255 ]; then
     rm -f "$stage.err"
     die "I can't reach the phone at ${host#*@}. Check it's on, on the same Wi-Fi, and unlocked; after a restart, open Dopamine and tap Jailbreak."
@@ -54,6 +78,14 @@ on_phone() {
 cmd=$1; [ $# -gt 0 ] && shift
 case $cmd in *@*) set -- "$cmd" "$@"; cmd=install ;; esac
 case $cmd in
+parts)
+  for d in "$parts"/*/; do
+    [ -f "$d/part" ] || continue
+    n=${d%/}; n=${n##*/}; s=on; [ -f "$d/down" ] && s=off
+    printf '%-14s %-8s %-4s %s\n' "$n" "$(get kind "$d/part")" "$s" "$(url "$n")"
+  done
+  exit 0
+  ;;
 install)
   if [ -n "$1" ]; then host=$1; else phone_host; fi
   if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ] && [ ! -s "$YAPA_TUNNEL_TOKEN_FILE" ]; then
@@ -62,140 +94,135 @@ install)
     exit 1
   fi
   if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
-  for d in yata yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
-  cp launchd/*.plist phone/Caddyfile "$stage/"
-  cp -R phone/www "$stage/www"
-  if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
+  mkdir -p "$stage/core"
+  for d in yata yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/core/"; done
+  cp launchd/*.plist "$stage/core/"
+  cp -R phone/www "$stage/core/www"
+  if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/core/tunnel.token"); fi
   ;;
-site)
-  folder=$1 name=$2
-  [ -n "$folder" ] || usage
-  [ -d "$folder" ] || die "There's no folder at $folder. Give the folder that holds the site's index.html."
-  [ -n "$name" ] && address "$name"
-  phone_host
-  cp -R "$folder/." "$stage/site"
-  dir=$(basename "$(cd "$folder" && pwd)" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._-')
-  [ -n "$dir" ] || dir=site
-  set -- "$dir" "$name" "$domain"
-  ;;
-service)
-  name=$1 public=$2
-  [ -n "$name" ] || usage
-  case $name in yata|yapa-run|caddy|cloudflared) die "$name is part of yapa itself; ./ya install updates it. Pick another name." ;; esac
-  printf %s "$name" | grep -qE '^[a-z0-9][a-z0-9-]*$' || die "\"$name\" can't be a service name: use lowercase letters, digits and dashes."
-  [ -n "$public" ] && address "$public"
-  if [ -z "$YAPA_BUILD" ]; then
-    [ -d "cmd/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
-    ./build-ios "$name" >/dev/null || die "cmd/$name didn't build; the errors are above."
-    YAPA_BUILD=build/ios
+add)
+  kind=$1 name=$2 public=$3
+  case $kind in
+  site)
+    folder=$2
+    [ -n "$folder" ] || usage
+    [ -d "$folder" ] || die "There's no folder at $folder. Give the folder that holds the site's index.html."
+    if [ -n "$public" ]; then address "$public" "$public"; fi
+    name=${public:-$(basename "$(cd "$folder" && pwd)" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-')}
+    name_ok "$name" || die "I can't make a web name from the folder's name; give one: ./ya add site $folder <name>."
+    ;;
+  service)
+    [ -n "$name" ] || usage
+    case $name in yata|yapa-run|caddy|cloudflared) die "$name is part of yapa itself; ./ya install updates it. Pick another name." ;; esac
+    name_ok "$name" || die "\"$name\" can't be a service name: use lowercase letters, digits and dashes."
+    ;;
+  *) die "I can add a site (./ya add site <folder> [name]) or a service (./ya add service <name> [address])." ;;
+  esac
+  [ -n "$public" ] && address "$public" "$name"
+  d=$stage/parts/$name
+  old=$(get kind "$d/part" 2>/dev/null || true)
+  [ -z "$old" ] || [ "$old" = "$kind" ] || die "$name is already a $old; pick another name."
+  if [ "$kind" = service ]; then
+    if [ -z "$YAPA_BUILD" ]; then
+      [ -d "cmd/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
+      ./build-ios "$name" >/dev/null || die "cmd/$name didn't build; the errors are above."
+      YAPA_BUILD=build/ios
+    fi
+    [ -f "$YAPA_BUILD/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
+    port=$(get port "$d/part" 2>/dev/null || true)
+    if [ -z "$port" ]; then
+      port=$(cat "$stage"/parts/*/part 2>/dev/null | sed -n 's/^port=//p' | sort -n | tail -1)
+      port=${port:-0}; [ "$port" -lt 9000 ] && port=8999; port=$((port + 1))
+    fi
   fi
-  [ -f "$YAPA_BUILD/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
   phone_host
-  cp "$YAPA_BUILD/$name" "$stage/"
-  set -- "$name" "$public" "$domain"
+  needs=$(get needs "$d/part" 2>/dev/null || true)
+  rm -rf "$d"; mkdir -p "$d"
+  {
+    echo "name=$name"; echo "kind=$kind"
+    if [ "$kind" = service ]; then echo "run=$name"; echo "port=$port"; echo "check=tcp:127.0.0.1:$port"; echo mem=128; fi
+    if [ -n "$public" ]; then echo "address=$public"; fi
+    if [ -n "$needs" ]; then echo "needs=$needs"; fi
+  } > "$d/part"
+  if [ "$kind" = site ]; then cp -R "$folder/." "$d/www"; else cp "$YAPA_BUILD/$name" "$d/$name"; fi
+  ;;
+on|off)
+  name=$1; [ -n "$name" ] || usage
+  f=$stage/parts/$name/part
+  [ -f "$f" ] || die "There's no part called $name. ./ya parts lists them; ./ya add makes one."
+  if [ "$cmd" = off ]; then : > "${f%part}down"
+  else
+    check_parts
+    for n in $(get needs "$f"); do
+      [ -f "$stage/parts/$n/part" ] || die "$name needs $n, and there's no part called $n. Add it first, or take $n off $name's needs= line."
+      [ -f "$stage/parts/$n/down" ] && die "$name needs $n, which is off. Run ./ya on $n first."
+    done
+    rm -f "${f%part}down"
+  fi
+  phone_host
   ;;
 *) usage ;;
 esac
+check_parts
+cp phone/Caddyfile "$stage/Caddyfile.core"
 
 # Runs on the phone. /var/jb is Dopamine's rootless prefix; launchd refuses a plist not owned by root:wheel.
-# Config the user may have edited (services.json entries, Caddyfile, the sites) is only ever added to.
+# The core is installed only by ./ya install; parts, services.json and the Caddyfile are generated on every sync.
 cat > "$stage/setup" <<'PHONE'
 set -e
-cd "$1"; cmd=$2; shift 2
-jb=${YAPA_JB:-/var/jb}
-bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons s=$jb/etc/yapa/services.json
+cd "$1"; cmd=$2 domain=$3
+jb=${YAPA_JB:-/var/jb} J=/var/jb
+bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons s=$jb/etc/yapa/services.json P=$jb/etc/yapa/parts
 mkdir -p "$bin" "$etc" "$ld" "$jb/var/log/yapa" "$jb/var/yapa/caddy"
-[ -f "$s" ] || echo '[]' > "$s"
-watch() {
-  grep -q "\"name\":\"$1\"" "$s" && return
-  # The same check under another name is this daemon under an older name.
-  if grep -q "\"check\":\"$2\"" "$s"; then
-    sed "s|\"name\":\"[^\"]*\",\"check\":\"$2\"|\"name\":\"$1\",\"check\":\"$2\"|" "$s" > "$s.new" && mv -f "$s.new" "$s"; return
-  fi
-  e="{\"name\":\"$1\",\"check\":\"$2\"}"
-  if grep -q '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$s"; then echo "[$e]" > "$s"
-  else sed "\$ s/\][[:space:]]*\$/,$e]/" "$s" > "$s.new" && mv -f "$s.new" "$s"; fi
-}
-put() { cp "$1" "$bin/$1.new"; chmod 755 "$bin/$1.new"; mv -f "$bin/$1.new" "$bin/$1"; }
-plist() { p=$ld/com.sryo.yapa.$1.plist; chmod 644 "$p"; chown root:wheel "$p"; }
+get() { sed -n "s/^$1=//p" "$2" | tail -1; }
+put() { cp "$1" "$bin/$2.new"; chmod 755 "$bin/$2.new"; mv -f "$bin/$2.new" "$bin/$2"; }
+own() { chmod 644 "$1"; chown root:wheel "$1"; }
 restart() { launchctl unload "$ld/com.sryo.yapa.$1.plist" 2>/dev/null || true; launchctl load "$ld/com.sryo.yapa.$1.plist"; }
-# Whether the Caddyfile already serves host $1 with $2 (0), doesn't serve it (1), or serves something else there.
-served() {
-  b=$(sed -n "/^http:\/\/$1:8080 {/,/^}/p" "$etc/Caddyfile")
-  [ -z "$b" ] && return 1
-  printf '%s\n' "$b" | grep -qF "$2" && return 0
-  echo "$1 is already taken by something else on the phone; pick another name." >&2; exit 3
-}
-# A Caddyfile block for host $1 with the directives after it, then Caddy restarted to serve it.
-route() {
-  h=$1; shift
-  served "$h" "$1" && return
-  { printf '\nhttp://%s:8080 {\n\tbind 127.0.0.1\n' "$h"; for l; do printf '\t%s\n' "$l"; done; echo '}'; } >> "$etc/Caddyfile"
-  restart caddy
-}
 
-case $cmd in
-install)
-  [ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
-  daemons="yata caddy"
-  [ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
-  watch yata tcp:127.0.0.1:8077
-  watch caddy tcp:127.0.0.1:8080
-  [ -f "$etc/tunnel.token" ] && watch cloudflared tcp:127.0.0.1:20241
-  # Jobs and binaries named nowhere (left by older installs) are removed; services added with ya service stay running.
-  keep=" $daemons yapa-run $(grep -o '"name":"[^"]*"' "$s" | cut -d'"' -f4 | tr '\n' ' ') "
-  for p in "$ld"/com.sryo.yapa.*.plist; do
-    [ -f "$p" ] || continue
-    n=${p##*/com.sryo.yapa.}; n=${n%.plist}
-    case $keep in *" $n "*) ;; *) launchctl unload "$p" 2>/dev/null || true; rm -f "$p"; continue ;; esac
-    case " $daemons " in *" $n "*) launchctl unload "$p" 2>/dev/null || true ;; esac
+if [ "$cmd" = install ]; then
+  for d in yata caddy cloudflared; do
+    if [ -f "$ld/com.sryo.yapa.$d.plist" ]; then launchctl unload "$ld/com.sryo.yapa.$d.plist" 2>/dev/null || true; fi
   done
-  put yapa-run
-  for d in $daemons; do [ -f "$d" ] && put "$d"; done
-  for f in "$bin"/*; do
-    case $keep in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
-  done
-  [ -f "$etc/Caddyfile" ] || cp Caddyfile "$etc/Caddyfile"
-  [ -d "$jb/var/yapa/www" ] || cp -R www "$jb/var/yapa/www"
-  for d in $daemons; do cp "com.sryo.yapa.$d.plist" "$ld/"; plist "$d"; done
-  for d in $daemons; do launchctl load "$ld/com.sryo.yapa.$d.plist"; done
-  echo "$daemons"
-  ;;
-site)
-  dir=$1 name=$2 domain=$3
-  if [ -n "$name" ]; then dest=$jb/var/yapa/sites/$name; served "$name.$domain" "root * $dest" || true
-  else dest=$jb/var/yapa/www/$dir; fi
-  # The new files go in beside the old, then swap, so the site is never half there.
-  mkdir -p "${dest%/*}"; rm -rf "$dest.new" "$dest.old"; cp -R site "$dest.new"
-  [ -d "$dest" ] && mv "$dest" "$dest.old"; mv "$dest.new" "$dest"; rm -rf "$dest.old"
-  if [ -n "$name" ]; then route "$name.$domain" "root * $dest" file_server; fi
-  ;;
-service)
-  name=$1 public=$2 domain=$3
-  port=$(grep -o "\"name\":\"$name\",\"check\":\"tcp:127.0.0.1:[0-9]*\"" "$s" | sed 's/.*://; s/"//' || true)
-  if [ -z "$port" ]; then
-    port=$(grep -o '"tcp:127.0.0.1:9[0-9][0-9][0-9]"' "$s" | sed 's/.*://; s/"//' | sort -n | tail -1 || true)
-    port=$((${port:-8999} + 1))
-  fi
-  [ -n "$public" ] && { served "$public.$domain" "reverse_proxy 127.0.0.1:$port" || true; }
-  put "$name"
-  cat > "$ld/com.sryo.yapa.$name.plist" <<PLIST
+  if [ -f core/tunnel.token ]; then cp core/tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; fi
+  put core/yapa-run yapa-run
+  [ -d "$jb/var/yapa/www" ] || cp -R core/www "$jb/var/yapa/www"
+fi
+core="yata caddy"; [ -f "$etc/tunnel.token" ] && core="$core cloudflared"
+
+# The parts the Mac sent replace the phone's; service binaries move out to bin, where launchd runs them.
+on=
+for d in parts/*/; do
+  [ -f "$d/part" ] || continue
+  n=${d%/}; n=${n##*/}; r=$(get run "$d/part")
+  [ -f "$d/down" ] || on="$on $n"
+  [ -n "$r" ] && [ -f "$d/$r" ] || continue
+  if [ ! -f "$d/down" ] && ! cmp -s "$d/$r" "$bin/$r"; then put "$d/$r" "$r"; echo "$n" >> changed; fi
+  rm -f "$d/$r"
+done
+rm -rf "$P.new" "$P.old"; cp -R parts "$P.new"; [ ! -d "$P" ] || mv "$P" "$P.old"; mv "$P.new" "$P"; rm -rf "$P.old"
+
+# launchd jobs: the core's as shipped, one per service part that's on; every other yapa job goes.
+runs=
+for n in $on; do
+  r=$(get run "$P/$n/part"); [ -n "$r" ] || continue
+  runs="$runs $r"; p=$ld/com.sryo.yapa.$n.plist
+  cat > "$p.new" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.sryo.yapa.$name</string>
+	<string>com.sryo.yapa.$n</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/var/jb/usr/libexec/yapa/yapa-run</string>
-		<string>128</string>
-		<string>/var/jb/usr/libexec/yapa/$name</string>
+		<string>$J/usr/libexec/yapa/yapa-run</string>
+		<string>$(get mem "$P/$n/part" | grep . || echo 128)</string>
+		<string>$J/usr/libexec/yapa/$r</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PORT</key>
-		<string>$port</string>
+		<string>$(get port "$P/$n/part")</string>
 		<key>GODEBUG</key>
 		<string>netdns=cgo</string>
 	</dict>
@@ -206,35 +233,79 @@ service)
 	<key>ThrottleInterval</key>
 	<integer>2</integer>
 	<key>StandardOutPath</key>
-	<string>/var/jb/var/log/yapa/$name.log</string>
+	<string>$J/var/log/yapa/$n.log</string>
 	<key>StandardErrorPath</key>
-	<string>/var/jb/var/log/yapa/$name.log</string>
+	<string>$J/var/log/yapa/$n.log</string>
 </dict>
 </plist>
 PLIST
-  plist "$name"
-  restart "$name"
-  watch "$name" "tcp:127.0.0.1:$port"
-  restart yata
-  if [ -n "$public" ]; then route "$public.$domain" "reverse_proxy 127.0.0.1:$port"; fi
-  echo "$port"
-  ;;
-esac
+  if cmp -s "$p.new" "$p" && ! grep -qx "$n" changed 2>/dev/null; then rm -f "$p.new"
+  else mv -f "$p.new" "$p"; own "$p"; restart "$n"; fi
+done
+for p in "$ld"/com.sryo.yapa.*.plist; do
+  [ -f "$p" ] || continue
+  n=${p##*/com.sryo.yapa.}; n=${n%.plist}
+  case " yata caddy cloudflared $on " in *" $n "*) ;; *) launchctl unload "$p" 2>/dev/null || true; rm -f "$p" ;; esac
+done
+for f in "$bin"/*; do
+  case " $core yapa-run $runs " in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
+done
+if [ "$cmd" = install ]; then for d in $core; do put "core/$d" "$d"; done; fi
+
+# yata watches the core and every part that's on with a check.
+{
+  printf '[{"name":"yata","check":"tcp:127.0.0.1:8077"},{"name":"caddy","check":"tcp:127.0.0.1:8080"}'
+  if [ -f "$etc/tunnel.token" ]; then printf ',{"name":"cloudflared","check":"tcp:127.0.0.1:20241"}'; fi
+  for n in $on; do
+    c=$(get check "$P/$n/part")
+    if [ -n "$c" ]; then printf ',{"name":"%s","check":"%s"}' "$n" "$c"; fi
+  done
+  echo ']'
+} > "$s.new"
+if cmp -s "$s.new" "$s"; then rm -f "$s.new"; else mv -f "$s.new" "$s"; [ "$cmd" = install ] || restart yata; fi
+
+# The Caddyfile: the core template, a path under the main site for each site part with no address, and a block
+# for each part with one.
+{
+  while IFS= read -r l; do
+    if [ "$l" = "	# ya: sites under the main address" ]; then
+      for n in $on; do
+        [ "$(get kind "$P/$n/part")" = site ] && [ -z "$(get address "$P/$n/part")" ] || continue
+        printf '\tredir /%s /%s/\n\thandle_path /%s/* {\n\t\troot * %s\n\t\tfile_server\n\t}\n' "$n" "$n" "$n" "$J/etc/yapa/parts/$n/www"
+      done
+    else printf '%s\n' "$l"; fi
+  done < Caddyfile.core
+  for n in $on; do
+    a=$(get address "$P/$n/part"); [ -n "$a" ] || continue
+    printf '\nhttp://%s.%s:8080 {\n\tbind 127.0.0.1\n' "$a" "$domain"
+    if [ "$(get kind "$P/$n/part")" = site ]; then printf '\troot * %s\n\tfile_server\n' "$J/etc/yapa/parts/$n/www"
+    else printf '\treverse_proxy 127.0.0.1:%s\n' "$(get port "$P/$n/part")"; fi
+    echo '}'
+  done
+} > "$etc/Caddyfile.new"
+if cmp -s "$etc/Caddyfile.new" "$etc/Caddyfile"; then rm -f "$etc/Caddyfile.new"
+else mv -f "$etc/Caddyfile.new" "$etc/Caddyfile"; [ "$cmd" = install ] || restart caddy; fi
+
+if [ "$cmd" = install ]; then
+  for d in $core; do cp "core/com.sryo.yapa.$d.plist" "$ld/"; own "$ld/com.sryo.yapa.$d.plist"; done
+  for d in $core; do launchctl load "$ld/com.sryo.yapa.$d.plist"; done
+  echo "$core"
+fi
 PHONE
 
-out=$(on_phone "$cmd" "$@")
+out=$(on_phone "$cmd")
+mkdir -p "$conf"; rm -rf "$parts.new"; cp -R "$stage/parts" "$parts.new"
+rm -rf "$parts"; mv "$parts.new" "$parts"
 case $cmd in
 install)
-  mkdir -p "$conf"; echo "$host" > "$conf/host"
+  echo "$host" > "$conf/host"
   echo "installed on $host: $out"
   echo "check it with: curl http://${host#*@}:8077/health"
   ;;
-site)
-  if [ -n "$name" ]; then dns "$name.$domain"; echo "published: https://$name.$domain/"
-  else echo "published: https://$tunnel.$domain/$dir/"; fi
+add)
+  if [ -n "$public" ]; then dns "$public.$domain"; fi
+  echo "$name is on: $(url "$name")"
+  if [ "$kind" = service ] && [ -z "$public" ]; then echo "To make it public: ./ya add service $name <address>"; fi
   ;;
-service)
-  if [ -n "$public" ]; then dns "$public.$domain"; echo "$name is running and public at https://$public.$domain/"
-  else echo "$name is running on the phone at 127.0.0.1:$out, watched by yata. To make it public: ./ya service $name <address>"; fi
-  ;;
+on|off) echo "$name is $cmd" ;;
 esac

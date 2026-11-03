@@ -9,4 +9,5 @@ test/scripts-parse
 test/che-say
 test/ya-install
 test/ya-build
-test/ya-commands
+test/ya-add
+test/ya-parts

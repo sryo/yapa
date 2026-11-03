@@ -1,9 +1,9 @@
 #!/bin/sh
-# R4: ./ya puts yapa's daemons, their config and launchd plists on the phone, and rerunning it is safe.
+# ./ya install puts yapa's daemons, their config and launchd plists on the phone, and rerunning it is safe.
 # A fake ssh runs the phone's side here, under a temp dir standing in for /var/jb, with launchctl and chown logged.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
-mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build"
+mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build" "$tmp/conf"
 for d in yata yapa-run caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
 cat > "$tmp/bin/ssh" <<FAKE
 #!/bin/sh
@@ -13,7 +13,7 @@ FAKE
 printf '#!/bin/sh\necho "launchctl $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/launchctl"
 printf '#!/bin/sh\necho "chown $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/chown"
 chmod +x "$tmp/bin/"*
-run() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" "$@" ./ya root@phone > "$tmp/out" 2>&1 || { echo "R4: ./ya failed:"; cat "$tmp/out"; exit 1; }; }
+run() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_CONFIG="$tmp/conf" "$@" ./ya root@phone > "$tmp/out" 2>&1 || { echo "R4: ./ya failed:"; cat "$tmp/out"; exit 1; }; }
 fail() { echo "R4: $*"; exit 1; }
 jb=$tmp/jb; ld=$jb/Library/LaunchDaemons; etc=$jb/etc/yapa
 
@@ -32,8 +32,7 @@ grep -q '^http://:8080 {' "$etc/Caddyfile" && grep -q '^[[:space:]]*bind 127.0.0
 # yata cuts the logs itself, so there's no separate cleanup job.
 [ -e "$jb/usr/libexec/yapa/tidy" ] || [ -e "$ld/com.sryo.yapa.tidy.plist" ] && fail "a separate tidy job was installed; yata cuts the logs"
 
-# A phone set up under older names gets them swapped: their jobs are unloaded and removed, their binaries too,
-# and a service watched under an old name keeps being watched under the new one.
+# A phone set up under older names gets them swapped: their jobs are unloaded and removed, their binaries too.
 printf old > "$jb/usr/libexec/yapa/oldd"; cp launchd/com.sryo.yapa.caddy.plist "$ld/com.sryo.yapa.oldd.plist"
 sed 's/"name":"yata"/"name":"oldd"/' "$etc/services.json" > "$tmp/s" && mv "$tmp/s" "$etc/services.json"
 : > "$tmp/log"
@@ -43,16 +42,12 @@ grep -q "launchctl unload .*com.sryo.yapa.oldd.plist" "$tmp/log" || fail "an old
 [ -e "$jb/usr/libexec/yapa/oldd" ] && fail "an old daemon's binary was left behind"
 grep -q '"oldd"' "$etc/services.json" && fail "services.json still names the old daemon"
 [ "$(grep -o '"tcp:127.0.0.1:8077"' "$etc/services.json" | wc -l)" -eq 1 ] || fail "yata's check is listed twice after the swap"
-grep -q '"name":"yata","check":"tcp:127.0.0.1:8077"' "$etc/services.json" || fail "the swap lost yata's check"
 
-# A hand-edited Caddyfile, site and service survive a rerun; the rerun unloads before it loads again.
-echo '# mine' >> "$etc/Caddyfile"; echo mine > "$jb/var/yapa/www/index.html"
-sed 's/^\[/[{"name":"web","check":"tcp:127.0.0.1:80"},/' "$etc/services.json" > "$tmp/s" && mv "$tmp/s" "$etc/services.json"
+# The main site survives a rerun; the rerun unloads before it loads again.
+echo mine > "$jb/var/yapa/www/index.html"
 : > "$tmp/log"
 run
-grep -q '# mine' "$etc/Caddyfile" || fail "rerun overwrote the Caddyfile"
 [ "$(cat "$jb/var/yapa/www/index.html")" = mine ] || fail "rerun overwrote the site"
-grep -q '"web"' "$etc/services.json" || fail "rerun dropped a service added by hand"
 [ "$(grep -o '"name":"caddy"' "$etc/services.json" | wc -l)" -eq 1 ] || fail "rerun duplicated caddy in services.json"
 head -1 "$tmp/log" | grep -q "launchctl unload" || fail "rerun must unload before it loads"
 tail -1 "$tmp/log" | grep -q "launchctl load" || fail "rerun must load last"
@@ -70,7 +65,7 @@ run
 [ -f "$ld/com.sryo.yapa.cloudflared.plist" ] && [ -f "$etc/tunnel.token" ] || fail "rerun without a token dropped the tunnel"
 # A token file that isn't there stops the install before anything changes, and says how to get one.
 : > "$tmp/log"
-PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./ya root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
+PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_CONFIG="$tmp/conf" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./ya root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
 grep -q "Zero Trust" "$tmp/out" || fail "a missing token file must say where to get the token"
 [ -s "$tmp/log" ] && fail "a missing token file still touched the phone"
 # The tunnel hands every hostname to Caddy, which routes by name; new sites need only a Caddyfile block.
