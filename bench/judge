@@ -1,0 +1,7 @@
+bench/**
+jeta/Tests/**
+jeta/Sources/noticebench/**
+jeta/Sources/facebench/**
+jeta/Sources/chordbench/**
+jeta/Package.swift
+.claude/skills/**
