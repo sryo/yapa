@@ -229,14 +229,14 @@ final class FaceTests: XCTestCase {
         XCTAssert(still.allSatisfy { abs($0.tilt) < 0.02 }, "leans while standing still")
     }
 
-    // R8: stopping after a move squashes the eye along the direction it was travelling (and widens it across),
+    // R8: stopping after a fast move squashes the eye along the direction it was travelling (and widens it across),
     // the way a ball flattens against what it hits.
     func testR8_SquashesAlongImpact() {
         let face = Face(seed: 11, now: 0)
         let fs = frames(face, from: 0, to: 40, hz: 60)
         let speed = fs.map { simd_length($0.eyes[0].smear) }
         var landings = 0, squashed = 0
-        for i in 30..<fs.count where speed[i - 1] >= 0.1 && speed[i] < 0.1 && speed[(i - 30)..<i].max()! > 0.3 {
+        for i in 30..<fs.count where speed[i - 1] >= 0.1 && speed[i] < 0.1 && speed[(i - 30)..<i].max()! > 0.6 {
             landings += 1
             let dir = simd_normalize(fs[(i - 30)..<i].max(by: { simd_length($0.eyes[0].smear) < simd_length($1.eyes[0].smear) })!.eyes[0].smear)
             let across = SIMD2(-dir.y, dir.x)
@@ -247,7 +247,7 @@ final class FaceTests: XCTestCase {
             let rest = ratio(Face(seed: 11, now: 0, lively: false).frame(at: 1))
             if fs[(i - 20)..<min(fs.count, i + 20)].contains(where: { ratio($0) < rest * 0.85 && $0.blink < 0.1 }) { squashed += 1 }
         }
-        XCTAssertGreaterThan(landings, 3)
+        XCTAssertGreaterThan(landings, 2)
         XCTAssertGreaterThan(Double(squashed) / Double(landings), 0.7, "doesn't squash along the impact")
         let s = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06, impactAxis: SIMD2(1, 0), impact: -0.3).outline()
         let w = s.map(\.x).max()! - s.map(\.x).min()!, h = s.map(\.y).max()! - s.map(\.y).min()!
@@ -269,6 +269,20 @@ final class FaceTests: XCTestCase {
         XCTAssertFalse(left.isEmpty || right.isEmpty)
         XCTAssertLessThan(left.map(\.tilt).reduce(0, +) / Double(left.count), -0.02, "moving left doesn't lean left")
         XCTAssertGreaterThan(right.map(\.tilt).reduce(0, +) / Double(right.count), 0.02, "moving right doesn't lean right")
+    }
+
+    // R8: short, slow moves (glances, small shifts) stay clean: no trail and no squash wobble, only fast moves get them.
+    func testR8_SlowMovesStayClean() {
+        let face = Face(seed: 11, now: 0)
+        let fs = frames(face, from: 0, to: 60, hz: 60)
+        let speed = fs.map { simd_length($0.eyes[0].smear) }
+        let calm = (60..<fs.count).filter { i in speed[(i - 60)...i].allSatisfy { $0 < 0.25 } }.map { fs[$0] }
+        XCTAssertGreaterThan(calm.count, 300)
+        for f in calm {
+            let e = f.eyes[0], mid = (e.p0 + 2 * e.c + e.p1) / 4
+            XCTAssertLessThan(e.trail.map { simd_length($0 - mid) }.max() ?? 0, 0.002, "trail on a slow move")
+            XCTAssertLessThan(abs(e.impact), 0.02, "squash wobble on a slow move")
+        }
     }
 
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.

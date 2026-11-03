@@ -151,7 +151,7 @@ public final class Face {
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextMove: Double, nextTilt = 0.0, tiltSide = 1.0
     private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
-    private var impact = Spring(x: 0), impactAxis = SIMD2<Double>(1, 0), travel = SIMD2<Double>(1, 0)
+    private var impact = Spring(x: 0), impactAxis = SIMD2<Double>(1, 0), travel = SIMD2<Double>(1, 0), peak = 0.0
     /// Recent (time, position) of the face, for the trail.
     private var track: [(Double, SIMD2<Double>)] = []
     static let trailAges = stride(from: 0.004, through: 0.06, by: 0.004).map { $0 }
@@ -182,6 +182,8 @@ public final class Face {
         let centre = SIMD2(pos[0].x, pos[1].x + hop.x), scale = 1 + p.depth
         let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
         let here = whereNow()
+        // Only fast moves smear; glances and small shifts stay clean ovals.
+        let fast = smoothstep(0.3, 0.8, simd_length(velocity))
         let shifts = Face.trailAges.compactMap { age in track.last(where: { $0.0 <= t - age }).map { $0.1 - here } }
         let (cs, sn) = (cos(tilt.x), sin(tilt.x))
         let place = { (v: SIMD2<Double>) in centre + SIMD2(v.x * cs - v.y * sn, v.x * sn + v.y * cs) * scale }
@@ -197,7 +199,7 @@ public final class Face {
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
             let stroke = Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
             return Stroke(p0: stroke.p0, c: stroke.c, p1: stroke.p1, width: stroke.width, smear: velocity,
-                          trail: shifts.map { stroke.middle + $0 }, impactAxis: impactAxis, impact: impact.x)
+                          trail: shifts.map { stroke.middle + $0 * fast }, impactAxis: impactAxis, impact: impact.x)
         }
         return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale)
     }
@@ -231,20 +233,22 @@ public final class Face {
                 }
             }
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
-            gaze[0].step(to: gazeTo.x, k: 200, damping: 0.5, dt: dt)
-            gaze[1].step(to: gazeTo.y, k: 200, damping: 0.5, dt: dt)
+            gaze[0].step(to: gazeTo.x, k: 200, damping: 0.75, dt: dt)
+            gaze[1].step(to: gazeTo.y, k: 200, damping: 0.75, dt: dt)
             pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
             // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
             // them across, like a ball hitting a wall; the spring then stretches them back along the same line.
             let v = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035), speed = simd_length(v)
             if speed > 0.05 { travel = v / speed }
+            peak = speed > 0.05 ? max(peak, speed) : 0
+            // Only stopping from a fast move lands hard enough to squash; slow ones just settle.
             if speed < lastSpeed {
                 if abs(impact.x) < 0.02 { impactAxis = travel }
-                impact.v -= (lastSpeed - speed) * 16
+                impact.v -= (lastSpeed - speed) * 16 * smoothstep(0.3, 0.8, peak)
             }
             lastSpeed = speed
-            impact.step(to: 0, k: 260, damping: 0.35, dt: dt)
+            impact.step(to: 0, k: 260, damping: 0.45, dt: dt)
             track.append((now, whereNow()))
             if let first = track.first, now - first.0 > 0.1 { track.removeFirst() }
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
