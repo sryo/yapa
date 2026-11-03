@@ -13,6 +13,9 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
                                              properties: [.notify], value: nil, permissions: [.readEncryptionRequired])
     private let buddy = Buddy(name: "Claude-yapa", now: CACurrentMediaTime())
     private let view: FaceView
+    // While a Claude Code session reports through the hooks they drive the face and Bluetooth is ignored.
+    private let hooks = HookListener()
+    private var hooked = false
     private var manager: CBPeripheralManager!
     private var timer: Timer?
     private var outbox: [Data] = [], mtu = 20, wasConnected = false, wasWaiting = false, shown: Mood?, promptID: String?
@@ -22,6 +25,14 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         super.init()
         UIDevice.current.isBatteryMonitoringEnabled = true
         manager = CBPeripheralManager(delegate: self, queue: nil)
+        hooks.onChange = { [weak self] in
+            guard let self else { return }
+            let t = CACurrentMediaTime(), active = self.hooks.desk.active
+            if active != self.hooked { self.log(active ? "hooks from the Mac" : "no hook sessions left") }
+            self.hooked = active
+            if active { self.buddy.receive(self.hooks.desk.line(at: t), at: t).forEach(self.send) }
+            self.update()
+        }
         view.onTap = { [weak self] p in self?.tap(at: p) ?? false }
         // Every session's turn events go to the face's notice board; the time each notice lands is logged.
         buddy.onTurn = { [weak self] line in
@@ -50,7 +61,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         let id = buddy.prompt(at: t)?.id, waiting = buddy.waiting(at: t)
         if (waiting && !wasWaiting) || (id != nil && id != promptID) {
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-            log(id.map { "prompt \($0)" } ?? "waiting, answer at the desktop")
+            log(id.map { "prompt \($0) \(Self.ms())" } ?? "waiting, answer at the desktop")
         }
         promptID = id; wasWaiting = waiting
     }
@@ -60,12 +71,13 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         guard let line = buddy.decide(p.y < view.bounds.midY, at: t) else { return false }
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
         send(line)
-        log("decided \(line.contains("\"once\"") ? "once" : "deny")")
+        log("decided \(line.contains("\"once\"") ? "once" : "deny") \(Self.ms())")
         update()
         return true
     }
 
     private func send(_ line: String) {
+        if hooks.decide(line) { return }
         let data = Data(line.utf8)
         outbox += stride(from: 0, to: data.count, by: mtu).map { data.subdata(in: $0..<min($0 + mtu, data.count)) }
         flush()
@@ -74,6 +86,8 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private func flush() {
         while let d = outbox.first, manager.updateValue(d, for: tx, onSubscribedCentrals: nil) { outbox.removeFirst() }
     }
+
+    static func ms() -> Int { Int(Date().timeIntervalSince1970 * 1000) }
 
     /// Appends to Documents/buddy.log, which is how to see the link's state on the phone (over SSH).
     private func log(_ s: String) {
@@ -111,7 +125,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         // RX only accepts encrypted writes, so any write that arrives came over an encrypted link.
         buddy.secure = true
         let t = CACurrentMediaTime()
-        for r in requests where r.characteristic.uuid == rx.uuid {
+        for r in requests where r.characteristic.uuid == rx.uuid && !hooks.desk.active {
             buddy.receive([UInt8](r.value ?? Data()), at: t).forEach(send)
         }
         if let r = requests.first { m.respond(to: r, withResult: .success) }
