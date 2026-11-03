@@ -40,6 +40,8 @@ public final class Buddy {
     public var battery: (pct: Int, usb: Bool)?
     /// Bytes of memory the app uses, reported as `sys.heap`.
     public var heap = 0
+    /// Gets each turn event, the raw line as it arrived.
+    public var onTurn: ((String) -> Void)?
 
     private var framer = LineFramer()
     private let start: Double
@@ -55,6 +57,7 @@ public final class Buddy {
         framer.feed(bytes).compactMap { l in
             guard let o = (try? JSONSerialization.jsonObject(with: Data(l.utf8))) as? [String: Any] else { return nil }
             if let cmd = o["cmd"] as? String { return command(cmd, o, at: t) }
+            if o["evt"] as? String == "turn" { onTurn?(l); return nil }
             if o["evt"] == nil, o["time"] == nil, o["total"] != nil || o["running"] != nil || o["waiting"] != nil { heartbeat(o, at: t) }
             return nil
         }

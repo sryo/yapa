@@ -33,15 +33,17 @@ final class FaceView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// A turn event from the Claude app (any session); the manager's `jeta:` lines become notices.
-    func take(_ event: Data) {
-        let before = board.pending.count
+    /// Returns the sessions whose notice this event added or changed.
+    @discardableResult func take(_ event: Data) -> [String] {
+        let old = board.pending
         board.take(event)
         screen.update(board)
         // A new question buzzes and the face looks up at you.
-        if board.pending.count > before {
+        if board.pending.count > old.count {
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
             face.set(.attention, at: CACurrentMediaTime())
         }
+        return board.pending.filter { !old.contains($0) }.map(\.session)
     }
 
     // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.

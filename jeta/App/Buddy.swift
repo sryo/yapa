@@ -23,6 +23,11 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         UIDevice.current.isBatteryMonitoringEnabled = true
         manager = CBPeripheralManager(delegate: self, queue: nil)
         view.onTap = { [weak self] p in self?.tap(at: p) ?? false }
+        // Every session's turn events go to the face's notice board; the time each notice lands is logged.
+        buddy.onTurn = { [weak self] line in
+            guard let self else { return }
+            for s in self.view.take(Data(line.utf8)) { self.log("notice \(s) \(Int(Date().timeIntervalSince1970 * 1000))") }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
     }
 

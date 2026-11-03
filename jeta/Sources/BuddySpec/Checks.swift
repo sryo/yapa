@@ -107,6 +107,16 @@ public let specChecks: [Check] = [
         let r = b.receive(hb() + line(["time": [1775731234, -25200]]) + line(["evt": "turn", "role": "assistant", "content": []]), at: 1)
         return expect(r, [], "replies")
     },
+    Check(name: "R2 turn events reach onTurn as they arrived, across writes; nothing else does") {
+        let b = Buddy(name: "Claude-yapa", now: 0)
+        var got: [String] = []
+        b.onTurn = { got.append($0) }
+        let turn = #"{"evt":"turn","role":"assistant","content":[{"type":"text","text":"jeta: server needs you · Which host?"}]}"#
+        let bytes = Array(turn.utf8)
+        _ = b.receive(hb() + Array(bytes[..<20]), at: 1)
+        _ = b.receive(Array(bytes[20...]) + [0x0a] + line(["time": [1775731234, -25200]]) + line(["cmd": "status"]), at: 2)
+        return expect(got, [turn], "turn lines")
+    },
     // R3: moods.
     Check(name: "R3 asleep before any heartbeat and 30 s after the last") {
         let b = buddy([(0, hb())])
