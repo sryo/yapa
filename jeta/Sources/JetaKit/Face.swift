@@ -163,7 +163,8 @@ public final class Face {
     private var pose: [Spring] = Mood.idle.pose.fields.map { Spring(x: $0) }
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
-    private var yaw = Spring(x: 0), lunge = Spring(x: 0), reading = Spring(x: 0)
+    private var yaw = Spring(x: 0), lunge = Spring(x: 0), reading = Spring(x: 0), asideness = Spring(x: 0)
+    private var asideOn = false
     private var lungeUntil = -1.0, orbitStart = -10.0, busySince = 0.0, peekUntil = -1.0, peekSide = 1.0, peekedAt = -1e9
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextTilt = 0.0, tiltSide = 1.0, lastEvent: Double
     private var phase = SIMD2<Double>(0, 0), offset = SIMD2<Double>(0, 0)
@@ -229,6 +230,12 @@ public final class Face {
         kick(by: 0.02)
     }
 
+    /// Steps the face aside to the top-left corner, smaller, while text is up; back when it closes.
+    public func aside(_ on: Bool, at t: Double) {
+        advance(to: t)
+        asideOn = on
+    }
+
     public func isActive(at t: Double) -> Bool { mood != .sleep }
 
     func pose(at t: Double) -> Pose { advance(to: t); return Pose(fields: pose.map(\.x)) }
@@ -240,7 +247,7 @@ public final class Face {
         // The eyes lead where the face is travelling.
         let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * lookDown) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
         // Up close the face also draws toward the middle, so its bigger eyes stay on screen.
-        let scale = 1 + p.depth + lunge.x, centre = SIMD2(pos[0].x, pos[1].x) / max(1, scale) + SIMD2(0, hop.x)
+        let scale = (1 + p.depth + lunge.x) * (1 - 0.45 * asideness.x), centre = SIMD2(pos[0].x, pos[1].x) / max(1, scale) + SIMD2(0, hop.x)
         // Celebrating, the eyes orbit each other once.
         let o = smoothstep(0, 1, (t - orbitStart) / 1.2), (oc, os) = (cos(2 * .pi * o), sin(2 * .pi * o))
         let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
@@ -330,6 +337,7 @@ public final class Face {
                 if peekUntil > 0 && !peeking && now < peekUntil + dt * 1.5 { offset = .zero }
                 // Asleep it rests low on the screen, still drifting sideways.
                 posTo = mood == .sleep ? SIMD2(d.x + offset.x, screen.y - 0.12) : d + offset
+                if asideOn { posTo = SIMD2(-(screen.x - 0.17), -(screen.y - 0.13)) }
             }
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)
@@ -358,6 +366,7 @@ public final class Face {
             tilt.step(to: tiltTo, k: 60, damping: 0.5, dt: dt)
             lunge.step(to: now < lungeUntil ? 1 : 0, k: 140, damping: 0.6, dt: dt)
             reading.step(to: mood == .busy ? 1 : 0, k: 30, damping: 1, dt: dt)
+            asideness.step(to: asideOn ? 1 : 0, k: 60, damping: 0.9, dt: dt)
             yaw.step(to: max(-0.35, min(0.35, pos[0].v * 0.5)), k: 310, damping: 0.85, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)

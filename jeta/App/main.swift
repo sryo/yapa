@@ -6,6 +6,11 @@ final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
     private let eyes = [CAShapeLayer(), CAShapeLayer()]
     private var link: CADisplayLink?
+    /// The manager's notices, and what the screen shows of them.
+    private var board = NoticeBoard(), screen = Screen()
+    private var texts: [CATextLayer] = []
+    /// Holding to talk; che hooks in here with the session to reach (nil: the manager).
+    var onTalk: ((String?) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -14,25 +19,42 @@ final class FaceView: UIView {
             eye.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
             layer.addSublayer(eye)
         }
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(poke)))
-        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(nextMood)))
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(held)))
+        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped))
+        swipe.direction = [.left, .right]
+        addGestureRecognizer(swipe)
         isMultipleTouchEnabled = true
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    // A tap wakes the face and draws its eyes to the finger.
-    @objc private func poke(_ g: UITapGestureRecognizer) {
+    /// A turn event from the Claude app (any session); the manager's `jeta:` lines become notices.
+    func take(_ event: Data) {
+        let before = board.pending.count
+        board.take(event)
+        screen.update(board)
+        // A new question buzzes and the face looks up at you.
+        if board.pending.count > before {
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            face.set(.attention, at: CACurrentMediaTime())
+        }
+    }
+
+    // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.
+    @objc private func tapped(_ g: UITapGestureRecognizer) {
+        guard screen.mode == .face else { screen.tap(); return }
         let p = g.location(in: self), u = Double(min(bounds.width, bounds.height))
         face.poke(at: SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u), t: CACurrentMediaTime())
     }
 
-    // A long press shows the next mood, to try them out.
-    @objc private func nextMood(_ g: UILongPressGestureRecognizer) {
+    @objc private func swiped(_ g: UISwipeGestureRecognizer) { screen.swipe() }
+
+    // On the bare face a long press opens the session list; with anything open, holding is for talking.
+    @objc private func held(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began else { return }
-        let all = Mood.allCases, i = all.firstIndex(of: face.mood)!
-        face.set(all[(i + 1) % all.count], at: CACurrentMediaTime())
+        if case .talk(let to) = screen.longPress() { onTalk?(to) }
     }
 
     // Two or more fingers are a chord. Until the Buddy link lands, the attention mood stands in for a prompt.
@@ -82,6 +104,8 @@ final class FaceView: UIView {
         face.bounds = SIMD2(max(0, Double(bounds.width) / u / 2 - 0.27), 0.3)
         face.screen = SIMD2(Double(bounds.width) / u / 2, Double(bounds.height) / u / 2)
         let point = { (p: SIMD2<Double>) in CGPoint(x: mid.x + p.x * u, y: mid.y + p.y * u) }
+        face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
+        drawText(u: CGFloat(u))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (eye, s) in zip(eyes, f.eyes) {
@@ -93,6 +117,36 @@ final class FaceView: UIView {
             eye.path = path
         }
         CATransaction.commit()
+    }
+}
+
+extension FaceView {
+    /// White text on black: a title, the body a little dimmer, hints dimmer still. A question sits under the face;
+    /// the detail and the session list take the right of the screen while the face waits in the corner.
+    func drawText(u: CGFloat) {
+        let open = screen.mode == .detail || screen.mode == .roster
+        let size = u * 0.055, left = open ? bounds.width * 0.3 : bounds.width * 0.12
+        let width = Int((bounds.width - left - bounds.width * 0.08) / (size * 0.52))
+        let lines = screen.lines(width: max(12, width))
+        while texts.count < lines.count {
+            let t = CATextLayer()
+            t.contentsScale = UIScreen.main.scale
+            t.foregroundColor = UIColor(white: 0.96, alpha: 1).cgColor
+            layer.addSublayer(t)
+            texts.append(t)
+        }
+        var y = open ? bounds.height * 0.14 : bounds.height * 0.66
+        for (i, t) in texts.enumerated() {
+            guard i < lines.count else { t.string = nil; continue }
+            let l = lines[i], s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
+            t.string = l.text
+            t.font = UIFont.systemFont(ofSize: s, weight: l.style == .title ? .medium : .regular)
+            t.fontSize = s
+            t.opacity = l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4
+            t.alignmentMode = open ? .left : .center
+            t.frame = CGRect(x: open ? left : 0, y: y, width: open ? bounds.width - left : bounds.width, height: s * 1.4)
+            y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
+        }
     }
 }
 
@@ -115,8 +169,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo _: UISceneSession, options _: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         window = UIWindow(windowScene: scene)
-        window?.rootViewController = FaceController()
+        let controller = FaceController()
+        window?.rootViewController = controller
         window?.makeKeyAndVisible()
+        // To try the screens without the Buddy link: launch with `-jeta "jeta: server needs you · Which hostname?"`.
+        let args = CommandLine.arguments
+        for (i, a) in args.enumerated() where a == "-jeta" && i + 1 < args.count {
+            let event: [String: Any] = ["evt": "turn", "role": "assistant", "content": [["type": "text", "text": args[i + 1]]]]
+            if let data = try? JSONSerialization.data(withJSONObject: event) { (controller.view as? FaceView)?.take(data) }
+        }
     }
 }
 
