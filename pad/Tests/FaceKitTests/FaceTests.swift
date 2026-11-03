@@ -242,6 +242,22 @@ final class FaceTests: XCTestCase {
         XCTAssertGreaterThan(Double(squashed) / Double(landings), 0.7, "doesn't squash when it lands")
     }
 
+    // R8: the smear never tilts an eye: moving diagonally stretches it sideways and up-down, not along a slant,
+    // so the only tilt is the lean into the motion, and it follows the direction.
+    func testR8_SmearNeverTilts() {
+        for v in [SIMD2(1.2, 1.2), SIMD2(-1.2, 1.2), SIMD2(1.2, -1.2)] {
+            let o = Stroke(p0: SIMD2(0, -0.035), c: .zero, p1: SIMD2(0, 0.035), width: 0.06, smear: v).outline()
+            let top = o.min(by: { $0.y < $1.y })!, bottom = o.max(by: { $0.y < $1.y })!
+            XCTAssertEqual(top.x, bottom.x, accuracy: 0.002, "smear along \(v) slants the eye")
+        }
+        let face = Face(seed: 11, now: 0)
+        let fs = frames(face, from: 0, to: 60, hz: 30)
+        let left = fs.filter { $0.eyes[0].smear.x < -0.4 }, right = fs.filter { $0.eyes[0].smear.x > 0.4 }
+        XCTAssertFalse(left.isEmpty || right.isEmpty)
+        XCTAssertLessThan(left.map(\.tilt).reduce(0, +) / Double(left.count), -0.02, "moving left doesn't lean left")
+        XCTAssertGreaterThan(right.map(\.tilt).reduce(0, +) / Double(right.count), 0.02, "moving right doesn't lean right")
+    }
+
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
     func testR4_SleepIsThinWideArc() {
         let e = Mood.sleep.pose.left

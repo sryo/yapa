@@ -88,13 +88,13 @@ public struct Stroke {
             left.append(p + normal * h); right.append(p - normal * h)
         }
         let shape = left + right.reversed()
-        // Motion blur as a cartoon smear: stretch along the velocity, thin across it to keep the area.
-        let speed = simd_length(smear)
-        guard speed > 1e-6 else { return shape }
-        let dir = smear / speed, f = 1 + min(1, 0.35 * speed), mid = (p0 + 2 * c + p1) / 4
+        // Motion blur as a cartoon smear: stretch sideways by the sideways speed and up-down by the vertical
+        // speed, thinning the other way to keep the area. Never along a slant, which would read as a tilt.
+        guard simd_length(smear) > 1e-6 else { return shape }
+        let fx = 1 + min(1, 0.35 * abs(smear.x)), fy = 1 + min(1, 0.35 * abs(smear.y)), mid = (p0 + 2 * c + p1) / 4
         return shape.map { p in
-            let d = p - mid, along = simd_dot(d, dir) * dir
-            return mid + along * f + (d - along) / f.squareRoot()
+            let d = p - mid
+            return mid + SIMD2(d.x * fx / fy.squareRoot(), d.y * fy / fx.squareRoot())
         }
     }
 }
@@ -208,7 +208,7 @@ public final class Face {
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
             // Slowing down, after a move or a glance, presses the eyes flat like landing; the squash spring then stretches them back.
             let speed = simd_length(SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035))
-            if speed < lastSpeed { squash.v -= (lastSpeed - speed) * 9 }
+            if speed < lastSpeed { squash.v -= (lastSpeed - speed) * 12 }
             lastSpeed = speed
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
             // Curious tilts like a dog; travelling sideways leans the head into the motion, like banking.
