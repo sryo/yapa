@@ -79,6 +79,21 @@ final class ColonyTests: XCTestCase {
         XCTAssertLessThan(turned, 0.1)
     }
 
+    // Reading a session's text: its ant waits in the top left corner by the text, the others along the bottom; none
+    // walks off, and when the text closes they're the same ants.
+    func testReadingSendsTheTalkerToTheCornerOthersAside() {
+        let c = Colony(seed: 6, now: 0)
+        let all: [(id: String, mood: Mood, front: Bool, events: Int?)] = [("a", .idle, false, nil), ("b", .busy, false, 1), ("c", .idle, false, nil)]
+        c.update(all, at: 0)
+        c.solo = "b"
+        for k in 1...600 { c.update(all, at: Double(k) / 60) }
+        XCTAssertLessThan(simd_length(c.position(of: "b")! - SIMD2(44, 70)), 15, "by the corner, drifting")
+        for id in ["a", "c"] { XCTAssertGreaterThan(c.position(of: id)!.y, 568 - 90, "\(id) stepped aside") }
+        c.solo = nil
+        c.update(all, at: 11)
+        XCTAssertEqual(Set(c.shapes(at: 12).map(\.id)), ["a", "b", "c"])
+    }
+
     // The session that needs you comes to the middle and grows; one asleep curls up and stays where it is.
     func testNeedsComesForwardSleepStays() {
         let c = Colony(seed: 2, now: 0)

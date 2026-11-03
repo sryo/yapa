@@ -52,6 +52,15 @@ final class HookListener {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.listen(retry: true) }
     }
 
+    /// Answers a held AskUserQuestion with the labels picked; false if it isn't waiting any more.
+    func answer(_ id: String, _ answers: [String: String]) -> Bool {
+        guard let s = desk.answer(id, answers) else { return false }
+        settle([s])
+        save()
+        onChange?()
+        return true
+    }
+
     /// Answers the waiting hook with the core's `{"cmd":"permission"}` line; false if it isn't one the hooks hold.
     func decide(_ line: String) -> Bool {
         guard let o = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
@@ -77,9 +86,10 @@ final class HookListener {
     }
 
     private func handle(_ c: NWConnection, _ r: HTTPRequest) {
-        guard r.method == "POST", r.path == "/hook", let e = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else {
+        guard r.method == "POST", r.path.hasPrefix("/hook"), var e = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else {
             return send(c, Data(#"{"error":"POST /hook takes a Claude Code hook event"}"#.utf8), status: "404 Not Found")
         }
+        if r.path.hasSuffix("?hold=1") { e["jeta_hold"] = true }
         let got = desk.take(e, at: CACurrentMediaTime())
         if let turn = Desk.turn(e) { onTurn?(turn) }
         save()

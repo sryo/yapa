@@ -44,6 +44,9 @@ function on(s, host) {
     const group = toolEvents.includes(event) ? { matcher: "", hooks: [h] } : { hooks: [h] }
     s.hooks[event] = [...(s.hooks[event] || []), group]
   }
+  // The Claude app asks AskUserQuestion's questions with no permission request, so this one waits for the pad first.
+  const ask = { type: "command", command: `curl -s --connect-timeout 1 -m 590 --data-binary @- '${url}?hold=1' 2>/dev/null || true # jeta`, timeout: 600 }
+  s.hooks.PreToolUse = [...s.hooks.PreToolUse, { matcher: "AskUserQuestion", hooks: [ask] }]
   return s
 }
 

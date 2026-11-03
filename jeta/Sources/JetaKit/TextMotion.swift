@@ -35,14 +35,14 @@ public final class TextMotion {
     /// The lines last shown.
     public var lines: [Placed] { last ?? [] }
 
-    enum Exit: Equatable { case none, face, drop, side(Double), sink }
+    enum Exit: Equatable { case none, face, drop, side(Double), page(Double), sink }
 
     final class Item {
         var line: Placed, start: Double, exit = Exit.none, said = false, leads = false, out = 0.0
-        var cx, cy, op, s, sq: Spring
+        var cx, cy, op, s, sq, bl: Spring
         init(_ l: Placed, at p: SIMD2<Double>, scale: Double, opacity: Double, start: Double) {
             line = l; self.start = start
-            cx = Spring(x: p.x); cy = Spring(x: p.y); op = Spring(x: opacity); s = Spring(x: scale); sq = Spring(x: 0)
+            cx = Spring(x: p.x); cy = Spring(x: p.y); op = Spring(x: opacity); s = Spring(x: scale); sq = Spring(x: 0); bl = Spring(x: 0)
         }
         var home: SIMD2<Double> { SIMD2(line.x + line.width / 2, line.y + line.height / 2) }
         var at: SIMD2<Double> { SIMD2(cx.x, cy.x) }
@@ -57,7 +57,8 @@ public final class TextMotion {
     /// The lines to show, laid out by `Screen.place`; `anchor` is the face's centre, and `swipe` the way the
     /// finger went for a page change (-1 left, 1 right, 0 none). New lines wait `wait` seconds first, so the face
     /// can step out of their way. Showing the same lines again only follows the face.
-    public func show(_ lines: [Placed], from anchor: SIMD2<Double>, swipe: Double = 0, wait: Double = 0, at t: Double) {
+    /// `page` is a scroll: -1 when the text moves up (the next page), 1 down; the lines leave and come that way.
+    public func show(_ lines: [Placed], from anchor: SIMD2<Double>, swipe: Double = 0, page: Double = 0, wait: Double = 0, at t: Double) {
         advance(to: t)
         self.anchor = anchor
         guard lines != last else { return }
@@ -65,7 +66,7 @@ public final class TextMotion {
         let keys = Set(lines.map(\.key))
         gone.formIntersection(keys)
         for i in items where i.exit == .none && !keys.contains(i.line.key) {
-            i.exit = swipe != 0 ? .side(swipe) : i.note ? .sink : .face
+            i.exit = swipe != 0 ? .side(swipe) : page != 0 && !i.note ? .page(page) : i.note ? .sink : .face
         }
         var n = 0
         for l in lines where !gone.contains(l.key) {
@@ -76,6 +77,7 @@ public final class TextMotion {
             }
             let item = l.key.hasPrefix("note:")
                 ? Item(l, at: SIMD2(l.x + l.width / 2, screen.y + l.height), scale: 1, opacity: l.opacity, start: t)
+                : page != 0 ? Item(l, at: SIMD2(l.x + l.width / 2, l.y + l.height / 2 - page * screen.y * 0.4), scale: 1, opacity: 0, start: t)
                 : Item(l, at: anchor, scale: 0.15, opacity: 0, start: t + wait + Double(n) * TextMotion.stagger)
             // The face says a batch of lines once, as the first one leaves it.
             if !item.note { item.leads = n == 0; n += 1 }
@@ -112,7 +114,7 @@ public final class TextMotion {
             let s = max(0, i.s.x), q = max(-0.3, min(0.3, i.sq.x))
             let op = max(0, min(1, i.op.x)), shown = i.line.opacity > 0 ? min(1, op / i.line.opacity) : 1
             return Shown(line: i.line, cx: i.cx.x, cy: i.cy.x, opacity: op, sx: s * (1 + 0.5 * q), sy: s * (1 - q),
-                         blur: i.line.size * 0.35 * (1 - shown))
+                         blur: i.line.size * 0.35 * max(1 - shown, i.bl.x))
         }
     }
 
@@ -147,6 +149,9 @@ public final class TextMotion {
                     i.cy.v = min(TextMotion.fastest, i.cy.v + 1800 * dt)
                     i.cy.x += i.cy.v * dt
                     i.s.step(to: 0.9, k: 150, damping: 1, dt: dt)
+                case .page(let way):
+                    i.cy.v = way * min(TextMotion.fastest, max(300, abs(i.cy.v + way * 2400 * dt)))
+                    i.cy.x += i.cy.v * dt
                 case .side(let way):
                     i.cx.v = way * min(TextMotion.fastest, max(300, abs(i.cx.v + way * 2400 * dt)))
                     i.cx.x += i.cx.v * dt
@@ -158,6 +163,7 @@ public final class TextMotion {
                 let fade = i.exit == .drop ? 0.5 : i.exit == .face ? min(1, max(0, simd_distance(i.at, anchor) - 6) / 40) : 1
                 i.op.step(to: i.line.opacity * fade, k: 900, damping: 0.8, dt: dt)
                 i.sq.step(to: i.line.key == pressed ? 0.14 : 0, k: 400, damping: 0.7, dt: dt)
+                i.bl.step(to: i.exit == .none ? 0 : 1, k: 120, damping: 1, dt: dt)
                 // A long way, from a face in the corner to the bottom of the screen, still moves at a speed the eye follows.
                 let speed = (i.cx.v * i.cx.v + i.cy.v * i.cy.v).squareRoot()
                 if speed > TextMotion.fastest { i.cx.v *= TextMotion.fastest / speed; i.cy.v *= TextMotion.fastest / speed }
@@ -182,19 +188,25 @@ extension Screen {
     /// Seconds new text waits, going from one mode to another, for the face to get out of its way: stepping
     /// aside for the detail and the session list, rising for a question.
     public static func wait(from a: Mode, to b: Mode) -> Double {
-        let side = { (m: Mode) in m == .detail || m == .roster }
+        let side = { (m: Mode) in m == .detail || m == .roster || m == .reply }
         if side(b) && !side(a) { return 0.2 }
         if b == .question && a == .face { return 0.15 }
         return 0
+    }
+
+    /// How many characters fit across a line.
+    static func columns(width w: Double, height h: Double, open: Bool) -> Int {
+        let size = min(w, h) * 0.055, left = open ? w * 0.3 : w * 0.12
+        return max(12, Int((w - left - w * 0.08) / (size * 0.52)))
     }
 
     /// Where each line goes on a `width`×`height` point screen. A question sits under the face, centred, its
     /// options side by side (the suggested one first, bigger and bolder); the detail and the session list take
     /// the right of the screen while the face waits in the corner.
     public func place(width w: Double, height h: Double) -> [Placed] {
-        let open = mode == .detail || mode == .roster
+        let open = mode == .detail || mode == .roster || mode == .reply
         let size = min(w, h) * 0.055, left = open ? w * 0.3 : w * 0.12
-        let lines = self.lines(width: max(12, Int((w - left - w * 0.08) / (size * 0.52))))
+        let lines = self.lines(width: Screen.columns(width: w, height: h, open: open))
         let isOption = { (l: Line) in l.style == .option || l.style == .suggestion }
         let options = lines.filter(isOption).count
         let optionWidth = options == 0 ? 0 : min(w * 0.22, (w - (open ? left : w * 0.12) * 2) / Double(options) - 10)
@@ -203,7 +215,9 @@ extension Screen {
         var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 : h * (options > 0 ? 0.6 : 0.66)
         var seen: [String: Int] = [:], out: [Placed] = []
         for (i, l) in lines.enumerated() {
-            let id = (isOption(l) ? "option" : l.style == .hint && !note.isEmpty ? "note" : "\(l.style)") + ":" + l.text
+            // A box ticked or not is the same option, so it stays where it is.
+            let words = isOption(l) && (l.text.hasPrefix("○ ") || l.text.hasPrefix("✓ ")) ? String(l.text.dropFirst(2)) : l.text
+            let id = (isOption(l) ? "option" : l.style == .hint && !note.isEmpty ? "note" : "\(l.style)") + ":" + words
             let key = id + (seen[id].map { "#\($0)" } ?? "")
             seen[id, default: 0] += 1
             if isOption(l) {

@@ -17,8 +17,10 @@ public final class Desk {
     struct Session {
         var name: String, started: Double, running = false, reading = false, seen = 0.0, events = 0
         var finished: Double?, failed = false
+        /// The text the session last stopped on, and when.
+        var reply: String?, replied = 0.0
     }
-    struct Held { let id, session, tool, hint: String, input: NSDictionary, since: Double }
+    struct Held { let id, session, tool, hint: String, input: NSDictionary, since: Double; var event = "PermissionRequest" }
     var sessions: [String: Session] = [:], held: [Held] = [], msg = "", count = 0
     /// The session a tap brought forward: its prompt is the one shown and answered.
     public var focus: String?
@@ -37,6 +39,15 @@ public final class Desk {
         s.events += 1
         sessions[id] = s
         sessions = sessions.filter { t - $0.value.seen < 7200 } // a session that went quiet for 2 h is gone
+        // The Claude app asks AskUserQuestion's questions itself, with no permission request, so a hook waits on them
+        // before the tool runs (`jeta_hold`); answered on the pad they never show at the desk.
+        if event == "PreToolUse", e["jeta_hold"] as? Bool == true {
+            count += 1
+            var h = Held(id: "\(run)-\(count)", session: id, tool: tool, hint: "\(s.name): \(detail(input))", input: input as NSDictionary, since: t)
+            h.event = event
+            held.append(h)
+            return (h.id, [])
+        }
         switch event {
         case "PermissionRequest":
             count += 1
@@ -55,6 +66,7 @@ public final class Desk {
             sessions[id]?.running = false
             sessions[id]?.finished = event == "Stop" ? t : nil
             sessions[id]?.failed = event == "StopFailure"
+            if let m = e["last_assistant_message"] as? String, !m.isEmpty { sessions[id]?.reply = m; sessions[id]?.replied = t }
         default:
             break
         }
@@ -83,10 +95,36 @@ public final class Desk {
         return try? JSONSerialization.data(withJSONObject: turn)
     }
 
+    /// The request a tap answers (the one forward, else the first), with what it would really do.
+    public func asked() -> Asked? {
+        guard let h = held.first(where: { $0.session == focus }) ?? held.first else { return nil }
+        let input = h.input as? [String: Any] ?? [:], name = sessions[h.session]?.name ?? ""
+        let questions = (input["questions"] as? [[String: Any]] ?? []).map { q in
+            Asked.Question(question: q["question"] as? String ?? "", header: q["header"] as? String ?? "",
+                           options: (q["options"] as? [[String: Any]] ?? []).compactMap { $0["label"] as? String },
+                           multi: q["multiSelect"] as? Bool ?? false)
+        }
+        return Asked(id: h.id, session: name, tool: h.tool, text: "\(h.tool): \(full(input))", questions: questions)
+    }
+
+    /// Answers a held AskUserQuestion with the labels picked on the pad, as if they were picked in the terminal.
+    public func answer(_ id: String, _ answers: [String: String]) -> Settle? {
+        guard let h = held.first(where: { $0.id == id }) else { return nil }
+        held.removeAll { $0.id == id }
+        var input = h.input as? [String: Any] ?? [:]
+        input["answers"] = answers
+        let out: [String: Any] = h.event == "PreToolUse"
+            ? ["hookSpecificOutput": ["hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input]]
+            : ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": ["behavior": "allow", "updatedInput": input]]]
+        return Settle(id: h.id, body: try! JSONSerialization.data(withJSONObject: out))
+    }
+
     /// Answers a held request with the pad's `{"cmd":"permission"}` line, or nil if it's no longer waiting.
     public func decide(_ cmd: [String: Any]) -> Settle? {
         guard let id = cmd["id"] as? String, let h = held.first(where: { $0.id == id }) else { return nil }
         held.removeAll { $0.id == id }
+        // Questions held before they run aren't refused: let go, they show at the desk.
+        if h.event == "PreToolUse" { return Settle(id: h.id, body: Data()) }
         let allow = cmd["decision"] as? String == "once"
         var decision: [String: Any] = ["behavior": allow ? "allow" : "deny"]
         if !allow { decision["message"] = "Denied on the pad." }
@@ -109,12 +147,19 @@ public final class Desk {
         }
     }
 
+    /// What each session last said, the newest first.
+    public func replies() -> [Reply] {
+        sessions.compactMap { id, s in s.reply.map { Reply(id: id, session: s.name, text: $0, at: s.replied) } }
+            .sorted { ($0.at, $0.id) > ($1.at, $1.id) }
+    }
+
     /// The sessions as JSON, so a pad that restarts (an install) keeps its faces. `wall` is the wall clock now
     /// (seconds since 1970), since `t` starts over with the app. Waiting requests aren't kept: their hooks are gone.
     public func save(at t: Double, wall: Double) -> Data {
         let list: [[String: Any]] = sessions.map { id, s in
             var o: [String: Any] = ["id": id, "name": s.name, "started": s.started - t, "seen": s.seen - t, "events": s.events, "failed": s.failed]
             if let f = s.finished { o["finished"] = f - t }
+            if let r = s.reply { o["reply"] = r; o["replied"] = s.replied - t }
             return o
         }
         return try! JSONSerialization.data(withJSONObject: ["wall": wall, "sessions": list])
@@ -133,6 +178,8 @@ public final class Desk {
             v.events = s["events"] as? Int ?? 0
             v.failed = s["failed"] as? Bool ?? false
             v.finished = (s["finished"] as? Double).map { now + $0 }
+            v.reply = s["reply"] as? String
+            v.replied = now + (s["replied"] as? Double ?? 0)
             if sessions[id] == nil { sessions[id] = v }
         }
         sessions = sessions.filter { t - $0.value.seen < 7200 }
@@ -167,6 +214,15 @@ private func detail(_ input: [String: Any]) -> String {
     let v = ["command", "file_path", "url", "pattern", "path", "query", "description"].lazy.compactMap { input[$0] as? String }.first ?? ""
     let one = v.split(separator: "\n").first.map(String.init) ?? ""
     return one.count > 80 ? String(one.prefix(79)) + "…" : one
+}
+
+/// What a tool call would do, enough to judge it: the command and why, the file and the start of what goes in it.
+func full(_ input: [String: Any]) -> String {
+    let s = { (k: String) in input[k] as? String }
+    let parts = [s("command"), s("description").map { "(\($0))" }, s("file_path") ?? s("path") ?? s("url"),
+                 s("new_string") ?? s("content"), s("pattern"), s("query"), s("prompt")].compactMap { $0 }
+    let one = parts.joined(separator: " ").split(whereSeparator: \.isNewline).joined(separator: " ")
+    return one.count > 400 ? String(one.prefix(399)) + "…" : one
 }
 
 /// Whether an address is on the home network: private, link-local or loopback, IPv4 or IPv6.

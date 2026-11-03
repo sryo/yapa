@@ -131,4 +131,19 @@ final class ScreenTests: XCTestCase {
         var f = Screen(); f.ask(session: "yapa", "Read: x"); XCTAssertEqual(f.mode, .question)
         f.answered(); XCTAssertEqual(f.mode, .face)
     }
+
+    func testR10_QuestionsStepWithBoxes() {
+        var s = Screen()
+        s.ask(Asked(id: "1", session: "yapa", tool: "AskUserQuestion", text: "", questions: [
+            .init(question: "Color?", header: "Color", options: ["red", "blue"], multi: false),
+            .init(question: "Parts?", header: "Parts", options: ["a", "b", "c"], multi: true)]))
+        XCTAssertEqual(s.asking?.options, ["red", "blue", "At the Mac"])
+        XCTAssertEqual(s.pick(1), .more)
+        XCTAssertEqual(s.asking?.options, ["○ a", "○ b", "○ c", "Done", "At the Mac"])
+        XCTAssertEqual(s.pick(0), .more)
+        XCTAssertEqual(s.pick(2), .more)
+        XCTAssertEqual(s.asking?.options, ["✓ a", "○ b", "✓ c", "Done", "At the Mac"])
+        XCTAssertEqual(Screen.options(s.asking!).map(\.style), [.suggestion, .option, .suggestion, .option, .option])
+        XCTAssertEqual(s.pick(3), .answer(["Color?": "blue", "Parts?": "a, c"]))
+    }
 }

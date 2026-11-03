@@ -27,6 +27,9 @@ public final class Colony {
     public var screen = SIMD2<Double>(320, 568)
     /// Where the finger is while talking; every ant turns to it.
     public var listenAt: SIMD2<Double>?
+    /// The session whose text is open: its ant waits in the top left corner, beside the text, and the others step
+    /// aside to the bottom until it closes, so it's clear who's talking.
+    public var solo: String?
 
     static let step = 1.0 / 120
     private var ants: [String: Ant] = [:], order: [String] = []
@@ -52,7 +55,7 @@ public final class Colony {
                 return a
             }()
             if let e = s.events, e != a.events { if a.events != nil { a.worked = t }; a.events = e }
-            let act = Colony.act(for: s.mood, front: s.front, listening: listenAt != nil)
+            let act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listenAt != nil) : s.id == solo ? .aside : .wait
             if a.act != act || a.front != s.front { a.front = s.front; a.set(act, at: t, rng: &rng) }
         }
     }
@@ -107,7 +110,7 @@ struct Bounce {
 }
 
 final class Ant {
-    enum Act { case wander, work, needs, done, failed, sleep, listen, leave }
+    enum Act { case wander, work, needs, done, failed, sleep, listen, leave, aside, wait }
 
     /// The body is ~15 units nose to tail, drawn at `scale` points a unit: ~22 pt; one that needs you grows 2.2 times.
     static let scale = 1.45
@@ -159,6 +162,8 @@ final class Ant {
         case .failed: nervous = false; still = true; antennae.target = -1; size.target = 0.92
         case .sleep, .listen: nervous = false
         case .leave: nervous = false; cruise = 50
+        case .aside: nervous = false; cruise = 80
+        case .wait: nervous = false; cruise = 50
         case .wander: nervous = false; still = true; nextStroll = t + rng.next(in: 20...60)
         }
     }
@@ -300,6 +305,14 @@ final class Ant {
             }
         case .listen:
             still = true; faceTo = listenAt ?? SIMD2(screen.x / 2, screen.y - 120); antennae.target = 1; tap = 0.35
+        case .aside, .wait:
+            // Reading: the one talking goes to the corner by the text and faces in; the others wait along the bottom.
+            if flags == 0 {
+                flags = 1
+                goal = act == .aside ? SIMD2(44, 70) : SIMD2(rng.next(in: 50...(screen.x - 50)), screen.y - rng.next(in: 40...80))
+            } else if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
+                goal = nil; still = true; faceTo = act == .aside ? SIMD2(screen.x / 2, screen.y / 2) : nil
+            }
         case .leave:
             if goal == nil {
                 let edges: [(Double, SIMD2<Double>)] = [(x, SIMD2(-60, y)), (screen.x - x, SIMD2(screen.x + 60, y)),

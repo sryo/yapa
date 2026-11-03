@@ -328,7 +328,8 @@ public final class Face {
             }
             let peeking = peekUntil > 0 && now < peekUntil
             if peekUntil > 0 && now >= peekUntil + 1.5 { peekUntil = -1; peekedAt = now }
-            if !lively || mood == .sleep {
+            // Faces in the crowd still blink, glance and read; only sleep holds them still.
+            if mood == .sleep {
                 nextBlink = max(nextBlink, now + 4); nextDart = max(nextDart, now + 4)
                 if mood == .sleep { gazeTo = .zero }
             } else if peekUntil > 0 {
