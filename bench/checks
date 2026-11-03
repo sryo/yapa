@@ -12,3 +12,5 @@ test/ya-build
 test/ya-add
 test/ya-parts
 test/jeta-install
+test/jeta-hooks-sim
+test/jeta-hooks-script

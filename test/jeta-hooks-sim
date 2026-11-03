@@ -1,0 +1,23 @@
+#!/bin/sh
+# R2, R3: jeta, run in a booted Simulator (which shares this Mac's network), takes Claude Code's hooks on :8079:
+# a status event is answered at once with nothing, and a permission request waits for a tap; with no tap the
+# hook gets no decision, so the terminal decides. Skips when no Simulator is booted.
+cd "$(dirname "$0")/.." || exit 1
+xcrun simctl list devices booted | grep -q Booted || { echo "skip jeta hooks: no Simulator booted"; exit 0; }
+app=jeta/$(jeta/build-app sim) || exit 1  # build-app prints its path from jeta/
+xcrun simctl install booted "$app" && xcrun simctl launch --terminate-running-process booted com.sryo.yapa >/dev/null || exit 1
+hook() { curl -s --connect-timeout 1 -m "$1" -w '%{http_code}' --data-binary "$2" http://127.0.0.1:8079/hook; }
+for _ in $(seq 50); do [ "$(hook 1 '{"hook_event_name":"SessionStart","session_id":"t","cwd":"/x/yapa"}')" = 200 ] && break; sleep 0.2; done
+out=$(hook 2 '{"hook_event_name":"UserPromptSubmit","session_id":"t","cwd":"/x/yapa"}')
+[ "$out" = 200 ] || { echo "FAIL: a status hook answered $out, want an empty 200"; exit 1; }
+t0=$(date +%s)
+out=$(hook 3 '{"hook_event_name":"PermissionRequest","session_id":"t","cwd":"/x/yapa","tool_name":"Bash","tool_input":{"command":"git push"}}')
+[ $(( $(date +%s) - t0 )) -ge 3 ] || { echo "FAIL: a permission hook didn't wait for a tap: $out"; exit 1; }
+case "$out" in *allow*|*deny*) echo "FAIL: a permission hook got a decision with no tap: $out"; exit 1 ;; esac
+# The session moving on lets go of the request (it timed out on the Mac's side already).
+out=$(hook 2 '{"hook_event_name":"SessionEnd","session_id":"t","cwd":"/x/yapa"}')
+[ "$out" = 200 ] || { echo "FAIL: SessionEnd answered $out"; exit 1; }
+out=$(curl -s -m 2 -w '%{http_code}' http://127.0.0.1:8079/nope)
+case "$out" in *404) ;; *) echo "FAIL: anything but POST /hook should be a 404: $out"; exit 1 ;; esac
+xcrun simctl terminate booted com.sryo.yapa
+echo "ok jeta hooks"

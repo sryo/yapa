@@ -12,7 +12,7 @@ Turn a iPhone that would otherwise sit in a drawer into an always-on home node. 
 When two goals conflict, the higher one wins.
 
 1. **Comes back on its own, keeps itself going.** After a reboot and one tap on Dopamine's Jailbreak, every service is up again with nothing else to do. Between reboots it looks after itself: a crashed daemon restarts, logs and caches don't fill the disk, blocklists and certificates stay fresh, and when something does need a hand, the pad says what and what to do.
-2. **Answering an agent takes one tap.** The pad is a Claude Hardware Buddy: it pairs with the Claude desktop app over Bluetooth, shows what the agents are doing, buzzes on a permission prompt, and the tap gets back fast enough that you never go to the app instead. It feels alive: a face that blinks, glances, eases between moods and reacts to being touched, tilted and picked up, without draining the battery.
+2. **Answering an agent takes one tap.** The pad hears every Claude Code session on the Mac through its hooks, straight over Wi-Fi, or pairs with the Claude desktop app over Bluetooth as a Claude Hardware Buddy; it shows what the agents are doing, buzzes on a permission prompt, and the tap gets back fast enough that you never go to the app instead. It feels alive: a face that blinks, glances, eases between moods and reacts to being touched, tilted and picked up, without draining the battery.
 3. **Talking to an agent works.** Hold, speak, release: the words arrive in the session as text, fast and accurate enough to replace typing short replies.
 4. **Light on an old phone.** Every daemon together fits comfortably in 2 GB of RAM and leaves the CPU idle when nothing is happening, so the phone stays cool on the charger.
 5. **Small.** Few binaries, a small pad app, little code to keep working.
@@ -29,6 +29,7 @@ When two goals conflict, the higher one wins.
 | 2 | notices missed, misread and invented per 1,000 replayed streams of the manager's turn events; µs per event | `bench/jeta-notice`, seeded streams replayed through the pad's notice reader on the Mac | `bench/jeta-notice` |
 | 2 | seconds from the manager writing a `jeta:` line to the face showing it | `bench/jeta-notice-live`, the manager writes, the phone's log says when it showed | live: `bench/jeta-notice-live` |
 | 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/jeta-buddy-live`, the Mac acting as the desktop over Bluetooth | live: `bench/jeta-buddy-live` |
+| 2 | ms from a Claude Code permission hook to the buzz, and from a tap to the hook's answer (p50); ms each status hook runs in the background | `bench/jeta-hook-live`, this Mac sending hooks to the phone over Wi-Fi, someone tapping allow | live: `bench/jeta-hook-live` |
 | 3 | ms from release to text; word error rate on fixture clips | `bench/che` with `bench/che-clips/` | `bench/che` |
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/yata` over SSH to the phone | live: `bench/yata` |
 | 5 | bytes of the pad app; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |

@@ -1,0 +1,84 @@
+#!/bin/sh
+# Points Claude Code's hooks at jeta on the phone, so every session on this Mac reports to it over Wi-Fi.
+#   jeta/hooks on [host]   add them; the first time, the settings are kept as settings.json.before-yapa. host: the
+#                          phone ./ya install saved (~/.config/yapa/host), else claude-yapa.local, the phone's own
+#                          name, which iOS answers over mDNS only some of the time
+#   jeta/hooks off         take exactly them out
+#   jeta/hooks             say whether they're on
+# Edits ~/.claude/settings.json (or $JETA_SETTINGS) beside the user's own hooks. It runs as JavaScript in osascript,
+# which every Mac has. A phone that's off fails each hook within 1 s, and the terminal asks as it always does.
+exec /usr/bin/osascript -l JavaScript - "$@" <<'EOF'
+ObjC.import("Foundation"); ObjC.import("stdlib")
+
+const statusEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop",
+                      "StopFailure", "SessionEnd", "Notification"]
+const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
+
+// Each hook ends in this mark, so off finds exactly them; che's hooks to 127.0.0.1:8078 are an earlier version of them.
+const ours = h => typeof h.command === "string" && (h.command.endsWith("# jeta") || h.command.includes("127.0.0.1:8078/hook"))
+
+function off(s) {
+  if (!s.hooks) return s
+  for (const [event, groups] of Object.entries(s.hooks)) {
+    if (!Array.isArray(groups)) continue
+    const left = groups.flatMap(g => {
+      if (!g || !Array.isArray(g.hooks) || !g.hooks.some(ours)) return [g]
+      const rest = g.hooks.filter(h => !ours(h))
+      return rest.length ? [{ ...g, hooks: rest }] : []
+    })
+    if (left.length) s.hooks[event] = left; else delete s.hooks[event]
+  }
+  if (!Object.keys(s.hooks).length) delete s.hooks
+  return s
+}
+
+function on(s, host) {
+  s = off(s)
+  const url = `http://${host}:8079/hook`
+  s.hooks = s.hooks || {}
+  for (const event of [...statusEvents, "PermissionRequest"]) {
+    // Only the permission hook waits, as long as the terminal's own dialog might: it shows at the same time.
+    const h = event === "PermissionRequest"
+      ? { type: "command", command: `curl -s --connect-timeout 1 -m 590 --data-binary @- ${url} 2>/dev/null || true # jeta`, timeout: 600 }
+      : { type: "command", command: `curl -s --connect-timeout 1 -m 3 --data-binary @- ${url} >/dev/null 2>&1 || true # jeta`, async: true }
+    const group = toolEvents.includes(event) ? { matcher: "", hooks: [h] } : { hooks: [h] }
+    s.hooks[event] = [...(s.hooks[event] || []), group]
+  }
+  return s
+}
+
+function savedPhone(env) {
+  const f = env.objectForKey("YAPA_HOST_FILE")
+  const t = $.NSString.stringWithContentsOfFileEncodingError(f.isNil() ? $.NSHomeDirectory().js + "/.config/yapa/host" : f.js, $.NSUTF8StringEncoding, null)
+  const host = t.isNil() ? "" : t.js.trim().split("@").pop()
+  return host || "claude-yapa.local"
+}
+
+function run(argv) {
+  const vars = $.NSProcessInfo.processInfo.environment
+  const env = vars.objectForKey("JETA_SETTINGS")
+  const path = env.isNil() ? $.NSHomeDirectory().js + "/.claude/settings.json" : env.js
+  const fm = $.NSFileManager.defaultManager
+  const text = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null)
+  let s = {}
+  if (!text.isNil()) {
+    try { s = JSON.parse(text.js) } catch (e) {
+      console.log(`jeta/hooks: ${path} isn't JSON; fix it first, this won't overwrite it`); $.exit(1)
+    }
+  }
+  const isOn = x => Object.values(x.hooks || {}).some(gs => Array.isArray(gs) && gs.some(g => g && Array.isArray(g.hooks) && g.hooks.some(h => typeof h.command === "string" && h.command.endsWith("# jeta"))))
+  if (!argv.length) return isOn(s) ? "on" : "off"
+  if (!["on", "off"].includes(argv[0])) { console.log("usage: jeta/hooks on [host] | off"); $.exit(2) }
+  if (argv[0] === "on" && !text.isNil() && !fm.fileExistsAtPath(path + ".before-yapa")) {
+    fm.copyItemAtPathToPathError(path, path + ".before-yapa", null)
+  }
+  const host = argv[1] || savedPhone(vars)
+  const out = JSON.stringify(argv[0] === "on" ? on(s, host) : off(s), null, 2) + "\n"
+  if (!$(out).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null)) {
+    console.log(`jeta/hooks: can't write ${path}`); $.exit(1)
+  }
+  return argv[0] === "on"
+    ? `hooks on: every Claude Code session on this Mac reports to ${host} (new sessions, or /hooks in open ones). Undo: jeta/hooks off. Your settings as they were: ${path}.before-yapa`
+    : "hooks off: the pad goes back to the Claude app over Bluetooth"
+}
+EOF
