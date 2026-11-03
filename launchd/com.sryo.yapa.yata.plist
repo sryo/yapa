@@ -15,6 +15,6 @@
 	<key>ThrottleInterval</key>
 	<integer>2</integer>
 	<key>StandardErrorPath</key>
-	<string>/var/jb/var/log/yata.log</string>
+	<string>/var/jb/var/log/yapa/yata.log</string>
 </dict>
 </plist>

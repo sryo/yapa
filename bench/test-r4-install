@@ -1,10 +1,10 @@
 #!/bin/sh
-# R4: ./install puts yapad, its services.json and its launchd plist on the phone, and rerunning it is safe.
+# R4: ./install puts yapa's daemons, their config and launchd plists on the phone, and rerunning it is safe.
 # A fake ssh runs the phone's side here, under a temp dir standing in for /var/jb, with launchctl and chown logged.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
-mkdir -p "$tmp/bin" "$tmp/jb"
-printf 'fake yapad' > "$tmp/yapad"
+mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build"
+for d in yapad caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
 cat > "$tmp/bin/ssh" <<FAKE
 #!/bin/sh
 while [ \$# -gt 1 ]; do shift; done
@@ -13,21 +13,45 @@ FAKE
 printf '#!/bin/sh\necho "launchctl $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/launchctl"
 printf '#!/bin/sh\necho "chown $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/chown"
 chmod +x "$tmp/bin/"*
-run() { PATH="$tmp/bin:$PATH" YAPA_BIN="$tmp/yapad" ./install root@phone > "$tmp/out" 2>&1 || { echo "R4: ./install failed:"; cat "$tmp/out"; exit 1; }; }
+run() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" "$@" ./install root@phone > "$tmp/out" 2>&1 || { echo "R4: ./install failed:"; cat "$tmp/out"; exit 1; }; }
+fail() { echo "R4: $*"; exit 1; }
+jb=$tmp/jb; ld=$jb/Library/LaunchDaemons; etc=$jb/etc/yapa
 
 run
-jb=$tmp/jb
-[ "$(cat "$jb/usr/libexec/yapa/yapad")" = 'fake yapad' ] || { echo "R4: yapad not in /var/jb/usr/libexec/yapa"; exit 1; }
-[ -x "$jb/usr/libexec/yapa/yapad" ] || { echo "R4: yapad isn't executable"; exit 1; }
-grep -q '"tcp:127.0.0.1:8077"' "$jb/etc/yapa/services.json" || { echo "R4: services.json doesn't watch yapad on 8077"; exit 1; }
-plist=$jb/Library/LaunchDaemons/com.sryo.yapa.yapad.plist
-cmp -s "$plist" launchd/com.sryo.yapa.yapad.plist || { echo "R4: plist not installed in /var/jb/Library/LaunchDaemons"; exit 1; }
-grep -q "chown root:wheel .*com.sryo.yapa.yapad.plist" "$tmp/log" || { echo "R4: plist must be owned by root:wheel or launchd refuses it"; exit 1; }
-tail -1 "$tmp/log" | grep -q "launchctl load .*com.sryo.yapa.yapad.plist" || { echo "R4: plist isn't loaded last"; cat "$tmp/log"; exit 1; }
+for d in yapad caddy; do
+  [ "$(cat "$jb/usr/libexec/yapa/$d")" = "fake $d" ] && [ -x "$jb/usr/libexec/yapa/$d" ] || fail "$d not installed executable in /var/jb/usr/libexec/yapa"
+  cmp -s "$ld/com.sryo.yapa.$d.plist" "launchd/com.sryo.yapa.$d.plist" || fail "$d plist not in /var/jb/Library/LaunchDaemons"
+  grep -q "chown root:wheel .*com.sryo.yapa.$d.plist" "$tmp/log" || fail "$d plist must be owned by root:wheel or launchd refuses it"
+  grep -q "launchctl load .*com.sryo.yapa.$d.plist" "$tmp/log" || fail "$d plist isn't loaded"
+done
+[ -e "$jb/usr/libexec/yapa/cloudflared" ] || [ -e "$ld/com.sryo.yapa.cloudflared.plist" ] && fail "cloudflared installed without a tunnel token"
+grep -q '"tcp:127.0.0.1:8077"' "$etc/services.json" || fail "services.json doesn't watch yapad"
+grep -q '"tcp:127.0.0.1:8080"' "$etc/services.json" || fail "services.json doesn't watch caddy"
+grep -q '^http://:8080 {' "$etc/Caddyfile" && grep -q '^[[:space:]]*bind 127.0.0.1$' "$etc/Caddyfile" || fail "Caddyfile must serve on port 8080 of 127.0.0.1 only"
+[ -f "$jb/var/yapa/www/index.html" ] || fail "no starter site in /var/jb/var/yapa/www"
+[ -x "$jb/usr/libexec/yapa/tidy" ] && [ -f "$ld/com.sryo.yapa.tidy.plist" ] || fail "tidy job not installed"
 
-# A service added by hand survives a rerun, and the rerun unloads before it loads again.
-echo '[{"name":"web","check":"tcp:127.0.0.1:80"}]' > "$jb/etc/yapa/services.json"
+# A hand-edited Caddyfile, site and service survive a rerun; the rerun unloads before it loads again.
+echo '# mine' >> "$etc/Caddyfile"; echo mine > "$jb/var/yapa/www/index.html"
+sed 's/^\[/[{"name":"web","check":"tcp:127.0.0.1:80"},/' "$etc/services.json" > "$tmp/s" && mv "$tmp/s" "$etc/services.json"
 : > "$tmp/log"
 run
-grep -q '"web"' "$jb/etc/yapa/services.json" || { echo "R4: rerun overwrote services.json"; exit 1; }
-[ "$(grep -c launchctl "$tmp/log")" = 2 ] && head -1 "$tmp/log" | grep -q "launchctl unload" || { echo "R4: rerun must unload, then load"; cat "$tmp/log"; exit 1; }
+grep -q '# mine' "$etc/Caddyfile" || fail "rerun overwrote the Caddyfile"
+[ "$(cat "$jb/var/yapa/www/index.html")" = mine ] || fail "rerun overwrote the site"
+grep -q '"web"' "$etc/services.json" || fail "rerun dropped a service added by hand"
+[ "$(grep -o '"name":"caddy"' "$etc/services.json" | wc -l)" -eq 1 ] || fail "rerun duplicated caddy in services.json"
+head -1 "$tmp/log" | grep -q "launchctl unload" || fail "rerun must unload before it loads"
+tail -1 "$tmp/log" | grep -q "launchctl load" || fail "rerun must load last"
+
+# With a token, cloudflared is installed and watched; the token is private and never printed.
+printf 'tok-SECRET-123' > "$tmp/token"
+run env YAPA_TUNNEL_TOKEN_FILE="$tmp/token"
+[ "$(cat "$jb/usr/libexec/yapa/cloudflared")" = "fake cloudflared" ] || fail "cloudflared not installed with a token"
+cmp -s "$ld/com.sryo.yapa.cloudflared.plist" launchd/com.sryo.yapa.cloudflared.plist || fail "cloudflared plist not installed"
+[ "$(stat -f %Lp "$etc/tunnel.token")" = 600 ] || fail "tunnel.token must be mode 600"
+grep -q SECRET "$tmp/out" "$tmp/log" && fail "the token was printed"
+grep -q '"tcp:127.0.0.1:20241"' "$etc/services.json" || fail "services.json doesn't watch cloudflared"
+# A rerun without the token keeps the tunnel.
+run
+[ -f "$ld/com.sryo.yapa.cloudflared.plist" ] && [ -f "$etc/tunnel.token" ] || fail "rerun without a token dropped the tunnel"
+exit 0

@@ -1,33 +1,57 @@
 #!/bin/sh
 # Installs yapa's daemons on a jailbroken (rootless Dopamine) phone over ssh. Safe to rerun.
 #   ./install root@<phone-ip>
-#   YAPA_BIN  a yapad already built for the phone, which skips ./build-ios
+#   YAPA_TUNNEL_TOKEN_FILE  a file holding the Cloudflare tunnel token; turns on cloudflared (kept on later runs)
+#   YAPA_BUILD              a folder of daemons already built for the phone, which skips ./build-ios
 set -e
 cd "$(dirname "$0")"
 host=${1:?usage: ./install root@<phone-ip>}
-if [ -z "$YAPA_BIN" ]; then ./build-ios >/dev/null; YAPA_BIN=build/ios/yapad; fi
+if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
 
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-cp "$YAPA_BIN" "$stage/yapad"
-cp launchd/com.sryo.yapa.yapad.plist "$stage/"
-echo '[{"name":"yapad","check":"tcp:127.0.0.1:8077"}]' > "$stage/services.json"
+for d in yapad caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
+cp launchd/*.plist phone/Caddyfile phone/tidy "$stage/"
+cp -R phone/www "$stage/www"
+if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
 # Runs on the phone. /var/jb is Dopamine's rootless prefix; launchd refuses a plist not owned by root:wheel.
+# Config the user may have edited (services.json entries, Caddyfile, the site) is only ever added to.
 cat > "$stage/setup" <<'PHONE'
 set -e
 cd "$1"
 jb=${YAPA_JB:-/var/jb}
-plist=$jb/Library/LaunchDaemons/com.sryo.yapa.yapad.plist
-launchctl unload "$plist" 2>/dev/null || true
-mkdir -p "$jb/usr/libexec/yapa" "$jb/etc/yapa" "$jb/Library/LaunchDaemons" "$jb/var/log"
-cp yapad "$jb/usr/libexec/yapa/yapad.new"
-chmod 755 "$jb/usr/libexec/yapa/yapad.new"
-mv -f "$jb/usr/libexec/yapa/yapad.new" "$jb/usr/libexec/yapa/yapad"
-[ -f "$jb/etc/yapa/services.json" ] || cp services.json "$jb/etc/yapa/services.json"
-cp com.sryo.yapa.yapad.plist "$plist"
-chmod 644 "$plist"
-chown root:wheel "$plist"
-launchctl load "$plist"
+bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons
+for p in "$ld"/com.sryo.yapa.*.plist; do [ -f "$p" ] && launchctl unload "$p" 2>/dev/null || true; done
+mkdir -p "$bin" "$etc" "$ld" "$jb/var/log/yapa" "$jb/var/yapa/caddy"
+[ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
+daemons="yapad caddy tidy"
+[ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
+for d in $daemons; do
+  src=$d; [ -f "$src" ] || continue
+  cp "$src" "$bin/$d.new"; chmod 755 "$bin/$d.new"; mv -f "$bin/$d.new" "$bin/$d"
+done
+[ -f "$etc/Caddyfile" ] || cp Caddyfile "$etc/Caddyfile"
+[ -d "$jb/var/yapa/www" ] || cp -R www "$jb/var/yapa/www"
+
+s=$etc/services.json
+[ -f "$s" ] || echo '[]' > "$s"
+watch() {
+  grep -q "\"name\":\"$1\"" "$s" && return
+  e="{\"name\":\"$1\",\"check\":\"$2\"}"
+  if grep -q '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$s"; then echo "[$e]" > "$s"
+  else sed "\$ s/\][[:space:]]*\$/,$e]/" "$s" > "$s.new" && mv -f "$s.new" "$s"; fi
+}
+watch yapad tcp:127.0.0.1:8077
+watch caddy tcp:127.0.0.1:8080
+[ -f "$etc/tunnel.token" ] && watch cloudflared tcp:127.0.0.1:20241
+
+for d in $daemons; do
+  p=$ld/com.sryo.yapa.$d.plist
+  cp "com.sryo.yapa.$d.plist" "$p"; chmod 644 "$p"; chown root:wheel "$p"
+done
+for d in $daemons; do launchctl load "$ld/com.sryo.yapa.$d.plist"; done
+echo "$daemons"
 PHONE
 
-tar -cf - -C "$stage" . | ssh "$host" 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d/setup" "$d"; s=$?; rm -rf "$d"; exit $s'
-echo "yapad installed on $host; check it with: curl http://${host#*@}:8077/health"
+running=$(tar -cf - -C "$stage" . | ssh "$host" 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d/setup" "$d"; s=$?; rm -rf "$d"; exit $s')
+echo "installed on $host: $running"
+echo "check it with: curl http://${host#*@}:8077/health"

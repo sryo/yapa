@@ -8,3 +8,5 @@ swift test --package-path mac
 test/scripts-parse
 test/che-say
 bench/test-r4-install
+bench/test-r5-build
+bench/test-r6-tidy

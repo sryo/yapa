@@ -1,0 +1,17 @@
+# yapa's web server. It listens on the phone itself only; the internet reaches it through cloudflared.
+# Add a site or an app behind it with another block, like:
+#   http://app.example.com:8080 {
+#   	bind 127.0.0.1
+#   	reverse_proxy 127.0.0.1:3001
+#   }
+{
+	admin 127.0.0.1:2019
+	auto_https off
+}
+
+http://:8080 {
+	bind 127.0.0.1
+	root * /var/jb/var/yapa/www
+	encode zstd gzip
+	file_server
+}

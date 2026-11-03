@@ -4,12 +4,12 @@
 #   YAPA_PORT   yata's port (8077)
 #   YAPA_IDLE_S seconds to sample idle CPU (60)
 #   YAPA_KILL   1 to kill each daemon once and time its return (default 1 on the phone, 0 locally)
-#   YAPA_DAEMONS process names that make up yapa (yata)
+#   YAPA_DAEMONS process names that make up yapa (yata caddy cloudflared)
 cd "$(dirname "$0")/.." || exit 1
 host=${YAPA_HOST:?set YAPA_HOST to the phone over ssh, like root@192.168.1.20, or to local}
 port=${YAPA_PORT:-8077}
 idle=${YAPA_IDLE_S:-60}
-daemons=${YAPA_DAEMONS:-yata}
+daemons=${YAPA_DAEMONS:-yata caddy cloudflared}
 if [ "$host" = local ]; then
   ip=127.0.0.1; kill_default=0
   on() { sh -c "$1"; }

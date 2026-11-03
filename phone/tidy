@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs hourly from launchd. Keeps yapa's logs from filling the disk: a log past 5 MB keeps its newest 1 MB,
+# and while all of them pass 50 MB the largest is cut the same way (or emptied, if it's already that small).
+dir=${YAPA_JB:-/var/jb}/var/log/yapa
+per=5120 keep=1024 total=51200
+kb() { du -k "$1" | cut -f1; }
+# Rewriting in place keeps the inode, so a daemon's open log keeps writing to the same file.
+cut_to() { tail -c $(($2 * 1024)) "$1" > "$1.tidy" && cat "$1.tidy" > "$1"; rm -f "$1.tidy"; }
+for f in "$dir"/*.log; do
+  [ -f "$f" ] && [ "$(kb "$f")" -gt $per ] && cut_to "$f" $keep
+done
+n=$(ls "$dir" | wc -l)
+while [ "$(du -sk "$dir" | cut -f1)" -gt $total ] && [ "$n" -gt 0 ]; do
+  big=$(ls -S "$dir"/*.log | head -1)
+  if [ "$(kb "$big")" -gt $keep ]; then cut_to "$big" $keep; else : > "$big"; fi
+  n=$((n - 1))
+done
