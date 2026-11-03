@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         .target(name: "FaceKit"),
         .executableTarget(name: "facebench", dependencies: ["FaceKit"]),
+        .executableTarget(name: "chordbench", dependencies: ["FaceKit"]),
         .testTarget(name: "FaceKitTests", dependencies: ["FaceKit"]),
     ]
 )

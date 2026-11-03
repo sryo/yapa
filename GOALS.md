@@ -25,6 +25,7 @@ When two goals conflict, the higher one wins.
 | 1 | seconds for a killed daemon to come back; disk growth MB/day; days since a hand was needed | `bench/health` over SSH to the phone | live: `bench/health` |
 | 2 | protocol checks passed against the Hardware Buddy spec | `bench/pad`, the pad's protocol core run on the Mac | `bench/pad` |
 | 2 | µs of CPU per face frame | `bench/face`, the face model run on the Mac | `bench/face` |
+| 2 | chords misread, and decisions sent that weren't meant, per 1,000 replayed gestures; ms to lock a chord; µs per touch update | `bench/chord`, seeded gestures replayed through the pad's chord reader on the Mac | `bench/chord` |
 | 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/pad-live`, the Mac acting as the desktop over Bluetooth | live: `bench/pad-live` |
 | 3 | ms from release to text; word error rate on fixture clips | `bench/ptt` with `bench/clips/` | `bench/ptt` |
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/health` over SSH to the phone | live: `bench/health` |
