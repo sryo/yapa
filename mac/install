@@ -1,0 +1,16 @@
+#!/bin/sh
+# Installs che as a login agent: builds it, copies it to a fixed path (so its Accessibility
+# grant survives rebuilds of the repo) and (re)starts it under launchd. Logs: ~/Library/Logs/che.log
+set -e
+cd "$(dirname "$0")"
+swift build -q -c release
+dir="$HOME/Library/Application Support/yapa"
+mkdir -p "$dir"
+cp "$(swift build -c release --show-bin-path)/che" "$dir/che"
+codesign -f -s - -i com.sryo.yapa.che "$dir/che"
+from=${CHE_FROM:?set CHE_FROM to the pad's IP, e.g. CHE_FROM=192.168.1.8 mac/install}
+plist="$HOME/Library/LaunchAgents/com.sryo.yapa.che.plist"
+sed "s|@BIN@|$dir/che|; s|@FROM@|$from|; s|@LOG@|$HOME/Library/Logs/che.log|g" com.sryo.yapa.che.plist > "$plist"
+launchctl bootout "gui/$(id -u)/com.sryo.yapa.che" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$plist"
+echo "che running; if it can't type, allow $dir/che in System Settings > Privacy & Security > Accessibility"

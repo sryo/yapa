@@ -1,0 +1,7 @@
+{"commit": "c5b3299aadd386b9f32682406662aec34b410a30", "dirty": false,
+ "metrics": {
+  "pad_app_bytes": {"dir": "lower", "kind": "bytes", "samples": [65394]},
+  "daemon_bytes": {"dir": "lower", "kind": "bytes", "samples": [0]},
+  "loc": {"dir": "lower", "kind": "loc", "samples": [1096]}
+ },
+ "limits": {}}

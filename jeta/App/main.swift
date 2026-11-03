@@ -9,10 +9,9 @@ final class FaceView: UIView {
     /// The manager's notices, and what the screen shows of them.
     private var board = NoticeBoard(), screen = Screen()
     private var texts: [CATextLayer] = []
-    /// Holding to talk; che hooks in here with the session to reach (nil: the manager).
-    var onTalk: ((String?) -> Void)?
     /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
+    private var talk: Talk?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -22,11 +21,14 @@ final class FaceView: UIView {
             layer.addSublayer(eye)
         }
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
-        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(held)))
         let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped))
         swipe.direction = [.left, .right]
         addGestureRecognizer(swipe)
+        let down = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
+        down.direction = .down
+        addGestureRecognizer(down)
         isMultipleTouchEnabled = true
+        talk = Talk(face: face, in: self)
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
@@ -48,6 +50,8 @@ final class FaceView: UIView {
 
     // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.
     @objc private func tapped(_ g: UITapGestureRecognizer) {
+        // A tap right after talking stops the pending Enter.
+        if talk?.tapped() == true { return }
         guard screen.mode == .face else { screen.tap(); return }
         let p = g.location(in: self)
         if onTap?(p) == true { return }
@@ -57,10 +61,9 @@ final class FaceView: UIView {
 
     @objc private func swiped(_ g: UISwipeGestureRecognizer) { screen.swipe() }
 
-    // On the bare face a long press opens the session list; with anything open, holding is for talking.
-    @objc private func held(_ g: UILongPressGestureRecognizer) {
-        guard g.state == .began else { return }
-        if case .talk(let to) = screen.longPress() { onTalk?(to) }
+    // Holding anywhere is talking (Talk owns that gesture), so the session list opens with a swipe down on the bare face.
+    @objc private func swipedDown(_ g: UISwipeGestureRecognizer) {
+        if screen.mode == .face { screen.longPress() }
     }
 
     // Two or more fingers are a chord. Until the Buddy link lands, the attention mood stands in for a prompt.
