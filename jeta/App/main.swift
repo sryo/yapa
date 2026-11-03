@@ -32,6 +32,7 @@ final class FaceView: UIView {
         addGestureRecognizer(down)
         isMultipleTouchEnabled = true
         talk = Talk(face: face, in: self)
+        onChoose = { [weak self] in self?.talk?.say($0) }
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }

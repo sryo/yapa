@@ -1,0 +1,22 @@
+#!/bin/sh
+# R5: che takes text as well as speech: POST /say?dry with a UTF-8 body answers the text the way /talk does
+# (nothing is typed), and a body that isn't text is refused.
+cd "$(dirname "$0")/.." || exit 1
+log=$(mktemp)
+swift build -q -c release --package-path mac || exit 1
+bin=$(swift build -c release --package-path mac --show-bin-path)
+CHE_PORT=18079 CHE_ENTER=0 CHE_FROM= "$bin/che" 2> "$log" &
+agent=$!
+trap 'kill $agent 2>/dev/null; wait $agent 2>/dev/null; rm -f "$log"' EXIT
+for _ in $(seq 100); do grep -q listening "$log" && break; sleep 0.2; done
+grep -q listening "$log" || { cat "$log"; exit 1; }
+out=$(curl -s --data-binary 'server: 8443' http://127.0.0.1:18079/say?dry)
+echo "$out" | grep -q '"text":"server: 8443"' || { echo "FAIL: /say answered $out"; exit 1; }
+echo "$out" | grep -q '"enter_in":0' || { echo "FAIL: /say?dry should not arm Enter: $out"; exit 1; }
+# The line an option button hands to Talk.say, framed byte for byte the way Talk.post frames it.
+line='server: 8443'
+out=$(printf 'POST /say?dry HTTP/1.1\r\nHost: yapa\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' ${#line} "$line" | nc 127.0.0.1 18079)
+echo "$out" | grep -q '"text":"server: 8443"' || { echo "FAIL: a chosen line framed like Talk's didn't reach /say: $out"; exit 1; }
+code=$(printf '\377\376' | curl -s -o /dev/null -w '%{http_code}' --data-binary @- http://127.0.0.1:18079/say?dry)
+[ "$code" = 400 ] || { echo "FAIL: /say with a non-UTF-8 body answered $code, not 400"; exit 1; }
+echo "ok r5 say"

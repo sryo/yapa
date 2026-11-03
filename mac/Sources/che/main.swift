@@ -3,7 +3,8 @@ import Network
 import TalkKit
 
 // che: the pad posts a clip to /talk on release; this hears it and types the text into Claude.
-// /talk?dry only transcribes (for bench/ptt). /cancel stops the Enter that follows the text.
+// /say takes the text itself (an option picked on the pad). ?dry on either types nothing (for the benches).
+// /cancel stops the Enter that follows the text.
 // Only this Mac and the hosts in CHE_FROM (the pad's address, comma-separated) may post.
 let env = ProcessInfo.processInfo.environment
 let port = NWEndpoint.Port(env["CHE_PORT"] ?? "8078")!
@@ -62,10 +63,20 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
 }
 
+/// Delivers the text unless dry, and answers what /talk and /say both answer.
+func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, dry: Bool) {
+    let to = dry ? "none" : "\(deliver(text))"
+    log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
+    reply(c, "200 OK", ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay])
+}
+
 func handle(_ c: NWConnection, _ r: Request) {
     switch (r.method, r.path) {
     case ("POST", "/cancel"):
         reply(c, "200 OK", ["cancelled": enter.cancel()])
+    case ("POST", let p) where p.hasPrefix("/say"):
+        guard let text = said(r.body) else { return reply(c, "400 Bad Request", ["error": "POST /say with UTF-8 text"]) }
+        answer(c, text, lang: "text", ms: 0, dry: p.hasSuffix("?dry"))
     case ("POST", let p) where p.hasPrefix("/talk"):
         let start = DispatchTime.now()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-\(UUID()).wav")
@@ -76,17 +87,14 @@ func handle(_ c: NWConnection, _ r: Request) {
                 let heard = pick(try await transcriber.hear(url))
                 let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6
                 guard let h = heard else { return reply(c, "200 OK", ["text": "", "ms": ms]) }
-                let dry = p.hasSuffix("?dry"), to = dry ? "none" : "\(deliver(h.text))"
-                log("\(Int(ms)) ms \(h.lang) -> \(to): \(h.text)")
-                reply(c, "200 OK", ["text": h.text, "lang": h.lang, "ms": ms,
-                                    "enter_in": dry || to == "clipboard" ? 0 : enterDelay])
+                answer(c, h.text, lang: h.lang, ms: ms, dry: p.hasSuffix("?dry"))
             } catch {
                 log("\(error)")
                 reply(c, "500 Internal Server Error", ["error": "\(error)"])
             }
         }
     default:
-        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, or POST /cancel"])
+        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, /say with UTF-8 text, or /cancel"])
     }
 }
 
