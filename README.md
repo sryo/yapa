@@ -1,6 +1,6 @@
 # yapa
 
-yapa turns the old iPhone in your drawer into a small server. It serves your sites, git or files to the internet without opening ports, blocks ads as a backup DNS, and buzzes when an agent needs you, so you approve with a tap or answer by holding a button and talking. It runs on the charger and stays cool.
+yapa turns the old iPhone in your drawer into a small server. It serves your sites, git or files to the internet without opening ports, and buzzes when an agent needs you, so you approve with a tap or answer by holding a button and talking. It runs on the charger and stays cool.
 
 ## Install
 Jailbreak the phone with [Dopamine](https://github.com/opa334/Dopamine) (through TrollStore), then from your Mac:
