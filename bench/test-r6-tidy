@@ -13,3 +13,7 @@ YAPA_JB=$tmp sh phone/tidy || { echo "R6: tidy failed"; exit 1; }
 tail -1 "$logs/caddy.log" | grep -q "newest line" || { echo "R6: tidy lost the newest lines"; exit 1; }
 [ "$(du -sk "$logs" | cut -f1)" -le 51200 ] || { echo "R6: logs total $(du -sk "$logs" | cut -f1) KB, over 50 MB"; exit 1; }
 [ "$(kb "$logs/yapad.log")" -gt 0 ] || { echo "R6: tidy emptied a small log"; exit 1; }
+# iOS has no /bin/sh; on rootless Dopamine the shell is under /var/jb, or launchd can't start the job (exit 78).
+[ "$(head -1 phone/tidy)" = "#!/var/jb/bin/sh" ] || { echo "R6: phone/tidy must start with #!/var/jb/bin/sh"; exit 1; }
+# launchd on rootless Dopamine won't spawn a script by its #! line (EX_CONFIG), so the plist names the shell.
+[ "$(plutil -extract ProgramArguments.0 raw launchd/com.sryo.yapa.tidy.plist)" = /var/jb/bin/sh ] || { echo "R6: the tidy plist must run /var/jb/bin/sh"; exit 1; }

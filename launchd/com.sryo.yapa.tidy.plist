@@ -6,6 +6,7 @@
 	<string>com.sryo.yapa.tidy</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/var/jb/bin/sh</string>
 		<string>/var/jb/usr/libexec/yapa/tidy</string>
 	</array>
 	<key>RunAtLoad</key>
