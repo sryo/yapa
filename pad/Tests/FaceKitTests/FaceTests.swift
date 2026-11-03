@@ -6,6 +6,17 @@ final class FaceTests: XCTestCase {
     func frames(_ face: Face, from a: Double, to b: Double, hz: Double = 240) -> [Frame] {
         stride(from: a, through: b, by: 1 / hz).map { face.frame(at: $0) }
     }
+    /// A face sent across the screen every 2.5 s, as events would, sampled at `hz`.
+    func darting(to end: Double, hz: Double = 60) -> [Frame] {
+        let face = Face(seed: 11, now: 0)
+        face.dozeAfter = .infinity
+        let spots: [SIMD2<Double>] = [SIMD2(0.6, 0.2), SIMD2(-0.6, -0.25), SIMD2(0.1, 0.3), SIMD2(-0.3, -0.3), SIMD2(0.65, -0.1)]
+        var next = 1.0, k = 0
+        return stride(from: 0, through: end, by: 1 / hz).map { t in
+            if t >= next { face.go(to: spots[k % spots.count], at: t); k += 1; next += 2.5 }
+            return face.frame(at: t)
+        }
+    }
     func jump(_ x: Frame, _ y: Frame) -> Double {
         zip(x.eyes, y.eyes).map { a, b in
             max(simd_length(a.p0 - b.p0), simd_length(a.c - b.c), simd_length(a.p1 - b.p1), abs(a.width - b.width))
@@ -47,9 +58,10 @@ final class FaceTests: XCTestCase {
         XCTAssertLessThan(jump(before, face.frame(at: 0.1001)), 0.012)
     }
 
-    // R2: blinks every 3–10 s and glances every 1–2.25 s, over ten simulated minutes.
+    // R2: awake and calm, it blinks every 4–12 s and glances every 4–9 s, over ten simulated minutes.
     func testR2_BlinksAndGlancesOnSchedule() {
         let face = Face(seed: 42, now: 0)
+        face.dozeAfter = .infinity
         var blinks: [Double] = [], glances: [Double] = []
         var wasClosed = false, lastGaze = face.frame(at: 0).gazeTarget
         for i in 1...(600 * 60) {
@@ -59,31 +71,29 @@ final class FaceTests: XCTestCase {
             wasClosed = closed
             if f.gazeTarget != lastGaze { glances.append(t); lastGaze = f.gazeTarget }
         }
-        XCTAssertGreaterThan(blinks.count, 55)
-        XCTAssertGreaterThan(glances.count, 250)
-        for (a, b) in zip(blinks, blinks.dropFirst()) { XCTAssert((2.9...10.1).contains(b - a), "blink gap \(b - a)") }
-        for (a, b) in zip(glances, glances.dropFirst()) { XCTAssert((0.98...2.27).contains(b - a), "glance gap \(b - a)") }
+        XCTAssertGreaterThan(blinks.count, 45)
+        XCTAssertGreaterThan(glances.count, 60)
+        for (a, b) in zip(blinks, blinks.dropFirst()) { XCTAssert((3.9...12.1).contains(b - a), "blink gap \(b - a)") }
+        for (a, b) in zip(glances, glances.dropFirst()) { XCTAssert((3.98...9.02).contains(b - a), "glance gap \(b - a)") }
     }
 
     // R2: a blink closes the eye to a thin line and opens it again, without jumping.
     func testR2_BlinkFlows() {
         let face = Face(seed: 42, now: 0)
-        let fs = frames(face, from: 0, to: 12)
+        let fs = frames(face, from: 0, to: 16)
         XCTAssertGreaterThan(fs.map(\.blink).max()!, 0.9)
         for (x, y) in zip(fs, fs.dropFirst()) { XCTAssertLessThan(jump(x, y), 0.03) }
     }
 
-    // R2: asleep, the eyes stay put and only breathe.
+    // R2: asleep, it doesn't blink or glance; it only breathes and drifts slowly.
     func testR2_SleepOnlyBreathes() {
         let face = Face(seed: 3, now: 0)
         face.set(.sleep, at: 0)
         let g = face.frame(at: 3).gazeTarget
-        let fs = frames(face, from: 3, to: 13, hz: 30)
+        let fs = frames(face, from: 3, to: 63, hz: 30)
         for f in fs { XCTAssertEqual(f.gazeTarget, g); XCTAssertLessThan(f.blink, 0.01) }
-        let ys = fs.map { $0.eyes[0].p0.y }
-        XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.004)
-        XCTAssertLessThan(ys.max()! - ys.min()!, 0.04)
-        XCTAssertFalse(face.isActive(at: 13))
+        XCTAssert(fs.allSatisfy { simd_length($0.eyes[0].smear) < 0.06 }, "moves fast in its sleep")
+        XCTAssertFalse(face.isActive(at: 63))
     }
 
     // R3: the seven official moods plus yapa's own five, each with its own shape.
@@ -131,18 +141,43 @@ final class FaceTests: XCTestCase {
         }
     }
 
-    // R5: the face wanders all over the screen, never past its edges, and stays put while asleep.
-    func testR5_WandersTheWholeScreen() {
+    // R5: to avoid burn-in the face drifts slowly over the whole screen, never past its edges, asleep or awake.
+    func testR5_DriftsTheWholeScreenSlowly() {
+        for asleep in [false, true] {
+            let face = Face(seed: 11, now: 0)
+            face.bounds = SIMD2(0.7, 0.35)
+            if asleep { face.set(.sleep, at: 0) }
+            let fs = frames(face, from: 0, to: 900, hz: 4)
+            let centres = fs.map { ($0.eyes[0].c + $0.eyes[1].c) / 2 }
+            let xs = centres.map(\.x), ys = centres.map(\.y)
+            XCTAssertGreaterThan(xs.max()! - xs.min()!, 0.9, "doesn't cover the screen sideways (asleep: \(asleep))")
+            XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.45, "doesn't cover it up and down (asleep: \(asleep))")
+            XCTAssert(centres.allSatisfy { abs($0.x) < 0.8 && abs($0.y) < 0.45 }, "leaves the screen")
+            let steps = zip(fs, fs.dropFirst()).dropFirst(8).map { simd_length($1.centre - $0.centre) * 4 }
+            XCTAssertLessThan(steps.max()!, 0.06, "drifts too fast (asleep: \(asleep))")
+        }
+    }
+
+    // R9: with nothing happening it dozes off on its own; any mood change wakes it.
+    func testR9_DozesWhenNothingHappens() {
         let face = Face(seed: 11, now: 0)
-        face.bounds = SIMD2(0.7, 0.35)
-        let centres = frames(face, from: 0, to: 90, hz: 30).map { ($0.eyes[0].c + $0.eyes[1].c) / 2 }
-        let xs = centres.map(\.x), ys = centres.map(\.y)
-        XCTAssertGreaterThan(xs.max()! - xs.min()!, 0.7, "doesn't roam sideways")
-        XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.35, "doesn't roam up and down")
-        XCTAssert(centres.allSatisfy { abs($0.x) < 0.8 && abs($0.y) < 0.45 }, "leaves the screen")
-        face.set(.sleep, at: 90)
-        let resting = frames(face, from: 93, to: 103, hz: 10).map { ($0.eyes[0].c.x + $0.eyes[1].c.x) / 2 }
-        XCTAssertLessThan(resting.max()! - resting.min()!, 0.002, "wanders in its sleep")
+        face.dozeAfter = 60
+        _ = face.frame(at: 59)
+        XCTAssertEqual(face.mood, .idle)
+        _ = face.frame(at: 61)
+        XCTAssertEqual(face.mood, .sleep)
+        face.set(.attention, at: 70)
+        XCTAssertEqual(face.mood, .attention)
+    }
+
+    // R9: needing you brings it to the middle of the screen in one quick move.
+    func testR9_AttentionComesToTheMiddle() {
+        let face = Face(seed: 11, now: 0)
+        face.go(to: SIMD2(0.6, 0.3), at: 0)
+        _ = face.frame(at: 3)
+        face.set(.attention, at: 3)
+        let c = face.frame(at: 5)
+        XCTAssertLessThan(simd_length((c.eyes[0].c + c.eyes[1].c) / 2), 0.08)
     }
 
     // R6: curious steps closer to you and tilts its head like a dog, then to the other side if it stays curious.
@@ -197,8 +232,7 @@ final class FaceTests: XCTestCase {
 
     // R8: a fast-moving eye leaves a trail along its path, tapering behind it, like a smear frame; at rest it has none.
     func testR8_FastEyesLeaveATrail() {
-        let face = Face(seed: 11, now: 0)
-        let fs = frames(face, from: 0, to: 30, hz: 60)
+        let fs = darting(to: 30)
         func reach(_ s: Stroke) -> Double {
             let mid = (s.p0 + 2 * s.c + s.p1) / 4
             return s.trail.map { simd_length($0 - mid) }.max() ?? 0
@@ -220,8 +254,7 @@ final class FaceTests: XCTestCase {
     // R8: the head swings like it hangs from a pivot (follow-through): starting a move it lags behind, stopping it
     // swings forward past straight, then settles; at rest it stands straight.
     func testR8_HeadSwingsWithAcceleration() {
-        let face = Face(seed: 11, now: 0)
-        let fs = frames(face, from: 0, to: 60, hz: 60)
+        let fs = darting(to: 60)
         let vx = fs.map { $0.eyes[0].smear.x }
         var agree = 0, total = 0
         for i in 8..<(fs.count - 1) {
@@ -239,8 +272,7 @@ final class FaceTests: XCTestCase {
     // R8: stopping after a fast move squashes the eye along the direction it was travelling (and widens it across),
     // the way a ball flattens against what it hits.
     func testR8_SquashesAlongImpact() {
-        let face = Face(seed: 11, now: 0)
-        let fs = frames(face, from: 0, to: 40, hz: 60)
+        let fs = darting(to: 40)
         let speed = fs.map { simd_length($0.eyes[0].smear) }
         var landings = 0, squashed = 0
         for i in 30..<fs.count where speed[i - 1] >= 0.1 && speed[i] < 0.1 && speed[(i - 30)..<i].max()! > 0.6 {

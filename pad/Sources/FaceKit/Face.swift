@@ -123,6 +123,8 @@ public struct Frame {
     public var gazeTarget: SIMD2<Double>
     /// The head's tilt in radians, and how much nearer (>1) or farther (<1) it stands.
     public var tilt: Double, scale: Double
+    /// Where the face itself is (its drift and moves), apart from where the eyes look.
+    public var centre: SIMD2<Double>
 }
 
 /// A damped spring: what keeps every change fluid.
@@ -135,13 +137,16 @@ struct Spring {
 }
 
 /// The face's motion. Every value is a spring chasing a target, integrated in small steps, so nothing jumps.
-/// Changes are exaggerated on purpose: shapes overshoot, a change squashes the eyes and makes them hop, and the
-/// whole face wanders around the screen.
+/// It is calm by default: it drifts very slowly over the whole screen (so nothing burns into the panel, asleep or
+/// awake), glances and blinks only now and then, and dozes off when nothing happens. Events are exaggerated:
+/// shapes overshoot, a change squashes the eyes and makes them hop, and a quick move leaves a trail.
 public final class Face {
     static let step = 1.0 / 240
 
     /// How far the middle of the face may wander from the screen's centre, in fractions of the short side.
     public var bounds = SIMD2<Double>(0.7, 0.35)
+    /// Seconds of nothing happening before an idle face falls asleep.
+    public var dozeAfter = 90.0
 
     private var rng: SplitMix
     private let lively: Bool
@@ -149,7 +154,8 @@ public final class Face {
     private var pose: [Spring] = Mood.idle.pose.fields.map { Spring(x: $0) }
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
-    private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextMove: Double, nextTilt = 0.0, tiltSide = 1.0
+    private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextTilt = 0.0, tiltSide = 1.0, lastEvent: Double
+    private var phase = SIMD2<Double>(0, 0), offset = SIMD2<Double>(0, 0)
     private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
     private var impact = Spring(x: 0), impactAxis = SIMD2<Double>(1, 0), travel = SIMD2<Double>(1, 0), peak = 0.0
     /// Recent (time, position) of the face, for the trail.
@@ -157,8 +163,22 @@ public final class Face {
     static let trailAges = stride(from: 0.004, through: 0.06, by: 0.004).map { $0 }
 
     public init(seed: UInt64, now: Double, lively: Bool = true) {
-        rng = SplitMix(seed); self.lively = lively; self.now = now
-        nextBlink = now + rng.next(in: 3...10); nextDart = now + rng.next(in: 1...2.25); nextMove = now + rng.next(in: 2...5)
+        rng = SplitMix(seed); self.lively = lively; self.now = now; lastEvent = now
+        nextBlink = now + rng.next(in: 4...12); nextDart = now + rng.next(in: 4...9)
+        phase = SIMD2(rng.next(in: 0...(2 * .pi)), rng.next(in: 0...(2 * .pi)))
+        if lively { let d = drift(at: now); pos = [Spring(x: d.x), Spring(x: d.y)]; posTo = d }
+    }
+
+    /// The slow burn-in drift: two slow sine waves (periods of minutes) sweeping the whole allowed area.
+    private func drift(at t: Double) -> SIMD2<Double> {
+        SIMD2(bounds.x * sin(2 * .pi * t / 173 + phase.x), bounds.y * sin(2 * .pi * t / 127 + phase.y))
+    }
+
+    /// Sends the face quickly to `p` (an event: coming to you, say); from there it eases back into its drift.
+    public func go(to p: SIMD2<Double>, at t: Double) {
+        advance(to: t)
+        offset = p - drift(at: t)
+        lastEvent = t
     }
 
     public func set(_ m: Mood, at t: Double) {
@@ -167,6 +187,8 @@ public final class Face {
         kick(by: mood.pose.distance(to: m.pose))
         if m == .curious { nextTilt = t + rng.next(in: 2.5...4) }
         mood = m
+        lastEvent = t
+        if m == .attention { go(to: .zero, at: t) }
     }
 
     public func isActive(at t: Double) -> Bool { mood != .sleep }
@@ -201,7 +223,7 @@ public final class Face {
             return Stroke(p0: stroke.p0, c: stroke.c, p1: stroke.p1, width: stroke.width, smear: velocity,
                           trail: shifts.map { stroke.middle + $0 * fast }, impactAxis: impactAxis, impact: impact.x)
         }
-        return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale)
+        return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale, centre: centre)
     }
 
     /// Where the eyes are as a group: the face's position plus where they look. The trail follows this.
@@ -220,21 +242,22 @@ public final class Face {
         while now < t {
             let dt = min(Face.step, t - now)
             now += dt
+            if lively && mood == .idle && now - lastEvent > dozeAfter { mood = .sleep }
             if !lively || mood == .sleep {
-                nextBlink = max(nextBlink, now + 3); nextDart = max(nextDart, now + 1); nextMove = max(nextMove, now + 2)
-                if mood == .sleep { gazeTo = .zero; posTo = SIMD2(pos[0].x, pos[1].x) }
+                nextBlink = max(nextBlink, now + 4); nextDart = max(nextDart, now + 4)
+                if mood == .sleep { gazeTo = .zero }
             } else {
-                if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 3...10) }
-                if now >= nextDart { gazeTo = SIMD2(rng.next(in: -1...1), rng.next(in: -0.6...0.6)); nextDart += rng.next(in: 1...2.25) }
-                if now >= nextMove {
-                    posTo = SIMD2(rng.next(in: -bounds.x...bounds.x), rng.next(in: -bounds.y...bounds.y))
-                    nextMove += rng.next(in: 2...5)
-                    kick(by: 0.05)
-                }
+                if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
+                if now >= nextDart { gazeTo = SIMD2(rng.next(in: -1...1), rng.next(in: -0.6...0.6)); nextDart += rng.next(in: 4...9) }
+            }
+            if lively {
+                // An event's offset fades over about half a minute, so the face eases back into its drift.
+                offset *= exp(-dt / 30)
+                posTo = drift(at: now) + offset
             }
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
-            gaze[0].step(to: gazeTo.x, k: 200, damping: 0.75, dt: dt)
-            gaze[1].step(to: gazeTo.y, k: 200, damping: 0.75, dt: dt)
+            gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)
+            gaze[1].step(to: gazeTo.y, k: 120, damping: 0.85, dt: dt)
             // Curious tilts like a dog. Moving, the head swings as if it hung from a pivot (follow-through): it
             // lags behind when a move speeds up and swings forward past straight as it slows, then settles.
             let accel = (posTo.x - pos[0].x) * 30 - 2 * 0.75 * 30.0.squareRoot() * pos[0].v
