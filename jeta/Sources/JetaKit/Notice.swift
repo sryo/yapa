@@ -79,7 +79,12 @@ public struct NoticeBoard {
             let s = body.dropFirst(6).trimmingCharacters(in: .whitespaces)
             return s.isEmpty || s.contains(" ") ? nil : .clear(s)
         }
-        let parts = body.components(separatedBy: "·").map { $0.trimmingCharacters(in: .whitespaces) }
+        // A model writing fast swaps the dot for a bullet or a spaced dash; only lines without a dot pay for that.
+        var b = body
+        if !b.contains("·") {
+            if let r = b.range(of: "•") ?? b.range(of: " - ") { b.replaceSubrange(r, with: "·") }
+        }
+        let parts = b.components(separatedBy: "·").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2, !parts[1].isEmpty else { return nil }
         if parts[0] == "list" {
             let r = parts[1].split(separator: ";").compactMap { item -> Roster? in
