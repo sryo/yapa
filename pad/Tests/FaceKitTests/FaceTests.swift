@@ -195,19 +195,26 @@ final class FaceTests: XCTestCase {
         XCTAssertLessThanOrEqual(gap, width * 1.05, "eyes too far apart")
     }
 
-    // R8: a fast-moving eye smears along its path like motion blur, and is round again at rest.
-    func testR8_FastEyesSmear() {
-        let s = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06, smear: SIMD2(1.5, 0))
-        let o = s.outline()
-        let w = o.map(\.x).max()! - o.map(\.x).min()!, h = o.map(\.y).max()! - o.map(\.y).min()!
-        XCTAssertGreaterThan(w, h * 1.4, "doesn't stretch along the motion")
-        let still = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06).outline()
-        let ws = still.map(\.x).max()! - still.map(\.x).min()!
-        XCTAssertEqual(ws, 0.06, accuracy: 0.002)
+    // R8: a fast-moving eye leaves a trail along its path, tapering behind it, like a smear frame; at rest it has none.
+    func testR8_FastEyesLeaveATrail() {
         let face = Face(seed: 11, now: 0)
-        let speeds = frames(face, from: 0, to: 20, hz: 60).map { simd_length($0.eyes[0].smear) }
-        XCTAssertGreaterThan(speeds.max()!, 0.3, "the face never moves fast enough to smear")
-        XCTAssertLessThan(speeds.min()!, 0.02, "it never comes to rest")
+        let fs = frames(face, from: 0, to: 30, hz: 60)
+        func reach(_ s: Stroke) -> Double {
+            let mid = (s.p0 + 2 * s.c + s.p1) / 4
+            return s.trail.map { simd_length($0 - mid) }.max() ?? 0
+        }
+        let speed = fs.map { simd_length($0.eyes[0].smear) }
+        let moving = fs.filter { simd_length($0.eyes[0].smear) > 0.6 }
+        let still = (6..<fs.count).filter { i in speed[(i - 6)...i].allSatisfy { $0 < 0.01 } }.map { fs[$0] }
+        XCTAssertFalse(moving.isEmpty || still.isEmpty)
+        XCTAssertGreaterThan(moving.map { reach($0.eyes[0]) }.max()!, 0.04, "no trail behind a fast eye")
+        XCTAssert(still.allSatisfy { reach($0.eyes[0]) < 0.003 }, "trail while still")
+        // The trail points back where the eye came from, and each step back is smaller.
+        let f = moving.max(by: { simd_length($0.eyes[0].smear) < simd_length($1.eyes[0].smear) })!, e = f.eyes[0]
+        let mid = (e.p0 + 2 * e.c + e.p1) / 4
+        XCTAssertLessThan(simd_dot(e.trail.last! - mid, e.smear), 0, "trail is in front of the eye")
+        let sizes = e.trailOutlines().map { o in o.map(\.y).max()! - o.map(\.y).min()! }
+        XCTAssertEqual(sizes, sizes.sorted(by: >), "trail doesn't taper")
     }
 
     // R8: moving sideways, the head leans into the direction it travels, and stands straight at rest.
@@ -222,24 +229,30 @@ final class FaceTests: XCTestCase {
         XCTAssert(still.allSatisfy { abs($0.tilt) < 0.02 }, "leans while standing still")
     }
 
-    // R8: stopping after a move squashes the eyes, then they stretch back, so the face lands with weight.
-    func testR8_SquashesOnLanding() {
+    // R8: stopping after a move squashes the eye along the direction it was travelling (and widens it across),
+    // the way a ball flattens against what it hits.
+    func testR8_SquashesAlongImpact() {
         let face = Face(seed: 11, now: 0)
         let fs = frames(face, from: 0, to: 40, hz: 60)
-        func ratio(_ f: Frame) -> Double {
-            let o = f.eyes[0].outline()
-            return (o.map(\.y).max()! - o.map(\.y).min()!) / (o.map(\.x).max()! - o.map(\.x).min()!)
-        }
-        let rest = ratio(Face(seed: 11, now: 0, lively: false).frame(at: 1))
-        var landings = 0, squashed = 0
         let speed = fs.map { simd_length($0.eyes[0].smear) }
+        var landings = 0, squashed = 0
         for i in 30..<fs.count where speed[i - 1] >= 0.1 && speed[i] < 0.1 && speed[(i - 30)..<i].max()! > 0.3 {
             landings += 1
-            let window = fs[max(0, i - 20)..<min(fs.count, i + 20)]
-            if window.contains(where: { ratio($0) < rest * 0.9 && $0.blink < 0.1 }) { squashed += 1 }
+            let dir = simd_normalize(fs[(i - 30)..<i].max(by: { simd_length($0.eyes[0].smear) < simd_length($1.eyes[0].smear) })!.eyes[0].smear)
+            let across = SIMD2(-dir.y, dir.x)
+            func ratio(_ f: Frame) -> Double {
+                let o = f.eyes[0].outline(), al = o.map { simd_dot($0, dir) }, ac = o.map { simd_dot($0, across) }
+                return (al.max()! - al.min()!) / (ac.max()! - ac.min()!)
+            }
+            let rest = ratio(Face(seed: 11, now: 0, lively: false).frame(at: 1))
+            if fs[(i - 20)..<min(fs.count, i + 20)].contains(where: { ratio($0) < rest * 0.85 && $0.blink < 0.1 }) { squashed += 1 }
         }
         XCTAssertGreaterThan(landings, 3)
-        XCTAssertGreaterThan(Double(squashed) / Double(landings), 0.7, "doesn't squash when it lands")
+        XCTAssertGreaterThan(Double(squashed) / Double(landings), 0.7, "doesn't squash along the impact")
+        let s = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06, impactAxis: SIMD2(1, 0), impact: -0.3).outline()
+        let w = s.map(\.x).max()! - s.map(\.x).min()!, h = s.map(\.y).max()! - s.map(\.y).min()!
+        XCTAssertLessThan(w, h * 0.8, "a sideways impact doesn't flatten sideways")
+        XCTAssertEqual(w * h, 0.06 * 0.06, accuracy: 0.0002, "squash doesn't keep the volume")
     }
 
     // R8: the smear never tilts an eye: moving diagonally stretches it sideways and up-down, not along a slant,

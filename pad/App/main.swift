@@ -1,6 +1,6 @@
 import UIKit
 
-/// Draws a Face: each eye is one white oval, filled from the model's outline.
+/// Draws a Face: each eye is one white oval, filled from the model's outline, with its trail when it moves fast.
 final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
     private let eyes = [CAShapeLayer(), CAShapeLayer()]
@@ -37,8 +37,10 @@ final class FaceView: UIView {
         CATransaction.setDisableActions(true)
         for (eye, s) in zip(eyes, f.eyes) {
             let path = CGMutablePath()
-            path.addLines(between: s.outline().map(point))
-            path.closeSubpath()
+            for shape in [s.outline()] + s.trailOutlines() {
+                path.addLines(between: shape.map(point))
+                path.closeSubpath()
+            }
             eye.path = path
         }
         CATransaction.commit()

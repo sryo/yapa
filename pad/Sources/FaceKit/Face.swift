@@ -55,11 +55,30 @@ public enum Mood: String, CaseIterable {
 /// A quadratic stroke from p0 through control c to p1, `width` thick, around the screen centre.
 public struct Stroke {
     public var p0, c, p1: SIMD2<Double>; public var width: Double
-    /// The eye's velocity (fractions of the short side per second); the outline stretches along it like motion blur.
+    /// The eye's velocity (fractions of the short side per second).
     public var smear: SIMD2<Double>
+    /// Where the eye's middle was a moment ago, newest first: drawn as a tapering trail, like a smear frame.
+    public var trail: [SIMD2<Double>]
+    /// Squash along `impactAxis` (negative flattens along it and widens across, positive stretches), keeping area.
+    public var impactAxis: SIMD2<Double>, impact: Double
 
-    public init(p0: SIMD2<Double>, c: SIMD2<Double>, p1: SIMD2<Double>, width: Double, smear: SIMD2<Double> = .zero) {
+    public init(p0: SIMD2<Double>, c: SIMD2<Double>, p1: SIMD2<Double>, width: Double, smear: SIMD2<Double> = .zero,
+                trail: [SIMD2<Double>] = [], impactAxis: SIMD2<Double> = SIMD2(1, 0), impact: Double = 0) {
         (self.p0, self.c, self.p1, self.width, self.smear) = (p0, c, p1, width, smear)
+        (self.trail, self.impactAxis, self.impact) = (trail, impactAxis, impact)
+    }
+
+    var middle: SIMD2<Double> { (p0 + 2 * c + p1) / 4 }
+
+    /// The trail: copies of the eye at its recent positions, each smaller than the one before. All solid white,
+    /// they merge into one tapering smear behind the eye.
+    public func trailOutlines() -> [[SIMD2<Double>]] {
+        // Copies 4 ms apart overlap into one smooth smear; each needs fewer points than the eye itself.
+        let shape = outline(samples: 17), mid = middle
+        return trail.enumerated().map { k, at in
+            let f = 1 - 0.55 * Double(k + 1) / Double(trail.count + 1)
+            return shape.map { at + ($0 - mid) * f }
+        }
     }
 
     /// The eye's filled outline: the curve extended by half the width at each end, with a half-width that falls
@@ -88,13 +107,11 @@ public struct Stroke {
             left.append(p + normal * h); right.append(p - normal * h)
         }
         let shape = left + right.reversed()
-        // Motion blur as a cartoon smear: stretch sideways by the sideways speed and up-down by the vertical
-        // speed, thinning the other way to keep the area. Never along a slant, which would read as a tilt.
-        guard simd_length(smear) > 1e-6 else { return shape }
-        let fx = 1 + min(1, 0.35 * abs(smear.x)), fy = 1 + min(1, 0.35 * abs(smear.y)), mid = (p0 + 2 * c + p1) / 4
+        guard abs(impact) > 1e-9 else { return shape }
+        let along = simd_normalize(impactAxis), k = 1 + max(-0.6, min(0.6, impact)), mid = middle
         return shape.map { p in
-            let d = p - mid
-            return mid + SIMD2(d.x * fx / fy.squareRoot(), d.y * fy / fx.squareRoot())
+            let d = p - mid, a = simd_dot(d, along) * along
+            return mid + a * k + (d - a) / k
         }
     }
 }
@@ -134,6 +151,10 @@ public final class Face {
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextMove: Double, nextTilt = 0.0, tiltSide = 1.0
     private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
+    private var impact = Spring(x: 0), impactAxis = SIMD2<Double>(1, 0), travel = SIMD2<Double>(1, 0)
+    /// Recent (time, position) of the face, for the trail.
+    private var track: [(Double, SIMD2<Double>)] = []
+    static let trailAges = stride(from: 0.004, through: 0.06, by: 0.004).map { $0 }
 
     public init(seed: UInt64, now: Double, lively: Bool = true) {
         rng = SplitMix(seed); self.lively = lively; self.now = now
@@ -160,6 +181,8 @@ public final class Face {
         let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * 0.035) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
         let centre = SIMD2(pos[0].x, pos[1].x + hop.x), scale = 1 + p.depth
         let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
+        let here = whereNow()
+        let shifts = Face.trailAges.compactMap { age in track.last(where: { $0.0 <= t - age }).map { $0.1 - here } }
         let (cs, sn) = (cos(tilt.x), sin(tilt.x))
         let place = { (v: SIMD2<Double>) in centre + SIMD2(v.x * cs - v.y * sn, v.x * sn + v.y * cs) * scale }
         let eyes = [(p.left, -1.0), (p.right, 1.0)].map { e, side -> Stroke in
@@ -172,10 +195,16 @@ public final class Face {
             let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1)) * (1 - 0.6 * sq)
             let c = SIMD2(side * 0.06 * (1 - 0.3 * sq), e.y + breath) + look
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
-            return Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale,
-                          smear: velocity)
+            let stroke = Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
+            return Stroke(p0: stroke.p0, c: stroke.c, p1: stroke.p1, width: stroke.width, smear: velocity,
+                          trail: shifts.map { stroke.middle + $0 }, impactAxis: impactAxis, impact: impact.x)
         }
         return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale)
+    }
+
+    /// Where the eyes are as a group: the face's position plus where they look. The trail follows this.
+    private func whereNow() -> SIMD2<Double> {
+        SIMD2(pos[0].x + gaze[0].x * 0.05 + pos[0].v * 0.03, pos[1].x + hop.x + gaze[1].x * 0.035 + pos[1].v * 0.03)
     }
 
     /// A change squashes the eyes and throws them up a little; the springs then stretch and settle.
@@ -206,10 +235,18 @@ public final class Face {
             gaze[1].step(to: gazeTo.y, k: 200, damping: 0.5, dt: dt)
             pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
-            // Slowing down, after a move or a glance, presses the eyes flat like landing; the squash spring then stretches them back.
-            let speed = simd_length(SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035))
-            if speed < lastSpeed { squash.v -= (lastSpeed - speed) * 12 }
+            // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
+            // them across, like a ball hitting a wall; the spring then stretches them back along the same line.
+            let v = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035), speed = simd_length(v)
+            if speed > 0.05 { travel = v / speed }
+            if speed < lastSpeed {
+                if abs(impact.x) < 0.02 { impactAxis = travel }
+                impact.v -= (lastSpeed - speed) * 16
+            }
             lastSpeed = speed
+            impact.step(to: 0, k: 260, damping: 0.35, dt: dt)
+            track.append((now, whereNow()))
+            if let first = track.first, now - first.0 > 0.1 { track.removeFirst() }
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
             // Curious tilts like a dog; travelling sideways leans the head into the motion, like banking.
             let lean = max(-0.2, min(0.2, pos[0].v * 0.15))
