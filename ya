@@ -1,39 +1,43 @@
 #!/bin/sh
 # Installs yapa's daemons on a jailbroken (rootless Dopamine) phone over ssh. Safe to rerun.
-#   ./install root@<phone-ip>
+#   ./ya root@<phone-ip>
 #   YAPA_TUNNEL_TOKEN_FILE  a file holding the Cloudflare tunnel token; turns on cloudflared (kept on later runs)
 #   YAPA_BUILD              a folder of daemons already built for the phone, which skips ./build-ios
 set -e
 cd "$(dirname "$0")"
-host=${1:?usage: ./install root@<phone-ip>}
+host=${1:?usage: ./ya root@<phone-ip>}
 if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ] && [ ! -s "$YAPA_TUNNEL_TOKEN_FILE" ]; then
-  echo "install: no tunnel token in $YAPA_TUNNEL_TOKEN_FILE. In dash.cloudflare.com open Zero Trust → Networks → Tunnels," >&2
+  echo "ya: no tunnel token in $YAPA_TUNNEL_TOKEN_FILE. In dash.cloudflare.com open Zero Trust → Networks → Tunnels," >&2
   echo "create a Cloudflared tunnel, and save the text after --token in its install command to that file." >&2
   exit 1
 fi
 if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
 
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-for d in yapad yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
-cp launchd/*.plist phone/Caddyfile phone/tidy "$stage/"
+for d in yata yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
+cp launchd/*.plist phone/Caddyfile "$stage/"
 cp -R phone/www "$stage/www"
 if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
 # Runs on the phone. /var/jb is Dopamine's rootless prefix; launchd refuses a plist not owned by root:wheel.
 # Config the user may have edited (services.json entries, Caddyfile, the site) is only ever added to.
+# Jobs and binaries from older installs (other names) are removed, so only what this ships runs.
 cat > "$stage/setup" <<'PHONE'
 set -e
 cd "$1"
 jb=${YAPA_JB:-/var/jb}
 bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons
-for p in "$ld"/com.sryo.yapa.*.plist; do [ -f "$p" ] && launchctl unload "$p" 2>/dev/null || true; done
+for p in "$ld"/com.sryo.yapa.*.plist; do [ -f "$p" ] && { launchctl unload "$p" 2>/dev/null || true; rm -f "$p"; }; done
 mkdir -p "$bin" "$etc" "$ld" "$jb/var/log/yapa" "$jb/var/yapa/caddy"
 [ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
 cp yapa-run "$bin/yapa-run.new"; chmod 755 "$bin/yapa-run.new"; mv -f "$bin/yapa-run.new" "$bin/yapa-run"
-daemons="yapad caddy tidy"
+daemons="yata caddy"
 [ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
 for d in $daemons; do
   src=$d; [ -f "$src" ] || continue
   cp "$src" "$bin/$d.new"; chmod 755 "$bin/$d.new"; mv -f "$bin/$d.new" "$bin/$d"
+done
+for f in "$bin"/*; do
+  case " $daemons yapa-run " in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
 done
 [ -f "$etc/Caddyfile" ] || cp Caddyfile "$etc/Caddyfile"
 [ -d "$jb/var/yapa/www" ] || cp -R www "$jb/var/yapa/www"
@@ -42,11 +46,15 @@ s=$etc/services.json
 [ -f "$s" ] || echo '[]' > "$s"
 watch() {
   grep -q "\"name\":\"$1\"" "$s" && return
+  # The same check under another name is this daemon under an older name.
+  if grep -q "\"check\":\"$2\"" "$s"; then
+    sed "s|\"name\":\"[^\"]*\",\"check\":\"$2\"|\"name\":\"$1\",\"check\":\"$2\"|" "$s" > "$s.new" && mv -f "$s.new" "$s"; return
+  fi
   e="{\"name\":\"$1\",\"check\":\"$2\"}"
   if grep -q '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$s"; then echo "[$e]" > "$s"
   else sed "\$ s/\][[:space:]]*\$/,$e]/" "$s" > "$s.new" && mv -f "$s.new" "$s"; fi
 }
-watch yapad tcp:127.0.0.1:8077
+watch yata tcp:127.0.0.1:8077
 watch caddy tcp:127.0.0.1:8080
 [ -f "$etc/tunnel.token" ] && watch cloudflared tcp:127.0.0.1:20241
 

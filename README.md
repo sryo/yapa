@@ -7,7 +7,7 @@ Jailbreak the phone with [Dopamine](https://github.com/opa334/Dopamine) (through
 
 ```bash
 git clone https://github.com/sryo/yapa && cd yapa
-./install root@<phone-ip>
+./ya root@<phone-ip>
 ```
 
 ## Use

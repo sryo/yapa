@@ -1,10 +1,10 @@
 #!/bin/sh
-# R4: ./install puts yapa's daemons, their config and launchd plists on the phone, and rerunning it is safe.
+# R4: ./ya puts yapa's daemons, their config and launchd plists on the phone, and rerunning it is safe.
 # A fake ssh runs the phone's side here, under a temp dir standing in for /var/jb, with launchctl and chown logged.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build"
-for d in yapad yapa-run caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
+for d in yata yapa-run caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
 cat > "$tmp/bin/ssh" <<FAKE
 #!/bin/sh
 while [ \$# -gt 1 ]; do shift; done
@@ -13,23 +13,37 @@ FAKE
 printf '#!/bin/sh\necho "launchctl $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/launchctl"
 printf '#!/bin/sh\necho "chown $*" >> "%s/log"\n' "$tmp" > "$tmp/bin/chown"
 chmod +x "$tmp/bin/"*
-run() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" "$@" ./install root@phone > "$tmp/out" 2>&1 || { echo "R4: ./install failed:"; cat "$tmp/out"; exit 1; }; }
+run() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" "$@" ./ya root@phone > "$tmp/out" 2>&1 || { echo "R4: ./ya failed:"; cat "$tmp/out"; exit 1; }; }
 fail() { echo "R4: $*"; exit 1; }
 jb=$tmp/jb; ld=$jb/Library/LaunchDaemons; etc=$jb/etc/yapa
 
 run
-for d in yapad caddy; do
+for d in yata caddy; do
   [ "$(cat "$jb/usr/libexec/yapa/$d")" = "fake $d" ] && [ -x "$jb/usr/libexec/yapa/$d" ] || fail "$d not installed executable in /var/jb/usr/libexec/yapa"
   cmp -s "$ld/com.sryo.yapa.$d.plist" "launchd/com.sryo.yapa.$d.plist" || fail "$d plist not in /var/jb/Library/LaunchDaemons"
   grep -q "chown root:wheel .*com.sryo.yapa.$d.plist" "$tmp/log" || fail "$d plist must be owned by root:wheel or launchd refuses it"
   grep -q "launchctl load .*com.sryo.yapa.$d.plist" "$tmp/log" || fail "$d plist isn't loaded"
 done
 [ -e "$jb/usr/libexec/yapa/cloudflared" ] || [ -e "$ld/com.sryo.yapa.cloudflared.plist" ] && fail "cloudflared installed without a tunnel token"
-grep -q '"tcp:127.0.0.1:8077"' "$etc/services.json" || fail "services.json doesn't watch yapad"
+grep -q '"tcp:127.0.0.1:8077"' "$etc/services.json" || fail "services.json doesn't watch yata"
 grep -q '"tcp:127.0.0.1:8080"' "$etc/services.json" || fail "services.json doesn't watch caddy"
 grep -q '^http://:8080 {' "$etc/Caddyfile" && grep -q '^[[:space:]]*bind 127.0.0.1$' "$etc/Caddyfile" || fail "Caddyfile must serve on port 8080 of 127.0.0.1 only"
 [ -f "$jb/var/yapa/www/index.html" ] || fail "no starter site in /var/jb/var/yapa/www"
-[ -x "$jb/usr/libexec/yapa/tidy" ] && [ -f "$ld/com.sryo.yapa.tidy.plist" ] || fail "tidy job not installed"
+# yata cuts the logs itself, so there's no separate cleanup job.
+[ -e "$jb/usr/libexec/yapa/tidy" ] || [ -e "$ld/com.sryo.yapa.tidy.plist" ] && fail "a separate tidy job was installed; yata cuts the logs"
+
+# A phone set up under older names gets them swapped: their jobs are unloaded and removed, their binaries too,
+# and a service watched under an old name keeps being watched under the new one.
+printf old > "$jb/usr/libexec/yapa/oldd"; cp launchd/com.sryo.yapa.caddy.plist "$ld/com.sryo.yapa.oldd.plist"
+sed 's/"name":"yata"/"name":"oldd"/' "$etc/services.json" > "$tmp/s" && mv "$tmp/s" "$etc/services.json"
+: > "$tmp/log"
+run
+grep -q "launchctl unload .*com.sryo.yapa.oldd.plist" "$tmp/log" || fail "an old job wasn't unloaded"
+[ -e "$ld/com.sryo.yapa.oldd.plist" ] && fail "an old job's plist was left in LaunchDaemons"
+[ -e "$jb/usr/libexec/yapa/oldd" ] && fail "an old daemon's binary was left behind"
+grep -q '"oldd"' "$etc/services.json" && fail "services.json still names the old daemon"
+[ "$(grep -o '"tcp:127.0.0.1:8077"' "$etc/services.json" | wc -l)" -eq 1 ] || fail "yata's check is listed twice after the swap"
+grep -q '"name":"yata","check":"tcp:127.0.0.1:8077"' "$etc/services.json" || fail "the swap lost yata's check"
 
 # A hand-edited Caddyfile, site and service survive a rerun; the rerun unloads before it loads again.
 echo '# mine' >> "$etc/Caddyfile"; echo mine > "$jb/var/yapa/www/index.html"
@@ -56,7 +70,7 @@ run
 [ -f "$ld/com.sryo.yapa.cloudflared.plist" ] && [ -f "$etc/tunnel.token" ] || fail "rerun without a token dropped the tunnel"
 # A token file that isn't there stops the install before anything changes, and says how to get one.
 : > "$tmp/log"
-PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./install root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
+PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./ya root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
 grep -q "Zero Trust" "$tmp/out" || fail "a missing token file must say where to get the token"
 [ -s "$tmp/log" ] && fail "a missing token file still touched the phone"
 # The tunnel hands every hostname to Caddy, which routes by name; new sites need only a Caddyfile block.
@@ -65,7 +79,7 @@ plutil -extract ProgramArguments json -o - launchd/com.sryo.yapa.cloudflared.pli
 [ "$(plutil -extract EnvironmentVariables.GODEBUG raw launchd/com.sryo.yapa.cloudflared.plist 2>/dev/null)" = netdns=cgo ] || fail "cloudflared must resolve names through iOS (GODEBUG=netdns=cgo)"
 # iOS kills a launchd daemon past a small default memory cap (jetsam) and launchd ignores JetsamProperties
 # from /var/jb, so each long-running daemon starts through yapa-run with its own cap in MB.
-for d in yapad caddy cloudflared; do
+for d in yata caddy cloudflared; do
   [ "$(plutil -extract ProgramArguments.0 raw launchd/com.sryo.yapa.$d.plist)" = /var/jb/usr/libexec/yapa/yapa-run ] || fail "$d must start through yapa-run"
   lim=$(plutil -extract ProgramArguments.1 raw launchd/com.sryo.yapa.$d.plist)
   [ "$lim" -ge 64 ] 2>/dev/null || fail "$d's yapa-run cap must be at least 64 MB, not $lim"
