@@ -242,6 +242,21 @@ public final class Face {
         liftOn = on
     }
 
+    /// It says something: a small hop up, as the words leave it.
+    public func say(at t: Double) {
+        advance(to: t)
+        hop.v -= 0.25
+        lastEvent = t
+    }
+
+    /// Words went back into it: it squashes and blinks, like a swallow.
+    public func swallow(at t: Double) {
+        advance(to: t)
+        squash.v -= 3
+        blinkAt = t
+        lastEvent = t
+    }
+
     public func isActive(at t: Double) -> Bool { mood != .sleep }
 
     func pose(at t: Double) -> Pose { advance(to: t); return Pose(fields: pose.map(\.x)) }

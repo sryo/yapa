@@ -4,9 +4,10 @@ import simd
 
 // Replays 1,000 seeded runs of jeta's screen on the SE in landscape (568×320 pt) at 60 fps: questions arrive (some
 // with options), you tap, swipe both ways, press and choose options, and questions clear, while the face lifts and
-// steps aside as the app moves it. Prints, as JSON arrays: frames where a line jumps (moves over 40 pt, or changes
-// opacity by over 0.35, or appears or vanishes while visible) per 1,000 runs; frames where a visible line covers the
-// face per 1,000 runs (a line moving while see-through doesn't count); ms for a change to settle (p50); and µs of CPU per frame of text for each 100 runs.
+// steps aside as the app moves it. Prints, as JSON arrays: frames where a line jumps (moves over 40 pt or changes
+// opacity by over 0.35, or appears or vanishes while visible anywhere but at the face or off the screen) per 1,000
+// runs; frames where a line resting in its place covers the face per 1,000 runs (lines on their way out of or into
+// the face don't count); ms for a change to settle (p50); and µs of CPU per frame of text for each 100 runs.
 var rng = Seeded(5)
 let w = 568.0, h = 320.0, u = min(w, h), mid = SIMD2(w / 2, h / 2)
 let sessions = ["server", "che", "bluetooth", "docs"]
@@ -29,6 +30,12 @@ func ink(_ s: Shown) -> (lo: SIMD2<Double>, hi: SIMD2<Double>) {
     return (SIMD2(x, s.cy - tall / 2), SIMD2(x + wide, s.cy + tall / 2))
 }
 
+/// Wholly past an edge of the screen.
+func off(_ s: Shown) -> Bool {
+    s.cx + s.line.width / 2 * s.sx < 0 || s.cx - s.line.width / 2 * s.sx > w || s.cy + s.line.height / 2 * s.sy < 0
+        || s.cy - s.line.height / 2 * s.sy > h
+}
+
 var jumps = 0, covered = 0, settles: [Double] = [], ns: UInt64 = 0, frames = 0, batches: [Double] = []
 for run in 0..<1000 {
     if run % 100 == 0 && frames > 0 { batches.append(Double(ns) / Double(frames) / 1000); ns = 0; frames = 0 }
@@ -36,8 +43,9 @@ for run in 0..<1000 {
     face.bounds = SIMD2(max(0, w / u / 2 - 0.27), 0.3)
     face.screen = SIMD2(w / u / 2, h / u / 2)
     let motion = TextMotion()
+    motion.screen = SIMD2(w, h)
     var board = NoticeBoard(), screen = Screen(), swipe = 0.0, prev: [Shown] = [], was = Screen.Mode.face
-    var next = 0.5, changedAt: Double? = nil, choosing: (key: String, at: Double)? = nil
+    var last = SIMD2(0.0, 0.0), next = 0.5, changedAt: Double? = nil, choosing: (key: String, at: Double)? = nil
     for k in 0..<480 {
         let t = Double(k) / 60
         if t >= next {
@@ -63,7 +71,8 @@ for run in 0..<1000 {
         let f = face.frame(at: t)
         let placed = screen.place(width: w, height: h)
         let t0 = DispatchTime.now().uptimeNanoseconds
-        motion.show(placed, from: mid + f.centre * u, swipe: swipe, wait: Screen.wait(from: was, to: screen.mode), at: t)
+        let anchor = mid + f.centre * u
+        motion.show(placed, from: anchor, swipe: swipe, wait: Screen.wait(from: was, to: screen.mode), at: t)
         was = screen.mode
         let shown = motion.frame(at: t)
         ns += DispatchTime.now().uptimeNanoseconds - t0
@@ -73,16 +82,19 @@ for run in 0..<1000 {
         var jumped = false
         for a in shown {
             if let b = prev.first(where: { $0.line.key == a.line.key }) {
-                let seen = max(a.opacity, b.opacity) > 0.05
+                let seen = (a.opacity > 0.05 && !off(a)) || (b.opacity > 0.05 && !off(b))
                 if (seen && hypot(a.cx - b.cx, a.cy - b.cy) > 40) || abs(a.opacity - b.opacity) > 0.35 { jumped = true }
-            } else if a.opacity > 0.05 { jumped = true }
+            } else if a.opacity > 0.05 && !off(a) { jumped = true }
         }
-        for b in prev where b.opacity > 0.05 && !shown.contains(where: { $0.line.key == b.line.key }) { jumped = true }
+        for b in prev where b.opacity > 0.05 && !shown.contains(where: { $0.line.key == b.line.key })
+            && simd_distance(SIMD2(b.cx, b.cy), last) > 8 && !off(b) { jumped = true }
+        last = anchor
         if jumped { jumps += 1 }
         let e = eyes(f)
         if shown.contains(where: { s in
             let i = ink(s)
-            return s.opacity > 0.5 && i.lo.x < e.hi.x && i.hi.x > e.lo.x && i.lo.y < e.hi.y && i.hi.y > e.lo.y
+            let resting = abs(s.cx - (s.line.x + s.line.width / 2)) < 2 && abs(s.cy - (s.line.y + s.line.height / 2)) < 2
+            return resting && s.opacity > 0.5 && i.lo.x < e.hi.x && i.hi.x > e.lo.x && i.lo.y < e.hi.y && i.hi.y > e.lo.y
         }) { covered += 1 }
         // Settling: from a change in what's placed until every line rests where it belongs.
         let still = shown.allSatisfy { s in

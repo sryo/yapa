@@ -38,6 +38,9 @@ final class FaceView: UIView {
         talk = Talk(face: face, in: self)
         onChoose = { [weak self] in self?.talk?.say($0) }
         talk?.onNote = { [weak self] in self?.screen.note = $0 }
+        // The face hops as it says a question and gulps when its words come back.
+        motion.onSay = { [weak self] in self?.face.say(at: CACurrentMediaTime()) }
+        motion.onSwallow = { [weak self] in self?.face.swallow(at: CACurrentMediaTime()) }
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
@@ -154,6 +157,7 @@ final class FaceView: UIView {
         face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
         face.lift(screen.mode == .question, at: t)
         placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
+        motion.screen = SIMD2(Double(bounds.width), Double(bounds.height))
         motion.show(placed, from: SIMD2(Double(point(f.centre).x), Double(point(f.centre).y)), swipe: swipeWay,
                     wait: Screen.wait(from: was, to: screen.mode), at: t)
         swipeWay = 0
@@ -197,9 +201,26 @@ extension FaceView {
             t.position = CGPoint(x: s.cx, y: s.cy)
             t.opacity = Float(s.opacity)
             t.transform = CATransform3DMakeScale(CGFloat(s.sx), CGFloat(s.sy), 1)
+            // Blurred only while it appears or goes; a settled line draws without the filter.
+            if s.blur > 0.05 {
+                if t.filters == nil, let b = FaceView.blur() { t.filters = [b] }
+                t.setValue(s.blur, forKeyPath: "filters.blur.inputRadius")
+            } else if t.filters != nil {
+                t.filters = nil
+            }
         }
         let keys = Set(shown.map(\.line.key))
         for (k, t) in texts where !keys.contains(k) { t.removeFromSuperlayer(); texts[k] = nil }
+    }
+
+    /// A Gaussian blur for a layer. iOS has no public layer blur, so this is Core Animation's own CAFilter, which
+    /// is fine for an app installed with TrollStore; if it's ever missing, text just doesn't blur.
+    static func blur() -> NSObject? {
+        guard let type = NSClassFromString("CAFilter") as? NSObject.Type,
+              let f = type.perform(NSSelectorFromString("filterWithType:"), with: "gaussianBlur")?.takeUnretainedValue() as? NSObject
+        else { return nil }
+        f.setValue("blur", forKey: "name")
+        return f
     }
 }
 

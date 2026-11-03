@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 /// A line of text where it settles on screen, in points: its frame, its font, and how bright it is at rest.
 /// `key` names the line across screens, so the same words stay the same line.
@@ -8,62 +9,78 @@ public struct Placed: Equatable {
     public var size: Double, bold: Bool, opacity: Double, left: Bool
 }
 
-/// A line as drawn this frame: where its frame's centre is now, how see-through, and how stretched.
+/// A line as drawn this frame: where its frame's centre is now, how see-through, how stretched, and how blurred
+/// (a radius in points).
 public struct Shown: Equatable {
     public var line: Placed
-    public var cx: Double, cy: Double, opacity: Double, sx: Double, sy: Double
+    public var cx: Double, cy: Double, opacity: Double, sx: Double, sy: Double, blur: Double
 }
 
 /// The text's motion, with the face's rules: every value is a spring that picks up a new target mid-move, so
-/// nothing jumps. Lines come out of the face one after another and overshoot into place; they gather back
-/// toward it, quicker, when they go. A line on both screens glides between them. A swipe carries the page the
-/// way the finger went. Pressing an option squashes it; choosing it pops it and keeps it lit while the others dim
-/// and shrink. Talk's notes fade in where they rest, since they don't come from the face. Settled text holds still: the exaggeration is only in the changes.
+/// nothing jumps. And every line comes from somewhere and goes somewhere you can see. What the face says comes out
+/// of it: a line starts at the eyes, small, and travels to its place, overshooting a little. What's done goes back:
+/// a cleared question returns into the face, readable until it gets there, and the face swallows it; a chosen
+/// option is handed to the face the same way, while the options not taken drop off the bottom of the screen. A
+/// swipe carries the page off the side it went. A line comes into focus as it appears and blurs as it goes. Talk's notes aren't the face talking, so they rise from the bottom
+/// edge and sink back. A line on both screens glides between them, and settled text holds still.
 public final class TextMotion {
-    static let step = 1.0 / 240, stagger = 0.04, travel = 120.0
+    static let step = 1.0 / 240, stagger = 0.05
+    /// No line moves faster than this, so the eye can still follow it (30 pt a frame at 60 fps).
+    static let fastest = 1800.0
+
+    /// The screen's size in points, so lines leaving it know where its edges are.
+    public var screen = SIMD2<Double>(568, 320)
+    /// The face lets a line go, and takes the last one back.
+    public var onSay: (() -> Void)?, onSwallow: (() -> Void)?
+    /// The lines last shown.
+    public var lines: [Placed] { last ?? [] }
+
+    enum Exit: Equatable { case none, face, drop, side(Double), sink }
 
     final class Item {
-        var line: Placed, start: Double
+        var line: Placed, start: Double, exit = Exit.none, said = false, leads = false, out = 0.0
         var cx, cy, op, s, sq: Spring
-        var leaving = false, exit = SIMD2<Double>(0, 0)
-        init(_ l: Placed, at p: SIMD2<Double>, start: Double) {
+        init(_ l: Placed, at p: SIMD2<Double>, scale: Double, opacity: Double, start: Double) {
             line = l; self.start = start
-            cx = Spring(x: p.x); cy = Spring(x: p.y); op = Spring(x: 0); s = Spring(x: 0.6); sq = Spring(x: 0)
+            cx = Spring(x: p.x); cy = Spring(x: p.y); op = Spring(x: opacity); s = Spring(x: scale); sq = Spring(x: 0)
         }
-        var centre: SIMD2<Double> { SIMD2(line.x + line.width / 2, line.y + line.height / 2) }
+        var home: SIMD2<Double> { SIMD2(line.x + line.width / 2, line.y + line.height / 2) }
+        var at: SIMD2<Double> { SIMD2(cx.x, cy.x) }
+        var note: Bool { line.key.hasPrefix("note:") }
     }
 
-    private var items: [Item] = [], last: [Placed]? = nil, now = 0.0
-    private var pressed: String?, chosen: String?
+    private var items: [Item] = [], last: [Placed]? = nil, now = 0.0, anchor = SIMD2<Double>(0, 0)
+    private var pressed: String?, gone: Set<String> = []
 
     public init() {}
 
     /// The lines to show, laid out by `Screen.place`; `anchor` is the face's centre, and `swipe` the way the
     /// finger went for a page change (-1 left, 1 right, 0 none). New lines wait `wait` seconds first, so the face
-    /// can step out of their way. Showing the same lines again changes nothing.
+    /// can step out of their way. Showing the same lines again only follows the face.
     public func show(_ lines: [Placed], from anchor: SIMD2<Double>, swipe: Double = 0, wait: Double = 0, at t: Double) {
         advance(to: t)
+        self.anchor = anchor
         guard lines != last else { return }
         last = lines
         let keys = Set(lines.map(\.key))
-        for i in items where !i.leaving && !keys.contains(i.line.key) {
-            i.leaving = true
-            i.exit = swipe != 0 ? SIMD2(i.cx.x + swipe * TextMotion.travel, i.cy.x) : i.centre + (anchor - i.centre) * 0.4
+        gone.formIntersection(keys)
+        for i in items where i.exit == .none && !keys.contains(i.line.key) {
+            i.exit = swipe != 0 ? .side(swipe) : i.note ? .sink : .face
         }
         var n = 0
-        for l in lines {
+        for l in lines where !gone.contains(l.key) {
             if let i = items.first(where: { $0.line.key == l.key }) {
                 i.line = l
-                i.leaving = false
+                i.exit = .none
                 continue
             }
-            let target = SIMD2(l.x + l.width / 2, l.y + l.height / 2)
-            let from = swipe != 0 ? target - SIMD2(swipe * TextMotion.travel, 0)
-                : l.key.hasPrefix("note:") ? target : target + (anchor - target) * 0.5
-            items.append(Item(l, at: from, start: t + wait + Double(n) * TextMotion.stagger))
-            n += 1
+            let item = l.key.hasPrefix("note:")
+                ? Item(l, at: SIMD2(l.x + l.width / 2, screen.y + l.height), scale: 1, opacity: l.opacity, start: t)
+                : Item(l, at: anchor, scale: 0.15, opacity: 0, start: t + wait + Double(n) * TextMotion.stagger)
+            // The face says a batch of lines once, as the first one leaves it.
+            if !item.note { item.leads = n == 0; n += 1 }
+            items.append(item)
         }
-        if let c = chosen, !keys.contains(c) { chosen = nil }
         if let p = pressed, !keys.contains(p) { pressed = nil }
     }
 
@@ -73,50 +90,91 @@ public final class TextMotion {
         pressed = key
     }
 
-    /// The option was picked: it pops and stays lit until its question is cleared.
+    /// The option was picked: it pops and goes to the face, and the options not taken drop away.
     public func choose(_ key: String, at t: Double) {
         advance(to: t)
         pressed = nil
-        chosen = key
-        items.first { $0.line.key == key }?.s.v += 4
+        for i in items where i.exit == .none && (i.line.style == .option || i.line.style == .suggestion) {
+            gone.insert(i.line.key)
+            if i.line.key == key {
+                i.exit = .face
+                i.s.v += 4
+            } else {
+                i.exit = .drop
+                i.cy.v = -150
+            }
+        }
     }
 
     public func frame(at t: Double) -> [Shown] {
         advance(to: t)
         return items.map { i in
             let s = max(0, i.s.x), q = max(-0.3, min(0.3, i.sq.x))
-            return Shown(line: i.line, cx: i.cx.x, cy: i.cy.x, opacity: max(0, min(1, i.op.x)),
-                         sx: s * (1 + 0.5 * q), sy: s * (1 - q))
+            let op = max(0, min(1, i.op.x)), shown = i.line.opacity > 0 ? min(1, op / i.line.opacity) : 1
+            return Shown(line: i.line, cx: i.cx.x, cy: i.cy.x, opacity: op, sx: s * (1 + 0.5 * q), sy: s * (1 - q),
+                         blur: i.line.size * 0.35 * (1 - shown))
         }
     }
 
-    private func target(_ i: Item) -> (p: SIMD2<Double>, op: Double, s: Double) {
-        if i.leaving { return (i.exit, 0, 0.7) }
-        if i.line.key == chosen { return (i.centre, 1, 1.12) }
-        let dim = chosen != nil && (i.line.style == .option || i.line.style == .suggestion)
-        return (i.centre, i.line.opacity * (dim ? 0.3 : 1), dim ? 0.9 : 1)
+    private func offScreen(_ i: Item) -> Bool {
+        let w = i.line.width / 2 * i.s.x, h = i.line.height / 2 * i.s.x
+        return i.cx.x + w < 0 || i.cx.x - w > screen.x || i.cy.x + h < 0 || i.cy.x - h > screen.y
     }
 
     private func advance(to t: Double) {
         // A long gap (the app was in the background) isn't replayed in full; a second is enough to settle.
         var at = max(now, t - 1)
+        var said = false, swallowed = false
         while at < t {
             let dt = min(TextMotion.step, t - at)
             at += dt
+            // Lines that hadn't left the face yet when they were sent away never show.
+            items.removeAll { $0.exit != .none && at < $0.start }
             for i in items where at >= i.start {
-                let (p, op, s) = target(i)
-                // Entering overshoots; moving glides; leaving is quick and doesn't bounce.
-                let (k, d) = i.leaving ? (320.0, 1.0) : i.op.x < 0.5 * op ? (170.0, 0.55) : (120.0, 0.75)
-                i.cx.step(to: p.x, k: k, damping: d, dt: dt)
-                i.cy.step(to: p.y, k: k, damping: d, dt: dt)
-                // Leaving fades faster than it travels, so it's gone before it reaches the face.
-                i.op.step(to: op, k: i.leaving ? 600 : k, damping: max(d, 0.8), dt: dt)
-                i.s.step(to: s, k: k, damping: d, dt: dt)
+                if !i.said { i.said = true; if i.leads { said = true } }
+                switch i.exit {
+                case .none:
+                    let overshoot = simd_distance(i.at, i.home) > 2 && i.s.x < 0.9
+                    let (k, d) = overshoot ? (140.0, 0.55) : (120.0, 0.75)
+                    i.cx.step(to: i.home.x, k: k, damping: d, dt: dt)
+                    i.cy.step(to: i.home.y, k: k, damping: d, dt: dt)
+                    i.s.step(to: 1, k: k, damping: d, dt: dt)
+                case .face:
+                    i.cx.step(to: anchor.x, k: 150, damping: 1, dt: dt)
+                    i.cy.step(to: anchor.y, k: 150, damping: 1, dt: dt)
+                    i.s.step(to: 0.15, k: 150, damping: 1, dt: dt)
+                case .drop:
+                    i.cy.v = min(TextMotion.fastest, i.cy.v + 1800 * dt)
+                    i.cy.x += i.cy.v * dt
+                    i.s.step(to: 0.9, k: 150, damping: 1, dt: dt)
+                case .side(let way):
+                    i.cx.v = way * min(TextMotion.fastest, max(300, abs(i.cx.v + way * 2400 * dt)))
+                    i.cx.x += i.cx.v * dt
+                case .sink:
+                    i.cy.step(to: screen.y + i.line.height, k: 150, damping: 1, dt: dt)
+                }
+                // The options not taken dim as they fall; heading into the face, a line stays readable until it's
+                // nearly there.
+                let fade = i.exit == .drop ? 0.5 : i.exit == .face ? min(1, max(0, simd_distance(i.at, anchor) - 6) / 40) : 1
+                i.op.step(to: i.line.opacity * fade, k: 900, damping: 0.8, dt: dt)
                 i.sq.step(to: i.line.key == pressed ? 0.14 : 0, k: 400, damping: 0.7, dt: dt)
+                // A long way, from a face in the corner to the bottom of the screen, still moves at a speed the eye follows.
+                let speed = (i.cx.v * i.cx.v + i.cy.v * i.cy.v).squareRoot()
+                if speed > TextMotion.fastest { i.cx.v *= TextMotion.fastest / speed; i.cy.v *= TextMotion.fastest / speed }
+                i.out = i.exit != .none && i.exit != .face && offScreen(i) ? i.out + dt : 0
             }
-            items.removeAll { $0.leaving && $0.op.x < 0.01 && abs($0.op.v) < 0.5 }
+            // In the face and faded out: swallowed.
+            let arrived = items.filter { $0.exit == .face && simd_distance($0.at, anchor) < 10 && $0.op.x < 0.03 }
+            if !arrived.isEmpty {
+                items.removeAll { a in arrived.contains { $0 === a } }
+                if !items.contains(where: { $0.exit == .face }) { swallowed = true }
+            }
+            // Gone past an edge for a moment: off the screen for good.
+            items.removeAll { $0.out > 0.05 }
         }
         now = max(now, t)
+        if said { onSay?() }
+        if swallowed { onSwallow?() }
     }
 }
 
