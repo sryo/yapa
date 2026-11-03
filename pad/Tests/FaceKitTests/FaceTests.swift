@@ -380,7 +380,7 @@ final class FaceTests: XCTestCase {
         XCTAssertLessThan(centre(awake).y, centre(asleep).y - 0.2, "doesn't rise quickly")
     }
 
-    // R10: busy is reading: the eyes sweep left to right along a line, jump back, and drop a line.
+    // R10: busy is reading several lines: the eyes sweep left to right, jump back, and visibly drop a line.
     func testR10_BusyReads() {
         let face = Face(seed: 2, now: 0)
         face.set(.busy, at: 0)
@@ -394,6 +394,9 @@ final class FaceTests: XCTestCase {
         XCTAssertGreaterThan(lines.count, 2, "doesn't move down the lines")
         let rising = zip(g, g.dropFirst()).filter { $1.x > $0.x }.count, falling = zip(g, g.dropFirst()).filter { $1.x < $0.x }.count
         XCTAssertGreaterThan(rising, falling * 4, "doesn't read left to right")
+        // The lines are far enough apart to see: the eyes drop by a good part of their own height per line.
+        let fs = frames(face, from: 10, to: 18, hz: 30), ys = fs.map { centre($0).y - $0.centre.y }
+        XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.08, "reading looks like a single line")
     }
 
     // R10: curious looks like a telescope: one eye much bigger than the other.

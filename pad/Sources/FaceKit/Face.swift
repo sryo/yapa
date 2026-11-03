@@ -163,7 +163,7 @@ public final class Face {
     private var pose: [Spring] = Mood.idle.pose.fields.map { Spring(x: $0) }
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
-    private var yaw = Spring(x: 0), lunge = Spring(x: 0)
+    private var yaw = Spring(x: 0), lunge = Spring(x: 0), reading = Spring(x: 0)
     private var lungeUntil = -1.0, orbitStart = -10.0, busySince = 0.0, peekUntil = -1.0, peekSide = 1.0, peekedAt = -1e9
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextTilt = 0.0, tiltSide = 1.0, lastEvent: Double
     private var phase = SIMD2<Double>(0, 0), offset = SIMD2<Double>(0, 0)
@@ -235,7 +235,7 @@ public final class Face {
         let breath = sin(t * 1.1) * (0.002 + 0.004 * s)
         let spin = p.spin * SIMD2(cos(2 * .pi * 1.5 * t), sin(2 * .pi * 1.5 * t))
         // The eyes lead where the face is travelling.
-        let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * 0.035) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
+        let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * lookDown) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
         // Up close the face also draws toward the middle, so its bigger eyes stay on screen.
         let scale = 1 + p.depth + lunge.x, centre = SIMD2(pos[0].x, pos[1].x) / max(1, scale) + SIMD2(0, hop.x)
         // Celebrating, the eyes orbit each other once.
@@ -269,9 +269,12 @@ public final class Face {
         return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale, centre: centre)
     }
 
+    /// How far the eyes move up and down with the gaze; reading moves them further, so the lines show.
+    private var lookDown: Double { 0.035 + 0.2 * reading.x }
+
     /// Where the eyes are as a group: the face's position plus where they look. The trail follows this.
     private func whereNow() -> SIMD2<Double> {
-        SIMD2(pos[0].x + gaze[0].x * 0.05 + pos[0].v * 0.03, pos[1].x + hop.x + gaze[1].x * 0.035 + pos[1].v * 0.03)
+        SIMD2(pos[0].x + gaze[0].x * 0.05 + pos[0].v * 0.03, pos[1].x + hop.x + gaze[1].x * lookDown + pos[1].v * 0.03)
     }
 
     /// A change squashes the eyes and throws them up a little; the springs then stretch and settle.
@@ -302,7 +305,7 @@ public final class Face {
             } else if mood == .busy {
                 // Busy is reading: sweep left to right along a line, jump back, drop a line.
                 let u = now - busySince, ph = u.truncatingRemainder(dividingBy: 1.6), line = Double(Int(u / 1.6) % 4)
-                gazeTo = SIMD2(ph < 1.3 ? -0.8 + 1.6 * ph / 1.3 : -0.8, -0.3 + 0.2 * line)
+                gazeTo = SIMD2(ph < 1.3 ? -0.8 + 1.6 * ph / 1.3 : -0.8, -0.45 + 0.3 * line)
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
             } else {
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
@@ -343,6 +346,7 @@ public final class Face {
             let tiltTo = mood == .curious ? 0.2 * tiltSide : mood == .listening ? 0.1 * sin(2 * .pi * 0.8 * now) : 0
             tilt.step(to: tiltTo, k: 60, damping: 0.5, dt: dt)
             lunge.step(to: now < lungeUntil ? 1 : 0, k: 140, damping: 0.6, dt: dt)
+            reading.step(to: mood == .busy ? 1 : 0, k: 30, damping: 1, dt: dt)
             yaw.step(to: max(-0.35, min(0.35, pos[0].v * 0.5)), k: 310, damping: 0.85, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)
