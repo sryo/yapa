@@ -124,6 +124,7 @@ final class FaceView: UIView {
         face.screen = SIMD2(Double(bounds.width) / u / 2, Double(bounds.height) / u / 2)
         let point = { (p: SIMD2<Double>) in CGPoint(x: mid.x + p.x * u, y: mid.y + p.y * u) }
         face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
+        face.lift(screen.mode == .question, at: t)
         drawText(u: CGFloat(u))
         CATransaction.begin()
         CATransaction.setDisableActions(true)

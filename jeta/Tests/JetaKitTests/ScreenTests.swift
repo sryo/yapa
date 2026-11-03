@@ -74,6 +74,22 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option }.count, 2, "the detail drops the options")
     }
 
+    // R10: with a question showing under it, the face rises into the top half, clear of the text, even mid-lunge.
+    func testR10_FaceRisesAboveAQuestion() {
+        let face = Face(seed: 1, now: 0)
+        face.screen = SIMD2(0.89, 0.5)
+        face.set(.attention, at: 1)
+        face.lift(true, at: 1)
+        for t in stride(from: 1.5, through: 4.0, by: 0.1) {
+            let f = face.frame(at: t)
+            let bottom = f.eyes.flatMap { $0.outline() }.map(\.y).max()!
+            XCTAssertLessThan(bottom, 0.08, "the eyes reach into the text at t=\(t)")
+        }
+        face.lift(false, at: 4)
+        let g = face.frame(at: 6), c = (g.eyes[0].middle + g.eyes[1].middle) / 2
+        XCTAssertGreaterThan(c.y, -0.15, "doesn't come back down")
+    }
+
     // R7: when text is up the face steps aside to the top-left corner, smaller, and comes back when it closes.
     func testR7_FaceStepsAside() {
         let face = Face(seed: 1, now: 0)
