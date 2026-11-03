@@ -79,7 +79,8 @@ public final class Desk {
         default:
             return nil
         }
-        return try? JSONSerialization.data(withJSONObject: ["evt": "turn", "role": "assistant", "content": [block]])
+        let turn: [String: Any] = ["evt": "turn", "role": "assistant", "content": [block], "session_id": e["session_id"] ?? ""]
+        return try? JSONSerialization.data(withJSONObject: turn)
     }
 
     /// Answers a held request with the pad's `{"cmd":"permission"}` line, or nil if it's no longer waiting.
@@ -106,6 +107,35 @@ public final class Desk {
                 : s.finished.map { .finished(at: $0) } ?? .quiet
             return SessionInfo(id: id, name: s.name, state: state, events: s.events)
         }
+    }
+
+    /// The sessions as JSON, so a pad that restarts (an install) keeps its faces. `wall` is the wall clock now
+    /// (seconds since 1970), since `t` starts over with the app. Waiting requests aren't kept: their hooks are gone.
+    public func save(at t: Double, wall: Double) -> Data {
+        let list: [[String: Any]] = sessions.map { id, s in
+            var o: [String: Any] = ["id": id, "name": s.name, "started": s.started - t, "seen": s.seen - t, "events": s.events, "failed": s.failed]
+            if let f = s.finished { o["finished"] = f - t }
+            return o
+        }
+        return try! JSONSerialization.data(withJSONObject: ["wall": wall, "sessions": list])
+    }
+
+    /// Takes back what `save` wrote, aged by the wall-clock time since; none was working any more by then.
+    public func load(_ data: Data, at t: Double, wall: Double) {
+        guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let then = o["wall"] as? Double,
+              let list = o["sessions"] as? [[String: Any]] else { return }
+        let now = t - max(0, wall - then)
+        for s in list {
+            guard let id = s["id"] as? String, let name = s["name"] as? String, let seen = s["seen"] as? Double,
+                  let started = s["started"] as? Double else { continue }
+            var v = Session(name: name, started: now + started)
+            v.seen = now + seen
+            v.events = s["events"] as? Int ?? 0
+            v.failed = s["failed"] as? Bool ?? false
+            v.finished = (s["finished"] as? Double).map { now + $0 }
+            if sessions[id] == nil { sessions[id] = v }
+        }
+        sessions = sessions.filter { t - $0.value.seen < 7200 }
     }
 
     /// Whether any session is reporting: while one is, the hooks drive the face and Bluetooth is ignored.

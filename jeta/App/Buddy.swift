@@ -4,8 +4,8 @@ import UIKit
 
 /// Advertises the pad as a Claude Hardware Buddy on the Nordic UART Service and lets the desktop drive the face,
 /// or Claude Code's hooks over Wi-Fi when a session reports through them (Bluetooth is ignored then).
-/// While a prompt waits, a tap on the top half approves it and one on the bottom half denies it, and so does a
-/// two-finger drag up or down.
+/// While a prompt waits, the screen shows it with Allow and Deny; a tap on one answers it, and so does a two-finger
+/// drag up or down.
 final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private static let service = CBUUID(string: "6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     // Encryption-only characteristics make the first access trigger iOS pairing with a passkey.
@@ -36,7 +36,6 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.view.crowd.update(self.hooks.desk.members(at: t), at: t)
             self.update()
         }
-        view.onTap = { [weak self] p in guard let self else { return false }; return self.decide(p.y < self.view.bounds.midY) }
         view.onDecide = { [weak self] in self?.decide($0) ?? false }
         view.canDecide = { [weak self] in self?.buddy.prompt(at: CACurrentMediaTime()) != nil }
         // A tap on a session's face brings its prompt forward, so the next tap answers that session's hook.
@@ -49,6 +48,8 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         hooks.onTurn = { [weak self] in self?.notice($0) }
         hooks.onLog = { [weak self] in self?.log($0) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
+        // The sessions kept from before the app last quit come back as faces straight away.
+        hooks.onChange?()
     }
 
     private func update() {
@@ -73,6 +74,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             log(id.map { "prompt \($0) \(Self.ms())" } ?? "waiting, answer at the desktop")
         }
         promptID = id; wasWaiting = waiting
+        view.ask(buddy.prompt(at: t))
     }
 
     private func notice(_ event: Data) {

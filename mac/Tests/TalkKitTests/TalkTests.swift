@@ -92,4 +92,27 @@ final class TranscribeTests: XCTestCase {
             XCTAssertLessThanOrEqual(wordErrorRate(reference: ref, hypothesis: h.text), 0.25, h.text)
         }
     }
+
+    // R2: the pad names the session a face stands for; che finds the Claude app's id for it, skipping archived ones,
+    // and none for a session the app doesn't have (a terminal's).
+    func testR2_TalkReachesTheFacesSession() throws {
+        XCTAssertEqual(query("/talk?dry&session=ab%2Dc"), ["dry": "", "session": "ab-c"])
+        XCTAssertEqual(query("/say"), [:])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("a/b")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func file(_ id: String, _ cli: String, archived: Bool = false) throws {
+            let o: [String: Any] = ["sessionId": id, "cliSessionId": cli, "isArchived": archived]
+            try JSONSerialization.data(withJSONObject: o).write(to: dir.appendingPathComponent("\(id).json"))
+        }
+        try file("local_one", "cli-1")
+        try file("local_old", "cli-2", archived: true)
+        XCTAssertEqual(desktopSession(cli: "cli-1", in: root), "local_one")
+        XCTAssertNil(desktopSession(cli: "cli-2", in: root))
+        XCTAssertNil(desktopSession(cli: "cli-3", in: root))
+        let log = "x LocalSessions.setFocusedSession: sessionId=local_a\ny LocalSessions.setFocusedSession: sessionId=local_b\nz other"
+        XCTAssertEqual(focusedSession(log: log), "local_b")
+        XCTAssertNil(focusedSession(log: "nothing"))
+    }
 }

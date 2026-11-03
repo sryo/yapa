@@ -99,3 +99,32 @@ public func allowed(_ host: String, from hosts: [String]) -> Bool {
     let h = host.hasPrefix("::ffff:") ? String(host.dropFirst(7)) : host
     return h == "127.0.0.1" || h == "::1" || hosts.contains(h)
 }
+
+/// A request path's query, like `/talk?dry&session=abc`: each key and its value ("" for a bare key).
+public func query(_ path: String) -> [String: String] {
+    guard let q = path.split(separator: "?", maxSplits: 1).dropFirst().first else { return [:] }
+    var out: [String: String] = [:]
+    for kv in q.split(separator: "&") {
+        let p = kv.split(separator: "=", maxSplits: 1).map { String($0).removingPercentEncoding ?? String($0) }
+        out[p[0]] = p.count > 1 ? p[1] : ""
+    }
+    return out
+}
+
+/// The Claude app's own id (`local_…`) for the Claude Code session its hooks call `cli`, from the session files the
+/// app keeps under `root`; nil when the session isn't the app's (it runs in a terminal).
+public func desktopSession(cli: String, in root: URL) -> String? {
+    guard let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
+    for case let f as URL in files where f.lastPathComponent.hasPrefix("local_") && f.pathExtension == "json" {
+        guard let d = try? Data(contentsOf: f), let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              o["cliSessionId"] as? String == cli, o["isArchived"] as? Bool != true else { continue }
+        return o["sessionId"] as? String
+    }
+    return nil
+}
+
+/// The session the Claude app last focused, from its log's `setFocusedSession` lines.
+public func focusedSession(log: String) -> String? {
+    guard let r = log.range(of: "setFocusedSession: sessionId=", options: .backwards) else { return nil }
+    return log[r.upperBound...].prefix { $0 != "\n" && $0 != "," && $0 != " " }.description
+}

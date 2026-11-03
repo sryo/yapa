@@ -15,13 +15,22 @@ final class HookListener {
     /// Says when the port couldn't be opened, and when it opened after all.
     var onLog: ((String) -> Void)?
 
+    /// Where the sessions are kept between launches, so an install doesn't lose the faces.
+    private let saved = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("sessions.json")
+
     init() {
+        if let d = try? Data(contentsOf: saved) { desk.load(d, at: CACurrentMediaTime(), wall: Date().timeIntervalSince1970) }
         listen()
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.settle(self.desk.expire(at: CACurrentMediaTime()))
+            self.save()
             self.onChange?()
         }
+    }
+
+    private func save() {
+        try? desk.save(at: CACurrentMediaTime(), wall: Date().timeIntervalSince1970).write(to: saved, options: .atomic)
     }
 
     // Started right after the app before it quit, the port can still be taken: the listener fails, so it tries again.
@@ -73,6 +82,7 @@ final class HookListener {
         }
         let got = desk.take(e, at: CACurrentMediaTime())
         if let turn = Desk.turn(e) { onTurn?(turn) }
+        save()
         settle(got.settled)
         if let id = got.hold { waiting[id] = c } else { send(c, Data()) }
         onChange?()

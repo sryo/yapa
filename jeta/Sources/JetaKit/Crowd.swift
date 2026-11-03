@@ -57,6 +57,11 @@ public final class Crowd {
     /// you (so two that need you don't keep swapping), else the first to need you.
     public var front: String? { standing }
 
+    /// The session a finger at `p` means: the face under it, else the one forward, else the only one.
+    public func session(at p: SIMD2<Double>, t: Double) -> String? {
+        single ? visible.first?.id : hit(p, at: t) ?? front
+    }
+
     private func pickFront() {
         let needing = Set(shown.filter { $0.state == .needs }.map(\.id)), was = standing
         if let f = focused, needing.contains(f) { standing = f }

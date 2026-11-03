@@ -159,10 +159,30 @@ final class DeskTests: XCTestCase {
         let echo = event("PreToolUse", ["tool_name": "Bash", "tool_input": ["command": "echo 'jeta: server needs you · Which hostname?'"]])
         board.take(Desk.turn(echo)!)
         XCTAssertEqual(board.pending.map(\.session), ["server"])
+        XCTAssertEqual(board.pending.first?.from, "s1", "an answer goes back to the session that asked")
         board.take(Desk.turn(event("Stop", ["last_assistant_message": "Done.\njeta: clear server"]))!)
         XCTAssertEqual(board.pending.count, 0)
         XCTAssertNil(Desk.turn(event("PreToolUse", push)))
         XCTAssertNil(Desk.turn(event("Stop", ["last_assistant_message": "All done."])))
         XCTAssertNil(Desk.turn(event("PostToolUse", ["tool_input": ["command": "echo 'jeta: clear server'"]])))
+    }
+
+    // R1: a pad that restarts (an install) keeps its sessions, aged by the time it was off; waiting requests and
+    // work in progress don't survive it, and a session quiet for 2 h is gone.
+    func testR1_SessionsOutliveARestart() {
+        let d = Desk()
+        _ = d.take(event("Stop"), at: 100)
+        _ = d.take(event("PreToolUse", push, session: "s2", cwd: "/Users/me/fium"), at: 110)
+        _ = d.take(event("PermissionRequest", push, session: "s2", cwd: "/Users/me/fium"), at: 111)
+        let saved = d.save(at: 120, wall: 1_000)
+        let e = Desk()
+        e.load(saved, at: 5, wall: 1_030)
+        let m = e.members(at: 5)
+        XCTAssertEqual(m.map(\.name), ["yapa", "fium"])
+        XCTAssertEqual(m.map(\.events), [1, 2])
+        XCTAssertNil(e.heartbeat(at: 5)["prompt"], "a request whose hook is gone isn't shown")
+        XCTAssertEqual(e.heartbeat(at: 5)["running"] as? Int, 0)
+        let old = Desk(); old.load(saved, at: 5, wall: 1_000 + 7300)
+        XCTAssertFalse(old.active)
     }
 }

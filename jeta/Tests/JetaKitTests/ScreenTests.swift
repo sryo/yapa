@@ -13,7 +13,7 @@ final class ScreenTests: XCTestCase {
         var s = Screen()
         s.update(board("jeta: server needs you · Which hostname for the tunnel?"))
         XCTAssertEqual(s.mode, .question)
-        XCTAssertEqual(s.lines(width: 40).map(\.text), ["server needs you", "Which hostname for the tunnel?", "tap more · hold: answer to front window"], "answers go through che to the window in front, not to this session")
+        XCTAssertEqual(s.lines(width: 40).map(\.text), ["server needs you", "Which hostname for the tunnel?", "tap more · hold: answer"])
         s.update(board("jeta: server needs you · x", "jeta: clear server"))
         XCTAssertEqual(s.mode, .face, "the question stays after it's cleared")
     }
@@ -66,7 +66,7 @@ final class ScreenTests: XCTestCase {
         // The first option is the suggested one: it stands out; the rest are plain.
         XCTAssertEqual(lines.filter { $0.style == .suggestion }.map(\.text), ["8080"])
         XCTAssertEqual(lines.filter { $0.style == .option }.map(\.text), ["8443"])
-        XCTAssertEqual(lines.last?.text, "tap one · it goes to the window in front")
+        XCTAssertEqual(lines.last?.text, "tap one, or hold to answer")
         XCTAssertEqual(s.choose(1), "server: 8443")
         XCTAssertNil(s.choose(2))
         s.tap()
@@ -112,5 +112,23 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s.mode, .question)
         XCTAssertEqual(s.lines(width: 40).first?.text, "che needs you")
         XCTAssertFalse(s.show(session: "docs"), "no question for it: nothing opens")
+    }
+
+    // R10: a permission request shows who asks and what, with Allow and Deny, ahead of any question; once answered
+    // the question underneath comes back. Swiping doesn't page past it, and its answer isn't a line for a session.
+    func testR10_PermissionShowsItsButtons() {
+        var s = Screen()
+        s.update(board("jeta: server needs you · Which hostname?"))
+        s.ask(session: "yapa", "Bash: git push")
+        let lines = s.lines(width: 40)
+        XCTAssertEqual(lines.first?.text, "yapa asks")
+        XCTAssertEqual(lines.filter { $0.style == .suggestion || $0.style == .option }.map(\.text), ["Allow", "Deny"])
+        XCTAssertTrue(lines.contains { $0.text == "Bash: git push" })
+        XCTAssertNil(s.asker)
+        s.swipe(); XCTAssertEqual(s.lines(width: 40).first?.text, "yapa asks")
+        s.answered()
+        XCTAssertEqual(s.lines(width: 40).first?.text, "server needs you")
+        var f = Screen(); f.ask(session: "yapa", "Read: x"); XCTAssertEqual(f.mode, .question)
+        f.answered(); XCTAssertEqual(f.mode, .face)
     }
 }

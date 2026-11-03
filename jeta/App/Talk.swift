@@ -8,6 +8,9 @@ final class Talk: NSObject {
     private let face: Face
     /// What it's doing, for the screen to show in the hint's place ("" when there's nothing to say).
     var onNote: ((String) -> Void)?
+    /// The Claude Code session a hold at a point is for, so che types into that session, not whatever is in front.
+    var session: ((CGPoint) -> String?)?
+    private var to: String?
     private let browser = NWBrowser(for: .bonjour(type: "_che._tcp", domain: nil), using: .tcp)
     private var mac: NWEndpoint?, recorder: AVAudioRecorder?, began = 0.0, enterBy = 0.0, turn = 0
     private var before = Mood.idle
@@ -34,7 +37,7 @@ final class Talk: NSObject {
     }
 
     @objc private func held(_ g: UILongPressGestureRecognizer) {
-        if g.state == .began { record() }
+        if g.state == .began { to = session?(g.location(in: g.view)); record() }
         if [.ended, .cancelled, .failed].contains(g.state) { send() }
     }
 
@@ -65,19 +68,20 @@ final class Talk: NSObject {
         try? AVAudioSession.sharedInstance().setActive(false)
         face.set(before, at: CACurrentMediaTime())
         guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return show("") }
-        deliver("/talk", wav)
+        deliver("/talk", wav, to: to)
     }
 
     /// Types the text on the Mac as if it had been spoken (an option picked on the screen), with the same notes.
-    func say(_ text: String) {
+    func say(_ text: String, to session: String?) {
         turn += 1
-        deliver("/say", Data(text.utf8))
+        deliver("/say", Data(text.utf8), to: session)
     }
 
-    private func deliver(_ path: String, _ body: Data) {
+    private func deliver(_ path: String, _ body: Data, to session: String?) {
         show("Sending…")
         let turn = turn
-        post(path, body) { [weak self] json in
+        let query = session.flatMap { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-"])) }
+        post(path + (query.map { "?session=\($0)" } ?? ""), body) { [weak self] json in
             guard let self, let json else { return self?.show("Mac didn't answer: is che running?") ?? () }
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
             if text.isEmpty { return self.show("Didn't catch that") }

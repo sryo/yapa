@@ -4,6 +4,8 @@ import TalkKit
 
 // che: the pad posts a clip to /talk on release; this hears it and types the text into Claude.
 // /say takes the text itself (an option picked on the pad). ?dry on either types nothing (for the benches).
+// ?session=<id> names the Claude Code session a face on the pad stands for: when it's one of the Claude app's, the
+// app is brought forward on that session first, so the words land there and not in whatever was in front.
 // /cancel stops the Enter that follows the text.
 // Only this Mac and the hosts in CHE_FROM (the pad's address, comma-separated) may post.
 let env = ProcessInfo.processInfo.environment
@@ -38,9 +40,46 @@ func type(_ text: String, to r: Route) {
     }
 }
 
-/// Puts the text where route() says; Enter follows after enterDelay unless the pad cancels it.
-func deliver(_ text: String) -> Route {
-    var r = route(frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+let sessions = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
+
+let appLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Claude/main.log")
+
+/// The end of the Claude app's log, where it says which session it focused.
+func logTail() -> String {
+    guard let h = try? FileHandle(forReadingFrom: appLog) else { return "" }
+    defer { try? h.close() }
+    let end = (try? h.seekToEnd()) ?? 0
+    try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
+    return String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+}
+
+/// Opens the Claude app on a session: nil when the app doesn't have it (it runs in a terminal), false when the app
+/// never said it focused it within 3 s, true once it's in front on that session.
+func open(session cli: String) async -> Bool? {
+    guard let id = desktopSession(cli: cli, in: sessions),
+          let url = URL(string: "claude://code/continue?session=\(id)&source=desktop_action") else {
+        log("session \(cli) isn't one of the Claude app's")
+        return nil
+    }
+    NSWorkspace.shared.open(url)
+    NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.activate()
+    for _ in 0..<60 {
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundle, focusedSession(log: logTail()) == id {
+            // The box takes the focus a moment after the session shows.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    log("the Claude app didn't focus \(id) within 3 s")
+    return false
+}
+
+/// Puts the text where route() says, or on the clipboard when it mustn't go anywhere but a session that didn't open;
+/// Enter follows after enterDelay unless the pad cancels it.
+func deliver(_ text: String, clipboard: Bool = false) -> Route {
+    var r = clipboard ? .clipboard : route(frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                   claude: NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.processIdentifier)
     if r != .clipboard && !AXIsProcessTrusted() {
         log("can't type: allow \(CommandLine.arguments[0]) in System Settings > Privacy & Security > Accessibility; text is on the clipboard")
@@ -63,9 +102,15 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
 }
 
-/// Delivers the text unless dry, and answers what /talk and /say both answer.
-func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, dry: Bool) {
-    let to = dry ? "none" : "\(deliver(text))"
+/// Delivers the text unless dry, in the session the pad named if the Claude app has it, and answers what /talk and
+/// /say both answer.
+@MainActor func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, path: String) async {
+    let q = query(path), dry = q["dry"] != nil
+    // Words for a session go there or nowhere: one the app doesn't have (a terminal's) or didn't open leaves them on
+    // the clipboard, since anywhere else would be the wrong place.
+    var opened: Bool?
+    if !dry, let s = q["session"] { opened = await open(session: s) == true }
+    let to = dry ? "none" : "\(deliver(text, clipboard: opened == false))" + (opened == true ? " in \(q["session"]!)" : "")
     log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
     reply(c, "200 OK", ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay])
 }
@@ -76,7 +121,7 @@ func handle(_ c: NWConnection, _ r: Request) {
         reply(c, "200 OK", ["cancelled": enter.cancel()])
     case ("POST", let p) where p.hasPrefix("/say"):
         guard let text = said(r.body) else { return reply(c, "400 Bad Request", ["error": "POST /say with UTF-8 text"]) }
-        answer(c, text, lang: "text", ms: 0, dry: p.hasSuffix("?dry"))
+        Task { @MainActor in await answer(c, text, lang: "text", ms: 0, path: p) }
     case ("POST", let p) where p.hasPrefix("/talk"):
         let start = DispatchTime.now()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-\(UUID()).wav")
@@ -87,7 +132,7 @@ func handle(_ c: NWConnection, _ r: Request) {
                 let heard = pick(try await transcriber.hear(url))
                 let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6
                 guard let h = heard else { return reply(c, "200 OK", ["text": "", "ms": ms]) }
-                answer(c, h.text, lang: h.lang, ms: ms, dry: p.hasSuffix("?dry"))
+                await answer(c, h.text, lang: h.lang, ms: ms, path: p)
             } catch {
                 log("\(error)")
                 reply(c, "500 Internal Server Error", ["error": "\(error)"])

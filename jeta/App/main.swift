@@ -13,9 +13,8 @@ final class FaceView: UIView {
     private var texts: [String: CATextLayer] = [:], placed: [Placed] = []
     /// The way the last swipe went (-1 left, 1 right), and the mode the text was last shown for.
     private var swipeWay = 0.0, was = Screen.Mode.face
-    var onChoose: ((String) -> Void)?
-    /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
-    var onTap: ((CGPoint) -> Bool)?
+    /// An option picked: the line for the manager, and the session it goes to.
+    var onChoose: ((String, String?) -> Void)?
     /// A chord's decision (true for once), and whether a prompt is up for one to answer.
     var onDecide: ((Bool) -> Bool)?, canDecide: (() -> Bool)?
     /// A tap brought a session that needs you forward: its prompt is the one the next tap answers.
@@ -49,8 +48,9 @@ final class FaceView: UIView {
         addGestureRecognizer(down)
         isMultipleTouchEnabled = true
         talk = Talk(face: face, in: self)
-        onChoose = { [weak self] in self?.talk?.say($0) }
+        onChoose = { [weak self] in self?.talk?.say($0, to: $1) }
         talk?.onNote = { [weak self] in self?.screen.note = $0 }
+        talk?.session = { [weak self] p in self.flatMap { $0.crowd.session(at: $0.unit(p), t: CACurrentMediaTime()) } }
         // The face hops as it says a question and gulps when its words come back.
         motion.onSay = { [weak self] in self?.speaker.say(at: CACurrentMediaTime()) }
         motion.onSwallow = { [weak self] in self?.speaker.swallow(at: CACurrentMediaTime()) }
@@ -61,6 +61,14 @@ final class FaceView: UIView {
 
     /// A turn event from the Claude app (any session); the manager's `jeta:` lines become notices.
     /// Returns the sessions whose notice this event added or changed.
+    /// The permission request the pad can answer, shown with its buttons; nil when none is waiting.
+    func ask(_ p: Prompt?) {
+        guard let p else { return screen.answered() }
+        let parts = p.hint.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+        let (who, what) = parts.count == 2 ? (parts[0], parts[1]) : ("Claude", p.hint)
+        screen.ask(session: who, what.isEmpty ? p.tool : "\(p.tool): \(what)")
+    }
+
     @discardableResult func take(_ event: Data) -> [String] {
         let old = board.pending
         board.take(event)
@@ -79,11 +87,18 @@ final class FaceView: UIView {
         if talk?.tapped() == true { return }
         // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
         let p = g.location(in: self)
+        // A permission request is answered only by its buttons: Allow or Deny, never a tap anywhere else.
+        if screen.asking != nil, let (i, o) = option(at: p) {
+            guard onDecide?(i == 0) == true else { return }
+            motion.choose(o.key, at: CACurrentMediaTime())
+            screen.answered()
+            return
+        }
         if let (i, o) = option(at: p), let line = screen.choose(i) {
             AudioServicesPlaySystemSound(1104)
             motion.choose(o.key, at: CACurrentMediaTime())
             poke(at: CGPoint(x: o.x + o.width / 2, y: o.y + o.height / 2))
-            onChoose?(line)
+            onChoose?(line, screen.asker)
             return
         }
         guard screen.mode == .face else { screen.tap(); return }
@@ -102,7 +117,6 @@ final class FaceView: UIView {
             }
             return
         }
-        if onTap?(p) == true { return }
         poke(at: p)
     }
 

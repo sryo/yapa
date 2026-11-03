@@ -15,14 +15,36 @@ public struct Screen {
 
     public init() {}
 
-    var current: Notice? { board.pending.isEmpty ? nil : board.pending[page % board.pending.count] }
+    /// A permission request waiting on the pad, shown before any question with Allow and Deny to tap.
+    public private(set) var asking: Notice?
+
+    var current: Notice? { asking ?? (board.pending.isEmpty ? nil : board.pending[page % board.pending.count]) }
 
     public mutating func update(_ b: NoticeBoard) {
         board = b
         if page >= board.pending.count { page = 0 }
+        settle()
+    }
+
+    /// A session asks to use a tool (`what` is the tool and the part of its call worth a glance); nil once answered.
+    public mutating func ask(session: String, _ what: String) {
+        let n = Notice(session: session, text: what, options: ["Allow", "Deny"])
+        guard asking != n else { return }
+        asking = n
+        if mode == .face || mode == .roster { mode = .question }
+    }
+
+    public mutating func answered() {
+        guard asking != nil else { return }
+        asking = nil
+        settle()
+    }
+
+    private mutating func settle() {
+        let any = asking != nil || !board.pending.isEmpty
         switch mode {
-        case .face: if !board.pending.isEmpty { mode = .question }
-        case .question, .detail: if board.pending.isEmpty { mode = .face }
+        case .face: if any { mode = .question }
+        case .question, .detail: if !any { mode = .face }
         case .roster: break
         }
     }
@@ -45,9 +67,12 @@ public struct Screen {
     }
 
     public mutating func swipe() {
-        guard !board.pending.isEmpty, mode == .question || mode == .detail else { return }
+        guard asking == nil, !board.pending.isEmpty, mode == .question || mode == .detail else { return }
         page = (page + 1) % board.pending.count
     }
+
+    /// The session the question showing came from, where its answer goes.
+    public var asker: String? { asking == nil ? current?.from : nil }
 
     /// Tapping option `i` of the question showing: the line to send the manager, like `server: 8443`.
     public func choose(_ i: Int) -> String? {
@@ -92,14 +117,15 @@ public struct Screen {
         case .question:
             guard let n = current else { return [] }
             let options = Screen.options(n)
+            if asking != nil { return wrap("\(n.session) asks", .title) + wrap(n.text, .body, max: 2) + options + wrap("tap more", .hint) }
             return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + options
-                + wrap(options.isEmpty ? "tap more · hold: answer to front window" : "tap one · it goes to the window in front", .hint)
+                + wrap(options.isEmpty ? "tap more · hold: answer" : "tap one, or hold to answer", .hint)
         case .detail:
             guard let n = current else { return [] }
-            var out = wrap("\(n.session) · waiting on you", .title) + wrap(n.text, .body, max: 5)
+            var out = wrap("\(n.session) · \(asking == nil ? "waiting on you" : "asks")", .title) + wrap(n.text, .body, max: 5)
             out += Screen.options(n)
-            out += wrap("hold: answer · swipe: next · tap: close", .hint)
-            if board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
+            out += wrap(asking == nil ? "hold: answer · swipe: next · tap: close" : "tap: close", .hint)
+            if asking == nil, board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
             return out
         case .roster:
             let rows = board.roster.prefix(5).flatMap { wrap("\($0.session) · \($0.state)", .body, max: 1) }
