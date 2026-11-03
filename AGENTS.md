@@ -10,6 +10,7 @@ iPhone SE (1st gen, A9, arm64, not arm64e), iOS 15.8, jailbroken with Dopamine (
 - The protocol core (parsing, state, decisions) is a Swift package with no UIKit or CoreBluetooth imports, so `bench/pad` runs it on the Mac.
 - `pad/` holds FaceKit (the face model, no UIKit) and `App/` (UIKit, one file). `pad/build-app sim` builds `build/pad/sim/yapa.app` for the Simulator; `pad/build-app device` builds `build/pad/yapa.ipa` for TrollStore. There is no Xcode project: swiftc compiles both straight from source. iOS 27 Simulators refuse apps without a scene delegate, so the app uses one.
 - The face is two small white ovals, close together, drawn from `Stroke.outline()`. Every value is a spring (no jumps); mood changes overshoot, squash and hop; the face roams the screen, steps closer when curious (with a dog-like head tilt) and back when busy. It blinks every 3–10 s and glances every 1–2.25 s; 60 fps while awake, 30 asleep. White only, no mouth, no angry eyes.
+- A tap calls `face.poke`: it wakes the face and draws its eyes to the finger. A long press steps through the moods, to try them.
 - The Hardware Buddy link carries no text from device to desktop, so push-to-talk needs its own path to the session.
 
 ## Test

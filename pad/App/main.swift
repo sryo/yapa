@@ -13,14 +13,22 @@ final class FaceView: UIView {
             eye.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
             layer.addSublayer(eye)
         }
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(nextMood)))
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(poke)))
+        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(nextMood)))
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    // Until the Hardware Buddy link drives it, a tap shows the next mood.
-    @objc private func nextMood() {
+    // A tap wakes the face and draws its eyes to the finger.
+    @objc private func poke(_ g: UITapGestureRecognizer) {
+        let p = g.location(in: self), u = Double(min(bounds.width, bounds.height))
+        face.poke(at: SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u), t: CACurrentMediaTime())
+    }
+
+    // A long press shows the next mood, to try them out.
+    @objc private func nextMood(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
         let all = Mood.allCases, i = all.firstIndex(of: face.mood)!
         face.set(all[(i + 1) % all.count], at: CACurrentMediaTime())
     }

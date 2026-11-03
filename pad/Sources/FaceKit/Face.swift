@@ -213,6 +213,19 @@ public final class Face {
         if wasAsleep && m != .attention { go(to: SIMD2(pos[0].x, 0), at: t) }
     }
 
+    /// A finger on the screen at `point` (fractions of the short side from the centre): it wakes up if asleep,
+    /// looks toward the finger for a few seconds, and gives a little hop.
+    public func poke(at point: SIMD2<Double>, t: Double) {
+        advance(to: t)
+        if mood == .sleep { set(.idle, at: t) }
+        let d = point - SIMD2(pos[0].x, pos[1].x)
+        gazeTo = SIMD2(max(-1, min(1, d.x / 0.1)), max(-0.6, min(0.6, d.y / 0.1)))
+        nextDart = t + 3
+        peekUntil = -1
+        lastEvent = t
+        kick(by: 0.02)
+    }
+
     public func isActive(at t: Double) -> Bool { mood != .sleep }
 
     func pose(at t: Double) -> Pose { advance(to: t); return Pose(fields: pose.map(\.x)) }

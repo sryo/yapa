@@ -427,6 +427,23 @@ final class FaceTests: XCTestCase {
         XCTAssertLessThan(abs(dEnd.y), 0.01)
     }
 
+    // R11: a tap wakes it if it's asleep (it pops up and opens its eyes), and it looks toward the finger.
+    func testR11_TapWakesAndLooks() {
+        let face = Face(seed: 2, now: 0)
+        face.set(.sleep, at: 0)
+        _ = face.frame(at: 10)
+        face.poke(at: SIMD2(0.6, -0.3), t: 10)
+        XCTAssertEqual(face.mood, .idle, "a tap doesn't wake it")
+        let f = face.frame(at: 11)
+        XCTAssertGreaterThan(f.gazeTarget.x, 0.5, "doesn't look toward the finger")
+        XCTAssertLessThan(f.gazeTarget.y, 0, "doesn't look up at the finger")
+        // Awake, a tap just draws its eyes, and resets the time before it dozes.
+        face.poke(at: SIMD2(-0.6, 0.2), t: 20)
+        XCTAssertLessThan(face.frame(at: 21).gazeTarget.x, -0.5)
+        _ = face.frame(at: 20 + face.dozeAfter - 1)
+        XCTAssertEqual(face.mood, .idle, "dozes too soon after a tap")
+    }
+
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
     func testR4_SleepIsThinWideArc() {
         let e = Mood.sleep.pose.left
