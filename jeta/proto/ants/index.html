@@ -82,21 +82,25 @@ class Ant {
     return { x: this.x + c * lx - s * ly + c * ahead, y: this.y + s * lx + c * ly + s * ahead };
   }
   stepFeet(dt) {
-    const unit = SIZE * this.size.v, moving = this.v > 2;
-    const busy = [0, 1].map(g => this.feet.some(f => f.grp === g && f.s < 1));
-    for (const f of this.feet) {
-      if (f.s < 1) {   // mid-step: ease from where it lifted to where it lands
-        f.s = Math.min(1, f.s + dt / STEP); const e = f.s * f.s * (3 - 2 * f.s);
-        f.x = f.fx + (f.tx - f.fx) * e; f.y = f.fy + (f.ty - f.fy) * e; continue;
-      }
-      // Walking, the step spot is half a stride ahead; standing, it's right under, so a foot left out settles back.
-      const half = moving ? STRIDE / 2 : 0, spot = this.rest(f.i, f.side, half), far = Math.hypot(f.x - spot.x, f.y - spot.y);
-      if (far > (moving ? STRIDE : 0.9) * unit && !busy[1 - f.grp] && (moving || !busy[f.grp])) {
-        // Land where the step spot will be when the foot comes down.
-        const land = this.rest(f.i, f.side, half + (moving ? this.v * STEP / unit : 0));
-        Object.assign(f, { fx: f.x, fy: f.y, tx: land.x, ty: land.y, s: 0 }); busy[f.grp] = true;
-        if (moving) this.spin -= f.side * (f.i === 1 ? 0.25 : 0.45);   // pushing off one side turns the body to the other
-      }
+    const unit = SIZE * this.size.v, moving = this.v > 2, half = moving ? STRIDE / 2 : 0;
+    for (const f of this.feet) if (f.s < 1) {   // mid-step: ease from where it lifted to where it lands
+      f.s = Math.min(1, f.s + dt / STEP); const e = f.s * f.s * (3 - 2 * f.s);
+      f.x = f.fx + (f.tx - f.fx) * e; f.y = f.fy + (f.ty - f.fy) * e;
+    }
+    if (this.feet.some(f => f.s < 1)) return;
+    const far = this.feet.map(f => { const p = this.rest(f.i, f.side, half); return Math.hypot(f.x - p.x, f.y - p.y); });
+    const lift = f => {   // land where the step spot will be when the foot comes down
+      const land = this.rest(f.i, f.side, half + (moving ? this.v * STEP / unit : 0));
+      Object.assign(f, { fx: f.x, fy: f.y, tx: land.x, ty: land.y, s: 0 });
+      if (moving) this.spin -= f.side * (f.i === 1 ? 0.25 : 0.45);   // pushing off one side turns the body to the other
+    };
+    if (moving) {
+      // Walking, a tripod lifts its three feet together once any foot is a stride behind, and the tripods take turns.
+      if (!far.some(d => d > STRIDE * unit)) return;
+      this.lastGrp = 1 - (this.lastGrp ?? 1);
+      this.feet.filter(f => f.grp === this.lastGrp).forEach(lift);
+    } else {
+      const n = far.findIndex(d => d > 0.9 * unit); if (n >= 0) lift(this.feet[n]);   // standing, a stray foot settles
     }
   }
   update(dt, t) {
@@ -128,6 +132,10 @@ class Ant {
     this.phase += dt;
     this.size.step(dt); this.rear.step(dt); this.ant.step(dt); this.curl.step(dt);
     this.stepFeet(dt);
+    // The abdomen swings toward the side whose front and hind legs are in the air (tripod 1 is R1 L2 R3).
+    if (!this.hips) this.hips = new Spring(0, 900, 45);
+    const up = [0, 1].map(g => this.feet.some(f => f.grp === g && f.s < 1));
+    this.hips.t = up[1] === up[0] ? 0 : up[1] ? 1 : -1; this.hips.step(dt);
     if (this.think) this.think(this, dt, t);
   }
   draw(t) {
@@ -158,7 +166,7 @@ class Ant {
     // Curling bends the abdomen round at the waist and the head round at the neck, toward each other.
     const lift = 1 + 0.18 * r, cu = this.curl.v;
     const bend = clamp(wrap(Math.atan2(this.y - this.tail.y, this.x - this.tail.x) - this.h), -0.7, 0.7);
-    g.save(); g.translate(-1.9, 0); g.rotate(bend + cu * 0.95);
+    g.save(); g.translate(-1.9, 0); g.rotate(bend + cu * 0.95 - (this.hips ? this.hips.v : 0) * 0.16);
     g.beginPath(); g.ellipse(-4.7, 0, 4.2, 2.6 * (1 + 0.03 * Math.sin(t * 2 + this.phase)), 0, 0, 7); g.fill();
     g.beginPath(); g.ellipse(0, 0, 0.8, 0.7, 0, 0, 7); g.fill(); g.restore();
     g.beginPath(); g.ellipse(0.8 + r, 0, 2.2 * lift, 1.4 * lift, 0, 0, 7); g.fill();

@@ -14,6 +14,22 @@ final class ColonyTests: XCTestCase {
         XCTAssertEqual(c.shapes(at: t).map(\.id), ["a"], "b walked off")
     }
 
+    // Walking, the abdomen swings right while the right front and hind legs are in the air and left for the left ones.
+    func testAbdomenSwingsWithTheTripod() {
+        var rng = SplitMix(8)
+        let a = Ant(at: SIMD2(160, 284), heading: 0, rng: &rng)
+        a.set(.work, at: 0, rng: &rng)
+        var right = 0, left = 0
+        for k in 1...1200 {
+            a.update(1.0 / 120, t: Double(k) / 120, screen: SIMD2(320, 568), listenAt: nil, rng: &rng)
+            let r1Up = a.feet.contains { $0.i == 0 && $0.side > 0 && $0.s < 0.6 && $0.s > 0.4 }
+            let l1Up = a.feet.contains { $0.i == 0 && $0.side < 0 && $0.s < 0.6 && $0.s > 0.4 }
+            if r1Up && a.hips.x > 0.3 { right += 1 }
+            if l1Up && a.hips.x < -0.3 { left += 1 }
+        }
+        XCTAssertGreaterThan(right, 10); XCTAssertGreaterThan(left, 10)
+    }
+
     // A new ant grows in from nothing, and every part of it is drawn from its first frame on.
     func testNewAntIsWhole() {
         let c = Colony(seed: 1, now: 0)

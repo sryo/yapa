@@ -135,6 +135,8 @@ final class Ant {
     /// Half a turn per stride walked: what the head bobs to.
     var gait = 0.0
     var size = Bounce(1), rear = Bounce(0, k: 60, d: 11), antennae = Bounce(0, k: 80, d: 12), curl = Bounce(0, k: 14, d: 7)
+    /// The abdomen's swing with the gait: 1 to the right while the right front and hind legs are in the air, -1 left.
+    var hips = Bounce(0, k: 900, d: 45), lastTripod = 1
     var feet: [Foot] = []
 
     init(at p: SIMD2<Double>, heading: Double, rng: inout SplitMix) {
@@ -228,28 +230,37 @@ final class Ant {
         let len = 6.6 * Ant.scale * size.x, back = SIMD2(x, y) - tail, bl = max(1e-6, simd_length(back))
         tail = SIMD2(x, y) - back / bl * len
         size.step(dt); rear.step(dt); antennae.step(dt); curl.step(dt)
+        // Tripod 1 is R1 L2 R3, tripod 0 is L1 R2 L3: the abdomen swings toward the side whose front and hind legs step.
+        let up = [0, 1].map { g in feet.contains { $0.tripod == g && $0.s < 1 } }
+        hips.target = up[1] == up[0] ? 0 : up[1] ? 1 : -1
+        hips.step(dt)
         stepFeet(dt)
     }
 
     private func stepFeet(_ dt: Double) {
-        let unit = Ant.scale * size.x, moving = v > 2
-        var busy = [0, 1].map { g in feet.contains { $0.tripod == g && $0.s < 1 } }
-        for n in feet.indices {
-            if feet[n].s < 1 {
-                feet[n].s = min(1, feet[n].s + dt / Ant.stepTime)
-                let s = feet[n].s, e = s * s * (3 - 2 * s)
-                feet[n].at = feet[n].from + (feet[n].to - feet[n].from) * e
-                continue
-            }
-            let f = feet[n], half = moving ? Ant.stride / 2 : 0
-            let far = simd_length(f.at - rest(f.i, f.side, ahead: half))
-            guard far > (moving ? Ant.stride : 2.2) * unit, !busy[1 - f.tripod], moving || !busy[f.tripod] else { continue }
-            // Land where the step spot will be when the foot comes down.
-            let land = rest(f.i, f.side, ahead: half + (moving ? v * Ant.stepTime / unit : 0))
-            feet[n].from = f.at; feet[n].to = land; feet[n].s = 0
-            busy[f.tripod] = true
-            // Pushing off one side turns the body to the other.
-            if moving { spin -= f.side * (f.i == 1 ? 0.25 : 0.45) }
+        let unit = Ant.scale * size.x, moving = v > 2, half = moving ? Ant.stride / 2 : 0
+        for n in feet.indices where feet[n].s < 1 {
+            feet[n].s = min(1, feet[n].s + dt / Ant.stepTime)
+            let s = feet[n].s, e = s * s * (3 - 2 * s)
+            feet[n].at = feet[n].from + (feet[n].to - feet[n].from) * e
+        }
+        guard !feet.contains(where: { $0.s < 1 }) else { return }
+        let far = feet.map { simd_length($0.at - rest($0.i, $0.side, ahead: half)) }
+        // Land where the step spot will be when the foot comes down; pushing off one side turns the body to the other.
+        func lift(_ n: Int) {
+            feet[n].from = feet[n].at; feet[n].s = 0
+            feet[n].to = rest(feet[n].i, feet[n].side, ahead: half + (moving ? v * Ant.stepTime / unit : 0))
+            if moving { spin -= feet[n].side * (feet[n].i == 1 ? 0.25 : 0.45) }
+        }
+        if moving {
+            // Walking, a tripod lifts its three feet together once any foot is a stride behind its step spot, and the
+            // two tripods take turns.
+            guard far.contains(where: { $0 > Ant.stride * unit }) else { return }
+            lastTripod = 1 - lastTripod
+            for n in feet.indices where feet[n].tripod == lastTripod { lift(n) }
+        } else if let n = far.indices.first(where: { far[$0] > 2.2 * unit }) {
+            // Standing, a foot left out settles back under, one at a time.
+            lift(n)
         }
     }
 
@@ -366,7 +377,7 @@ final class Ant {
         strokes = thighs + shins
         // Body: abdomen and waist bend at the waist (the rope, plus curling up), then thorax, then the head, which
         // turns at the neck when curling.
-        let bend = max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95
+        let bend = max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95 - hips.x * 0.16
         // Proportions after a real ant's: a narrow thorax, a small waist, an abdomen about twice as long as wide, and
         // a gap at each joint.
         let waist = { (p: SIMD2<Double>) in rotated(p + SIMD2(-1.9, 0), about: SIMD2(-1.9, 0), by: bend) }
