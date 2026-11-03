@@ -282,7 +282,7 @@ final class FaceView: UIView {
         // While talking, every ant turns to the finger held down.
         colony.listenAt = face.mood == .listening
             ? (talk?.heldAt).map { SIMD2(Double($0.x), Double($0.y)) } ?? SIMD2(Double(bounds.midX), Double(bounds.height) - 120) : nil
-        // The session whose text is open waits in the corner and the others step aside, as the faces did.
+        // The session whose text is open waits in the corner and the others walk off the screen until it closes.
         colony.solo = crowd.single ? nil : crowd.solo
         // With one session or none, a single ant plays the big face's mood; otherwise one per session not swiped away.
         colony.update(crowd.single ? [("face", face.mood, true, crowd.sessions.first?.events)]
