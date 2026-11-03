@@ -291,6 +291,7 @@ final class FaceView: UIView {
         let anchor = about.flatMap(colony.position).map { ($0 - mid) / u } ?? f.centre
         face.aside(screen.mode == .detail || screen.mode == .roster || screen.mode == .reply, at: t)
         face.lift(screen.mode == .question, at: t)
+        screen.now = t
         placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
         motion.screen = SIMD2(Double(bounds.width), Double(bounds.height))
         motion.show(placed, from: SIMD2(Double(point(anchor).x), Double(point(anchor).y)), swipe: swipeWay, page: pageWay,

@@ -146,4 +146,15 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(Screen.options(s.asking!).map(\.style), [.suggestion, .option, .suggestion, .option, .option])
         XCTAssertEqual(s.pick(3), .answer(["Color?": "blue", "Parts?": "a, c"]))
     }
+
+    // A reply says how long ago it came in, under the session's name, in steps coarse enough not to tick while read.
+    func testReplySaysHowLongAgo() {
+        var s = Screen()
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Done.", at: 100)])
+        s.read(session: "a")
+        for (now, ago) in [(130.0, "just now"), (300.0, "3 min ago"), (7360.0, "2 h ago"), (259300.0, "3 days ago")] as [(Double, String)] {
+            s.now = now
+            XCTAssertEqual(s.lines(width: 40).first?.text, "yapa · \(ago)")
+        }
+    }
 }
