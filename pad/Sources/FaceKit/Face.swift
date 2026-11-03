@@ -32,7 +32,7 @@ public struct Pose: Equatable {
 /// The seven Hardware Buddy states, then yapa's own.
 public enum Mood: String, CaseIterable {
     case sleep, idle, busy, attention, celebrate, dizzy, heart
-    case curious, focused, impatient, proud, bored
+    case curious, focused, impatient, proud, bored, listening
 
     public var pose: Pose {
         switch self {
@@ -43,11 +43,13 @@ public enum Mood: String, CaseIterable {
         case .celebrate: Pose(EyePose(ax: 0.045, ay: 0, bend: 0.03, width: 0.045, y: -0.01))
         case .dizzy: Pose(EyePose(ay: 0.026), spin: 0.6)
         case .heart: Pose(EyePose(ax: 0.05, ay: 0, bend: 0.036, width: 0.05, y: -0.015))
-        case .curious: Pose(left: EyePose(ay: 0.045, width: 0.08, y: -0.006), right: EyePose(ay: 0.018, width: 0.07, y: 0.01), depth: 1.0)
+        // Curious looks through a telescope: one eye big, the other small.
+        case .curious: Pose(left: EyePose(ay: 0.06, width: 0.11, y: -0.01), right: EyePose(ay: 0.012, width: 0.045, y: 0.012), depth: 1.0)
         case .focused: Pose(EyePose(ax: 0.022, ay: 0, width: 0.06), depth: -0.5)
         case .impatient: Pose(EyePose(ay: 0.04, width: 0.08, y: -0.022))
         case .proud: Pose(EyePose(ax: 0.035, ay: 0, bend: 0.018, width: 0.05, y: -0.006))
         case .bored: Pose(EyePose(ax: 0.03, ay: 0, bend: -0.004, width: 0.055, y: 0.02), depth: -0.25)
+        case .listening: Pose(EyePose(ay: 0.04, width: 0.075, y: -0.01), depth: 0.2)
         }
     }
 }
@@ -150,6 +152,10 @@ public final class Face {
     public var bounds = SIMD2<Double>(0.7, 0.35)
     /// Seconds of nothing happening before an idle face falls asleep.
     public var dozeAfter = 90.0
+    /// Seconds of quiet, awake and idle, before it peeks in from a screen edge.
+    public var peekAfter = 40.0
+    /// Half the screen's size, in fractions of its short side (16:9 landscape is 0.89 by 0.5).
+    public var screen = SIMD2<Double>(0.89, 0.5)
 
     private var rng: SplitMix
     private let lively: Bool
@@ -157,7 +163,8 @@ public final class Face {
     private var pose: [Spring] = Mood.idle.pose.fields.map { Spring(x: $0) }
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
-    private var yaw = Spring(x: 0)
+    private var yaw = Spring(x: 0), lunge = Spring(x: 0)
+    private var lungeUntil = -1.0, orbitStart = -10.0, busySince = 0.0, peekUntil = -1.0, peekSide = 1.0, peekedAt = -1e9
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextTilt = 0.0, tiltSide = 1.0, lastEvent: Double
     private var phase = SIMD2<Double>(0, 0), offset = SIMD2<Double>(0, 0)
     private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
@@ -191,9 +198,19 @@ public final class Face {
         guard m != mood else { return }
         kick(by: mood.pose.distance(to: m.pose))
         if m == .curious { nextTilt = t + rng.next(in: 2.5...4) }
+        let wasAsleep = mood == .sleep
         mood = m
         lastEvent = t
-        if m == .attention { go(to: .zero, at: t) }
+        peekUntil = -1
+        switch m {
+        // Needing you lunges into the screen, like Clippy leaning in, then settles a little back.
+        case .attention: go(to: .zero, at: t); lungeUntil = t + 0.9
+        case .celebrate: orbitStart = t
+        case .busy: busySince = t
+        default: break
+        }
+        // Waking pops back up from the bottom where it slept.
+        if wasAsleep && m != .attention { go(to: SIMD2(pos[0].x, 0), at: t) }
     }
 
     public func isActive(at t: Double) -> Bool { mood != .sleep }
@@ -207,7 +224,9 @@ public final class Face {
         // The eyes lead where the face is travelling.
         let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * 0.035) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
         // Up close the face also draws toward the middle, so its bigger eyes stay on screen.
-        let scale = 1 + p.depth, centre = SIMD2(pos[0].x, pos[1].x + hop.x) / max(1, scale)
+        let scale = 1 + p.depth + lunge.x, centre = SIMD2(pos[0].x, pos[1].x) / max(1, scale) + SIMD2(0, hop.x)
+        // Celebrating, the eyes orbit each other once.
+        let o = smoothstep(0, 1, (t - orbitStart) / 1.2), (oc, os) = (cos(2 * .pi * o), sin(2 * .pi * o))
         let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
         let here = whereNow()
         // Only fast moves smear; glances and small shifts stay clean ovals.
@@ -227,7 +246,8 @@ public final class Face {
             let ay = max(0, e.ay) * (1 - b) * (1 + sq) * near
             let ax = max(0, e.ax, 0.03 * b) * (1 - 0.5 * sq) * (1 - smoothstep(0, 0.012, ay))
             let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1)) * (1 - 0.6 * sq) * near
-            let c = SIMD2(side * 0.06 * (1 - 0.3 * sq) * yc + ys * 0.05, e.y + breath) + look
+            let apart = side * 0.06 * (1 - 0.3 * sq) * yc
+            let c = SIMD2(apart * oc + ys * 0.05, apart * os + e.y + breath) + look
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
             let stroke = Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
             return Stroke(p0: stroke.p0, c: stroke.c, p1: stroke.p1, width: stroke.width, smear: velocity,
@@ -253,23 +273,44 @@ public final class Face {
             let dt = min(Face.step, t - now)
             now += dt
             if lively && mood == .idle && now - lastEvent > dozeAfter { mood = .sleep }
+            // After a quiet stretch it peeks in from the nearer edge, looking into the screen, then comes back.
+            if lively && mood == .idle && peekUntil < 0 && now - max(lastEvent, peekedAt) > peekAfter {
+                peekSide = pos[0].x >= 0 ? 1 : -1
+                peekUntil = now + 6
+            }
+            let peeking = peekUntil > 0 && now < peekUntil
+            if peekUntil > 0 && now >= peekUntil + 1.5 { peekUntil = -1; peekedAt = now }
             if !lively || mood == .sleep {
                 nextBlink = max(nextBlink, now + 4); nextDart = max(nextDart, now + 4)
                 if mood == .sleep { gazeTo = .zero }
+            } else if peekUntil > 0 {
+                gazeTo = SIMD2(-peekSide, 0); nextDart = max(nextDart, now + 2)
+                if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
+            } else if mood == .busy {
+                // Busy is reading: sweep left to right along a line, jump back, drop a line.
+                let u = now - busySince, ph = u.truncatingRemainder(dividingBy: 1.6), line = Double(Int(u / 1.6) % 4)
+                gazeTo = SIMD2(ph < 1.3 ? -0.8 + 1.6 * ph / 1.3 : -0.8, -0.3 + 0.2 * line)
+                if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
             } else {
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
                 if now >= nextDart { gazeTo = SIMD2(rng.next(in: -1...1), rng.next(in: -0.6...0.6)); nextDart += rng.next(in: 4...9) }
             }
             if lively {
                 // An event's offset fades over about half a minute, so the face eases back into its drift.
-                offset *= exp(-dt / 30)
-                posTo = drift(at: now) + offset
+                if !peeking { offset *= exp(-dt / 30) }
+                let d = drift(at: now)
+                if peeking { offset = SIMD2(peekSide * (screen.x + 0.02), pos[1].x) - d }
+                if peekUntil > 0 && !peeking && now < peekUntil + dt * 1.5 { offset = .zero }
+                // Asleep it rests low on the screen, still drifting sideways.
+                posTo = mood == .sleep ? SIMD2(d.x + offset.x, screen.y - 0.12) : d + offset
             }
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)
             gaze[1].step(to: gazeTo.y, k: 120, damping: 0.85, dt: dt)
-            pos[0].step(to: posTo.x, k: 65, damping: 0.75, dt: dt)
-            pos[1].step(to: posTo.y, k: 65, damping: 0.75, dt: dt)
+            // Falling asleep sinks slowly; everything else moves briskly.
+            let moveK = mood == .sleep ? 8.0 : 65
+            pos[0].step(to: posTo.x, k: moveK, damping: 0.75, dt: dt)
+            pos[1].step(to: posTo.y, k: moveK, damping: 0.75, dt: dt)
             // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
             // them across, like a ball hitting a wall; the spring then stretches them back along the same line.
             let v = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035), speed = simd_length(v)
@@ -285,8 +326,10 @@ public final class Face {
             track.append((now, whereNow()))
             if let first = track.first, now - first.0 > 0.1 { track.removeFirst() }
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
-            // Only curious tilts the head (like a dog); moving turns it instead.
-            tilt.step(to: mood == .curious ? 0.2 * tiltSide : 0, k: 60, damping: 0.5, dt: dt)
+            // Curious tilts the head like a dog; listening sways it gently, like with headphones on. Moving turns it instead.
+            let tiltTo = mood == .curious ? 0.2 * tiltSide : mood == .listening ? 0.1 * sin(2 * .pi * 0.8 * now) : 0
+            tilt.step(to: tiltTo, k: 60, damping: 0.5, dt: dt)
+            lunge.step(to: now < lungeUntil ? 1 : 0, k: 140, damping: 0.6, dt: dt)
             yaw.step(to: max(-0.35, min(0.35, pos[0].v * 0.5)), k: 310, damping: 0.85, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)

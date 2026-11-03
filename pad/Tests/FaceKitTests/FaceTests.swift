@@ -45,7 +45,7 @@ final class FaceTests: XCTestCase {
         XCTAssertGreaterThan(peak - to, (to - from) * 0.15, "no overshoot")
         let rest = face.frame(at: 3).eyes[0].c.y
         XCTAssertGreaterThan(rest - fs.map { $0.eyes[0].c.y }.min()!, 0.015, "no hop")
-        let heights = fs.map { f in (f.eyes[0].p1.y - f.eyes[0].p0.y) / 2 }
+        let heights = fs.map { f in (f.eyes[0].p1.y - f.eyes[0].p0.y) / 2 / f.scale }
         XCTAssertLessThan(heights.prefix(24).min()!, from * 0.9, "no squash before stretching")
     }
 
@@ -62,6 +62,7 @@ final class FaceTests: XCTestCase {
     func testR2_BlinksAndGlancesOnSchedule() {
         let face = Face(seed: 42, now: 0)
         face.dozeAfter = .infinity
+        face.peekAfter = .infinity
         var blinks: [Double] = [], glances: [Double] = []
         var wasClosed = false, lastGaze = face.frame(at: 0).gazeTarget
         for i in 1...(600 * 60) {
@@ -96,10 +97,10 @@ final class FaceTests: XCTestCase {
         XCTAssertFalse(face.isActive(at: 63))
     }
 
-    // R3: the seven official moods plus yapa's own five, each with its own shape.
+    // R3: the seven official moods plus yapa's own six, each with its own shape.
     func testR3_EveryMoodHasItsOwnPose() {
         let official: Set<String> = ["sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart"]
-        let own: Set<String> = ["curious", "focused", "impatient", "proud", "bored"]
+        let own: Set<String> = ["curious", "focused", "impatient", "proud", "bored", "listening"]
         XCTAssertEqual(Set(Mood.allCases.map(\.rawValue)), official.union(own))
         let moods = Mood.allCases
         for (i, a) in moods.enumerated() {
@@ -146,12 +147,14 @@ final class FaceTests: XCTestCase {
         for asleep in [false, true] {
             let face = Face(seed: 11, now: 0)
             face.bounds = SIMD2(0.7, 0.35)
+            face.peekAfter = .infinity
+            face.dozeAfter = .infinity
             if asleep { face.set(.sleep, at: 0) }
             let fs = frames(face, from: 0, to: 1800, hz: 2)
             let centres = fs.map { ($0.eyes[0].c + $0.eyes[1].c) / 2 }
             let xs = centres.map(\.x), ys = centres.map(\.y)
             XCTAssertGreaterThan(xs.max()! - xs.min()!, 0.9, "doesn't cover the screen sideways (asleep: \(asleep))")
-            XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.45, "doesn't cover it up and down (asleep: \(asleep))")
+            if !asleep { XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.45, "doesn't cover it up and down") }
             XCTAssert(centres.allSatisfy { abs($0.x) < 0.8 && abs($0.y) < 0.45 }, "leaves the screen")
             let steps = zip(fs, fs.dropFirst()).dropFirst(8).map { simd_length($1.centre - $0.centre) * 2 }
             XCTAssertLessThan(steps.max()!, 0.008, "drifts too fast (asleep: \(asleep))")
@@ -330,6 +333,98 @@ final class FaceTests: XCTestCase {
                 XCTAssert(o.allSatisfy { abs($0.x) < 0.89 && abs($0.y) < 0.5 }, "close-up eye leaves the screen at \(f.centre)")
             }
         }
+    }
+
+    func centre(_ f: Frame) -> SIMD2<Double> { (f.eyes[0].middle + f.eyes[1].middle) / 2 }
+    func area(_ s: Stroke) -> Double {
+        let o = s.outline(); return (o.map(\.x).max()! - o.map(\.x).min()!) * (o.map(\.y).max()! - o.map(\.y).min()!)
+    }
+
+    // R10: needing you is a lunge, like Clippy leaning into the screen: it shoots up close (2.3x or more), holds
+    // there looking at you, then settles back to 1.5x.
+    func testR10_AttentionLunges() {
+        let face = Face(seed: 1, now: 0)
+        face.set(.attention, at: 1)
+        let fs = frames(face, from: 1, to: 4)
+        let peakAt = fs.indices.max(by: { fs[$0].scale < fs[$1].scale })!
+        XCTAssertGreaterThan(fs[peakAt].scale, 2.3, "no lunge")
+        XCTAssertLessThan(Double(peakAt) / 240, 0.6, "lunge too slow")
+        XCTAssertGreaterThan(fs.filter { $0.scale > 2.2 }.count, Int(0.4 * 240), "doesn't hold close")
+        XCTAssertEqual(fs.last!.scale, 1.5, accuracy: 0.05, "doesn't settle back")
+    }
+
+    // R10: after a quiet stretch awake, it peeks in from a screen edge with only part of the face showing, then
+    // comes back; while it peeks it looks into the screen.
+    func testR10_PeeksFromTheEdge() {
+        let face = Face(seed: 4, now: 0)
+        face.screen = SIMD2(0.89, 0.5)
+        face.peekAfter = 20
+        face.dozeAfter = .infinity
+        let fs = frames(face, from: 0, to: 60, hz: 10)
+        let out = fs.filter { abs(centre($0).x) > 0.8 }
+        XCTAssertFalse(out.isEmpty, "never peeks")
+        XCTAssert(out.allSatisfy { centre($0).x * $0.gazeTarget.x < 0 }, "doesn't look into the screen while peeking")
+        XCTAssertLessThan(abs(centre(fs.last!).x), 0.8, "stays off the edge")
+        XCTAssertNil(fs[0..<150].first(where: { abs(centre($0).x) > 0.8 }), "peeks before the quiet stretch")
+    }
+
+    // R10: falling asleep it sinks toward the bottom of the screen; waking up it pops back up quickly.
+    func testR10_SinksToSleepAndRisesOnWaking() {
+        let face = Face(seed: 2, now: 0)
+        face.screen = SIMD2(0.89, 0.5)
+        face.set(.sleep, at: 1)
+        let asleep = face.frame(at: 15)
+        XCTAssertGreaterThan(centre(asleep).y, 0.3, "doesn't sink")
+        face.set(.idle, at: 15)
+        let awake = face.frame(at: 16.2)
+        XCTAssertLessThan(centre(awake).y, centre(asleep).y - 0.2, "doesn't rise quickly")
+    }
+
+    // R10: busy is reading: the eyes sweep left to right along a line, jump back, and drop a line.
+    func testR10_BusyReads() {
+        let face = Face(seed: 2, now: 0)
+        face.set(.busy, at: 0)
+        let g = frames(face, from: 1, to: 9, hz: 20).map(\.gazeTarget)
+        var sweeps = 0, lines = Set<Double>()
+        for (a, b) in zip(g, g.dropFirst()) {
+            if b.x < a.x - 0.5 { sweeps += 1 }
+            lines.insert((b.y * 100).rounded())
+        }
+        XCTAssertGreaterThan(sweeps, 3, "doesn't sweep and return")
+        XCTAssertGreaterThan(lines.count, 2, "doesn't move down the lines")
+        let rising = zip(g, g.dropFirst()).filter { $1.x > $0.x }.count, falling = zip(g, g.dropFirst()).filter { $1.x < $0.x }.count
+        XCTAssertGreaterThan(rising, falling * 4, "doesn't read left to right")
+    }
+
+    // R10: curious looks like a telescope: one eye much bigger than the other.
+    func testR10_CuriousTelescope() {
+        let face = Face(seed: 2, now: 0, lively: false)
+        face.set(.curious, at: 0)
+        let f = face.frame(at: 3)
+        XCTAssertGreaterThan(area(f.eyes[0]) / area(f.eyes[1]), 2.5)
+    }
+
+    // R10: listening sways gently, like with headphones on.
+    func testR10_ListeningSways() {
+        let face = Face(seed: 2, now: 0)
+        face.set(.listening, at: 0)
+        let tilts = frames(face, from: 2, to: 8, hz: 30).map(\.tilt)
+        XCTAssertGreaterThan(tilts.max()!, 0.07)
+        XCTAssertLessThan(tilts.min()!, -0.07)
+        var crossings = 0
+        for (a, b) in zip(tilts, tilts.dropFirst()) where (a < 0) != (b < 0) { crossings += 1 }
+        XCTAssert((6...14).contains(crossings), "sways at the wrong pace: \(crossings) crossings in 6 s")
+    }
+
+    // R10: celebrating, the eyes orbit around each other once, then sit side by side again.
+    func testR10_CelebrateOrbits() {
+        let face = Face(seed: 2, now: 0, lively: false)
+        face.set(.celebrate, at: 1)
+        let during = frames(face, from: 1, to: 2.3, hz: 60).map { $0.eyes[1].middle - $0.eyes[0].middle }, end = face.frame(at: 3)
+        let dEnd = end.eyes[1].middle - end.eyes[0].middle
+        XCTAssert(during.contains { abs($0.y) > 0.08 && abs($0.y) > abs($0.x) }, "eyes don't swing round each other")
+        XCTAssertGreaterThan(dEnd.x, 0.08, "eyes don't come back side by side")
+        XCTAssertLessThan(abs(dEnd.y), 0.01)
     }
 
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
