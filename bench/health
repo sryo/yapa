@@ -19,7 +19,7 @@ else
 fi
 killing=${YAPA_KILL:-$kill_default}
 url="http://$ip:$port/health"
-mkdir -p bench/runs
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 
 get() { plutil -extract "$1" raw -o - "$tmp" 2>/dev/null; }
@@ -54,8 +54,8 @@ if [ "$killing" = 1 ]; then
   done
 fi
 
-# Disk growth compares used space with the last run against the same host, kept in bench/runs.
-state="bench/runs/disk-$(printf '%s' "$host" | tr -c 'A-Za-z0-9' _).txt"
+# Disk growth compares used space with the last run against the same host, kept beside the runs in ~/.fium/runs/yapa.
+state="$runs/disk-$(printf '%s' "$host" | tr -c 'A-Za-z0-9' _).txt"
 used=$(on "df -k /var 2>/dev/null || df -k /" | awk 'NR == 2 { print $3 }')
 now=$(date +%s)
 growth=
@@ -66,7 +66,7 @@ fi
 [ -z "$growth" ] && [ -f "$state" ] || echo "$now $used" > "$state"
 
 metric() { printf ',\n  "%s": {"dir": "%s", "kind": "%s", %s"samples": [%s]}' "$1" "$2" "$3" "$4" "$5"; }
-out=bench/runs/health-$now.json
+out=$runs/health-$now.json
 {
   printf '{"commit": "%s", "dirty": %s,\n "metrics": {\n  "services_up": {"dir": "higher", "kind": "count", "samples": [%s]}' \
     "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain)" ] && echo true || echo false)" "$up"

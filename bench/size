@@ -6,8 +6,8 @@ bins=$(cat build/ios/* 2>/dev/null | wc -c | tr -d ' ')
 loc=$(git ls-files -- "*.go" "*.swift" "*.sh" | grep -v '^bench/' | xargs cat 2>/dev/null | grep -cv '^[[:space:]]*$')
 commit=$(git rev-parse HEAD 2>/dev/null || echo none)
 dirty=$([ -n "$(git status --porcelain)" ] && echo true || echo false)
-out=bench/runs/size-$(date +%s).json
-mkdir -p bench/runs
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+out=$runs/size-$(date +%s).json
 cat > "$out" <<JSON
 {"commit": "$commit", "dirty": $dirty,
  "metrics": {
