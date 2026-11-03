@@ -1,0 +1,70 @@
+#!/bin/sh
+# Measures goal 2 over Wi-Fi, the hooks' way: ms from this Mac sending a Claude Code permission hook to the pad
+# buzzing, and from a tap on the pad to the hook getting its answer (p50); ms each status hook runs in the background;
+# and the two legs together, which need no clock. Someone taps allow on the pad for each prompt. Prints the path of a run file.
+#   YAPA_HOST  ssh destination of the phone (default: the one ./ya install last used)
+#   JETA_N     prompts to tap (5)
+#   JETA_HOOK  where the hooks go (http://claude-yapa.local:8079/hook, as jeta/hooks on sets them)
+cd "$(dirname "$0")/.." || exit 1
+host=${YAPA_HOST:-$(cat "$HOME/.config/yapa/host" 2>/dev/null)}
+[ -n "$host" ] || { echo "bench/jeta-hook-live: set YAPA_HOST to the phone, like root@192.168.1.8" >&2; exit 1; }
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+exec /usr/bin/python3 -I - "$host" "${JETA_N:-5}" "${JETA_HOOK:-http://claude-yapa.local:8079/hook}" "$runs" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain)" ] && echo true || echo false)" <<'EOF'
+import json, os, re, statistics, subprocess, sys, time
+host, n, url, runs, commit, dirty = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+log = "/var/mobile/Containers/Data/Application/*/Documents/buddy.log"
+def ms(): return time.time() * 1000
+# One ssh connection kept open, so a command's round trip (and so the clock reading) is milliseconds, not a handshake.
+path = ["-o", f"ControlPath={os.environ.get('TMPDIR', '/tmp')}/jhl-%h"]
+subprocess.run(["ssh", "-fN", "-o", "ConnectTimeout=5", "-o", "ControlMaster=yes", "-o", "ControlPersist=120", *path, host],
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ctl = ["-o", "ControlMaster=no", *path]
+def on(cmd): return subprocess.run(["ssh", "-o", "ConnectTimeout=5", *ctl, host, cmd], capture_output=True, text=True).stdout
+def stop(m): print("bench/jeta-hook-live:", m, file=sys.stderr); sys.exit(1)
+def hook(event, **more):
+    body = json.dumps({"hook_event_name": event, "session_id": "bench", "cwd": "/bench", **more})
+    return subprocess.run(["curl", "-s", "--connect-timeout", "1", "-m", "120", "-w", "\n%{http_code}", "--data-binary", "@-", url],
+                          input=body, capture_output=True, text=True).stdout
+
+if not hook("SessionStart").endswith("200"):
+    stop(f"no answer from jeta at {url}: is the app open on the phone, and on this Wi-Fi?")
+
+# The phone's clock against this Mac's, from the middle of the quickest ssh round trip.
+offsets = []
+for _ in range(10):
+    a = ms(); p = float(on("/var/jb/usr/bin/date +%s%3N")); b = ms()
+    offsets.append((b - a, p - (a + b) / 2))
+rtt, offset = min(offsets)
+
+buzz, answer, trip = [], [], []
+for i in range(n):
+    print(f"tap allow on the pad ({i + 1}/{n})", file=sys.stderr, flush=True)
+    sent = ms()
+    out = hook("PermissionRequest", tool_name="Bash", tool_input={"command": f"echo bench {i + 1}"})
+    back = ms()
+    if '"allow"' not in out: stop(f"prompt {i + 1} got {out!r}, not an allow from the pad")
+    lines = on(f"grep -E 'prompt |decided once' {log} | tail -2")
+    shown = re.findall(r"prompt \S+ (\d+)", lines); tapped = re.findall(r"decided once (\d+)", lines)
+    if not shown or not tapped: stop(f"the pad's log has no prompt or tap for prompt {i + 1}")
+    buzz.append(int(shown[-1]) - offset - sent)
+    answer.append(back - (int(tapped[-1]) - offset))
+    trip.append(buzz[-1] + answer[-1])
+hook("SessionEnd")
+
+# Status hooks run in the background (async); this is how long each one runs there.
+status = []
+for _ in range(20):
+    a = ms(); hook("PreToolUse", tool_name="Read", tool_input={"file_path": "/bench/x"}); status.append(ms() - a)
+hook("SessionEnd")
+
+def metric(samples): return {"dir": "lower", "kind": "time", "noisy": True, "samples": [round(statistics.median(samples), 1)]}
+run = {"commit": commit, "dirty": dirty == "true",
+       "metrics": {"hook_to_buzz_ms": metric(buzz), "tap_to_answer_ms": metric(answer), "status_hook_ms": metric(status),
+                   # Both legs together need no clock: what the link adds to a tap, end to end.
+                   "link_ms": metric(trip)},
+       "limits": {}, "clock_rtt_ms": round(rtt, 1)}
+out = f"{runs}/jeta-hook-live-{int(time.time())}.json"
+open(out, "w").write(json.dumps(run, indent=1))
+print(f"hook to buzz {buzz}, tap to answer {answer} (ms; phone clock ±{rtt / 2:.0f} ms)", file=sys.stderr)
+print(out)
+EOF
