@@ -185,7 +185,7 @@ final class FaceTests: XCTestCase {
         let face = Face(seed: 2, now: 0)
         face.set(.curious, at: 0)
         let fs = frames(face, from: 0, to: 8, hz: 30)
-        XCTAssertGreaterThan(fs.last!.scale, 1.25, "doesn't step closer")
+        XCTAssertGreaterThan(fs.last!.scale, 1.9, "doesn't step closer")
         let tilts = fs.map(\.tilt)
         XCTAssertGreaterThan(tilts.max()!, 0.15, "doesn't tilt one way")
         XCTAssertLessThan(tilts.min()!, -0.15, "doesn't tilt the other way")
@@ -197,7 +197,7 @@ final class FaceTests: XCTestCase {
             let face = Face(seed: 2, now: 0)
             face.set(m, at: 0)
             let f = face.frame(at: 3)
-            XCTAssertLessThan(f.scale, 0.85, "\(m) doesn't step back")
+            XCTAssertLessThan(f.scale, 0.6, "\(m) doesn't step back")
             XCTAssertEqual(f.tilt, 0, accuracy: 0.01)
         }
     }
@@ -316,6 +316,19 @@ final class FaceTests: XCTestCase {
             let e = f.eyes[0], mid = (e.p0 + 2 * e.c + e.p1) / 4
             XCTAssertLessThan(e.trail.map { simd_length($0 - mid) }.max() ?? 0, 0.002, "trail on a slow move")
             XCTAssertLessThan(abs(e.impact), 0.02, "squash wobble on a slow move")
+        }
+    }
+
+    // R6: stepping up close never pushes the eyes off the screen, wherever the drift has taken the face.
+    func testR6_CloseUpStaysOnScreen() {
+        let face = Face(seed: 5, now: 0)
+        face.bounds = SIMD2(0.62, 0.3)
+        face.set(.curious, at: 0)
+        for f in frames(face, from: 0, to: 1800, hz: 1) {
+            for e in f.eyes {
+                let o = e.outline()
+                XCTAssert(o.allSatisfy { abs($0.x) < 0.89 && abs($0.y) < 0.5 }, "close-up eye leaves the screen at \(f.centre)")
+            }
         }
     }
 

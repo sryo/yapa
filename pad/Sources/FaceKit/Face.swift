@@ -36,18 +36,18 @@ public enum Mood: String, CaseIterable {
 
     public var pose: Pose {
         switch self {
-        case .sleep: Pose(EyePose(ax: 0.05, ay: 0, bend: -0.013, width: 0.02, y: 0.02), depth: -0.1)
+        case .sleep: Pose(EyePose(ax: 0.05, ay: 0, bend: -0.013, width: 0.02, y: 0.02), depth: -0.3)
         case .idle: Pose(EyePose())
-        case .busy: Pose(EyePose(ay: 0.022, y: 0.012), depth: -0.25)
-        case .attention: Pose(EyePose(ay: 0.05, width: 0.07, y: -0.006), depth: 0.2)
+        case .busy: Pose(EyePose(ay: 0.022, y: 0.012), depth: -0.45)
+        case .attention: Pose(EyePose(ay: 0.05, width: 0.07, y: -0.006), depth: 0.5)
         case .celebrate: Pose(EyePose(ax: 0.045, ay: 0, bend: 0.03, width: 0.045, y: -0.01))
         case .dizzy: Pose(EyePose(ay: 0.026), spin: 0.6)
         case .heart: Pose(EyePose(ax: 0.05, ay: 0, bend: 0.036, width: 0.05, y: -0.015))
-        case .curious: Pose(left: EyePose(ay: 0.045, width: 0.08, y: -0.006), right: EyePose(ay: 0.018, width: 0.07, y: 0.01), depth: 0.4)
-        case .focused: Pose(EyePose(ax: 0.022, ay: 0, width: 0.06), depth: -0.3)
+        case .curious: Pose(left: EyePose(ay: 0.045, width: 0.08, y: -0.006), right: EyePose(ay: 0.018, width: 0.07, y: 0.01), depth: 1.0)
+        case .focused: Pose(EyePose(ax: 0.022, ay: 0, width: 0.06), depth: -0.5)
         case .impatient: Pose(EyePose(ay: 0.04, width: 0.08, y: -0.022))
         case .proud: Pose(EyePose(ax: 0.035, ay: 0, bend: 0.018, width: 0.05, y: -0.006))
-        case .bored: Pose(EyePose(ax: 0.03, ay: 0, bend: -0.004, width: 0.055, y: 0.02), depth: -0.1)
+        case .bored: Pose(EyePose(ax: 0.03, ay: 0, bend: -0.004, width: 0.055, y: 0.02), depth: -0.25)
         }
     }
 }
@@ -206,7 +206,8 @@ public final class Face {
         let spin = p.spin * SIMD2(cos(2 * .pi * 1.5 * t), sin(2 * .pi * 1.5 * t))
         // The eyes lead where the face is travelling.
         let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * 0.035) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
-        let centre = SIMD2(pos[0].x, pos[1].x + hop.x), scale = 1 + p.depth
+        // Up close the face also draws toward the middle, so its bigger eyes stay on screen.
+        let scale = 1 + p.depth, centre = SIMD2(pos[0].x, pos[1].x + hop.x) / max(1, scale)
         let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
         let here = whereNow()
         // Only fast moves smear; glances and small shifts stay clean ovals.
