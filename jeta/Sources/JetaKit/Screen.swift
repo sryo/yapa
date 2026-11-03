@@ -38,6 +38,14 @@ public struct Screen {
         }
     }
 
+    /// Opens a session's question (its face was tapped); false when it has none.
+    @discardableResult public mutating func show(session: String) -> Bool {
+        guard let i = board.pending.firstIndex(where: { $0.session == session }) else { return false }
+        page = i
+        mode = .question
+        return true
+    }
+
     public mutating func swipe() {
         guard !board.pending.isEmpty, mode == .question || mode == .detail else { return }
         page = (page + 1) % board.pending.count
@@ -90,7 +98,7 @@ public struct Screen {
             guard let n = current else { return [] }
             let options = Screen.options(n)
             return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + options
-                + wrap(options.isEmpty ? "tap more · hold to answer" : "tap an option · hold to answer", .hint)
+                + wrap(options.isEmpty ? "tap more · hold: answer to front window" : "tap one · it goes to the window in front", .hint)
         case .detail:
             guard let n = current else { return [] }
             var out = wrap("\(n.session) · waiting on you", .title) + wrap(n.text, .body, max: 5)

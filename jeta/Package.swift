@@ -11,6 +11,7 @@ let package = Package(
         .executableTarget(name: "chordbench", dependencies: ["JetaKit"]),
         .executableTarget(name: "noticebench", dependencies: ["JetaKit"]),
         .executableTarget(name: "textbench", dependencies: ["JetaKit"]),
+        .executableTarget(name: "crowdbench", dependencies: ["JetaKit"]),
         .testTarget(name: "JetaKitTests", dependencies: ["JetaKit"]),
         .target(name: "BuddyKit", dependencies: ["JetaKit"]),
         .target(name: "BuddySpec", dependencies: ["BuddyKit"]),

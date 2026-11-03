@@ -31,9 +31,15 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             if active != self.hooked { self.log(active ? "hooks from the Mac" : "no hook sessions left") }
             self.hooked = active
             if active { self.buddy.receive(self.hooks.desk.line(at: t), at: t).forEach(self.send) }
+            self.view.crowd.update(self.hooks.desk.members(at: t), at: t)
             self.update()
         }
         view.onTap = { [weak self] p in self?.tap(at: p) ?? false }
+        // A tap on a session's face brings its prompt forward, so the next tap answers that session's hook.
+        view.onFocus = { [weak self] id in
+            self?.hooks.desk.focus = id
+            self?.hooks.onChange?()
+        }
         // Every session's turn events go to the face's notice board; the time each notice lands is logged.
         buddy.onTurn = { [weak self] line in
             guard let self else { return }

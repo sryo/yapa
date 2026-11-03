@@ -16,7 +16,13 @@ final class FaceView: UIView {
     var onChoose: ((String) -> Void)?
     /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
+    /// A tap brought a session that needs you forward: its prompt is the one the next tap answers.
+    var onFocus: ((String) -> Void)?
     private var talk: Talk?
+    /// One face per Claude Code session, when two or more report through the hooks; with one, the face above.
+    let crowd = Crowd(seed: UInt64(Date().timeIntervalSince1970) &+ 1, now: CACurrentMediaTime())
+    private var crowdEyes: [String: [CAShapeLayer]] = [:], crowdNames: [String: CATextLayer] = [:]
+    private let more = CATextLayer()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -25,6 +31,11 @@ final class FaceView: UIView {
             eye.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
             layer.addSublayer(eye)
         }
+        more.contentsScale = UIScreen.main.scale
+        more.fontSize = 13
+        more.foregroundColor = UIColor(white: 0.55, alpha: 1).cgColor
+        more.alignmentMode = .center
+        layer.addSublayer(more)
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
         for way in [UISwipeGestureRecognizer.Direction.left, .right] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped))
@@ -39,8 +50,8 @@ final class FaceView: UIView {
         onChoose = { [weak self] in self?.talk?.say($0) }
         talk?.onNote = { [weak self] in self?.screen.note = $0 }
         // The face hops as it says a question and gulps when its words come back.
-        motion.onSay = { [weak self] in self?.face.say(at: CACurrentMediaTime()) }
-        motion.onSwallow = { [weak self] in self?.face.swallow(at: CACurrentMediaTime()) }
+        motion.onSay = { [weak self] in self?.speaker.say(at: CACurrentMediaTime()) }
+        motion.onSwallow = { [weak self] in self?.speaker.swallow(at: CACurrentMediaTime()) }
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
@@ -74,8 +85,27 @@ final class FaceView: UIView {
             return
         }
         guard screen.mode == .face else { screen.tap(); return }
+        // With a face per session, a tap on one that isn't forward picks it: one that needs you steps forward (its
+        // prompt is then the one answered), another opens its question if it has one, else just looks at you.
+        let t = CACurrentMediaTime()
+        if !crowd.single, let id = crowd.hit(unit(p), at: t), id != crowd.front {
+            if crowd.slots(at: t).first(where: { $0.id == id }).flatMap({ s in crowd.face(s.id)?.mood }) == .attention {
+                crowd.focus(id, at: t)
+                onFocus?(id)
+            } else if let name = crowd.slots(at: t).first(where: { $0.id == id })?.name, screen.show(session: name) {
+            } else {
+                crowd.face(id)?.poke(at: .zero, t: t)
+            }
+            return
+        }
         if onTap?(p) == true { return }
         poke(at: p)
+    }
+
+    /// A point on screen in fractions of the short side from the centre.
+    private func unit(_ p: CGPoint) -> SIMD2<Double> {
+        let u = Double(min(bounds.width, bounds.height))
+        return SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u)
     }
 
     private func poke(at p: CGPoint) {
@@ -93,6 +123,12 @@ final class FaceView: UIView {
     }
 
     @objc private func swiped(_ g: UISwipeGestureRecognizer) {
+        // On the bare faces, swiping one away hides it until its session's next event; nothing changes in Claude.
+        let t = CACurrentMediaTime()
+        if screen.mode == .face, !crowd.single, let id = crowd.hit(unit(g.location(in: self)), at: t) {
+            crowd.hide(id, at: t)
+            return
+        }
         swipeWay = g.direction == .left ? -1 : 1
         screen.swipe()
     }
@@ -154,11 +190,15 @@ final class FaceView: UIView {
         face.bounds = SIMD2(max(0, Double(bounds.width) / u / 2 - 0.27), 0.3)
         face.screen = SIMD2(Double(bounds.width) / u / 2, Double(bounds.height) / u / 2)
         let point = { (p: SIMD2<Double>) in CGPoint(x: mid.x + p.x * u, y: mid.y + p.y * u) }
+        crowd.screen = face.screen
+        let slots = crowd.single ? [] : crowd.slots(at: t)
+        // Text comes out of the face it's about: the one forward, else the single face.
+        let anchor = slots.first(where: \.front).map { $0.centre + crowd.face($0.id)!.frame(at: t).centre * $0.scale } ?? f.centre
         face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
         face.lift(screen.mode == .question, at: t)
         placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
         motion.screen = SIMD2(Double(bounds.width), Double(bounds.height))
-        motion.show(placed, from: SIMD2(Double(point(f.centre).x), Double(point(f.centre).y)), swipe: swipeWay,
+        motion.show(placed, from: SIMD2(Double(point(anchor).x), Double(point(anchor).y)), swipe: swipeWay,
                     wait: Screen.wait(from: was, to: screen.mode), at: t)
         swipeWay = 0
         was = screen.mode
@@ -166,19 +206,65 @@ final class FaceView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         drawText(motion.frame(at: t))
-        for (eye, s) in zip(eyes, f.eyes) {
-            let path = CGMutablePath()
-            for shape in [s.outline()] + s.trailOutlines() {
-                path.addLines(between: shape.map(point))
-                path.closeSubpath()
-            }
-            eye.path = path
-        }
+        for (eye, s) in zip(eyes, f.eyes) { eye.path = slots.isEmpty ? path(s, point) : nil }
+        drawCrowd(slots, at: t, point: point, unit: u)
         CATransaction.commit()
     }
 }
 
 extension FaceView {
+    /// The face the text comes from: the one in front when several sessions show, else the single face.
+    var speaker: Face { crowd.single ? face : crowd.front.flatMap(crowd.face) ?? face }
+
+    /// An eye's oval, with its trail, as a path on screen.
+    func path(_ s: Stroke, _ point: (SIMD2<Double>) -> CGPoint) -> CGPath {
+        let path = CGMutablePath()
+        for shape in [s.outline()] + s.trailOutlines() {
+            path.addLines(between: shape.map(point))
+            path.closeSubpath()
+        }
+        return path
+    }
+
+    /// Each session's face where its slot is, its folder name under it in dim text, and "+N" for the ones folded away.
+    func drawCrowd(_ slots: [Slot], at t: Double, point: (SIMD2<Double>) -> CGPoint, unit u: Double) {
+        let ids = Set(slots.map(\.id))
+        for id in Array(crowdEyes.keys) where !ids.contains(id) {
+            crowdEyes[id]?.forEach { $0.removeFromSuperlayer() }; crowdEyes[id] = nil
+            crowdNames[id]?.removeFromSuperlayer(); crowdNames[id] = nil
+        }
+        for s in slots {
+            let layers = crowdEyes[s.id] ?? (0..<2).map { _ in
+                let l = CAShapeLayer()
+                l.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
+                layer.addSublayer(l)
+                return l
+            }
+            crowdEyes[s.id] = layers
+            let frame = crowd.face(s.id)!.frame(at: t)
+            for (l, e) in zip(layers, frame.eyes) { l.path = path(e, { point(s.centre + $0 * s.scale) }) }
+            let name = crowdNames[s.id] ?? {
+                let n = CATextLayer()
+                n.contentsScale = UIScreen.main.scale
+                n.fontSize = 11
+                n.foregroundColor = UIColor(white: 0.45, alpha: 1).cgColor
+                n.alignmentMode = .center
+                layer.addSublayer(n)
+                crowdNames[s.id] = n
+                return n
+            }()
+            name.string = s.name
+            name.bounds = CGRect(x: 0, y: 0, width: 120, height: 16)
+            name.position = point(s.centre + SIMD2(0, 0.17 * s.scale + 0.03))
+            name.opacity = Float(min(1, s.scale / 0.2))
+        }
+        more.string = crowd.overflow > 0 && !slots.isEmpty ? "+\(crowd.overflow)" : ""
+        if let last = slots.filter({ !$0.front }).max(by: { $0.centre.x < $1.centre.x }) {
+            more.bounds = CGRect(x: 0, y: 0, width: 40, height: 18)
+            more.position = point(last.centre + SIMD2(0.2 * last.scale + 0.05, 0))
+        }
+    }
+
     /// White text on black, one layer per line, placed and scaled as its springs say this frame.
     func drawText(_ shown: [Shown]) {
         for s in shown {

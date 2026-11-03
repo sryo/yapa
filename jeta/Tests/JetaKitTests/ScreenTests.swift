@@ -13,7 +13,7 @@ final class ScreenTests: XCTestCase {
         var s = Screen()
         s.update(board("jeta: server needs you · Which hostname for the tunnel?"))
         XCTAssertEqual(s.mode, .question)
-        XCTAssertEqual(s.lines(width: 40).map(\.text), ["server needs you", "Which hostname for the tunnel?", "tap more · hold to answer"])
+        XCTAssertEqual(s.lines(width: 40).map(\.text), ["server needs you", "Which hostname for the tunnel?", "tap more · hold: answer to front window"], "answers go through che to the window in front, not to this session")
         s.update(board("jeta: server needs you · x", "jeta: clear server"))
         XCTAssertEqual(s.mode, .face, "the question stays after it's cleared")
     }
@@ -69,7 +69,7 @@ final class ScreenTests: XCTestCase {
         // The first option is the suggested one: it stands out; the rest are plain.
         XCTAssertEqual(lines.filter { $0.style == .suggestion }.map(\.text), ["8080"])
         XCTAssertEqual(lines.filter { $0.style == .option }.map(\.text), ["8443"])
-        XCTAssertEqual(lines.last?.text, "tap an option · hold to answer")
+        XCTAssertEqual(lines.last?.text, "tap one · it goes to the window in front")
         XCTAssertEqual(s.choose(1), "server: 8443")
         XCTAssertNil(s.choose(2))
         s.tap()
@@ -105,5 +105,15 @@ final class ScreenTests: XCTestCase {
         let g = face.frame(at: 5), d = (g.eyes[0].middle + g.eyes[1].middle) / 2
         XCTAssertGreaterThan(d.x, -0.5)
         XCTAssertGreaterThan(g.scale, 0.9)
+    }
+
+    // R3: tapping a session's face opens that session's question, if it has one.
+    func testR3_ShowASessionsQuestion() {
+        var s = Screen()
+        s.update(board("jeta: server needs you · Which hostname?", "jeta: che needs you · Keep the old build?"))
+        XCTAssertTrue(s.show(session: "che"))
+        XCTAssertEqual(s.mode, .question)
+        XCTAssertEqual(s.lines(width: 40).first?.text, "che needs you")
+        XCTAssertFalse(s.show(session: "docs"), "no question for it: nothing opens")
     }
 }

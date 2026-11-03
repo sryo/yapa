@@ -1,5 +1,6 @@
 import XCTest
 import BuddyKit
+import JetaKit
 
 final class DeskTests: XCTestCase {
     func event(_ name: String, _ more: [String: Any] = [:], session: String = "s1", cwd: String = "/Users/me/yapa") -> [String: Any] {
@@ -112,5 +113,42 @@ final class DeskTests: XCTestCase {
         let r = HTTPRequest(Data((head + "abcd").utf8))
         XCTAssertEqual(r?.path, "/hook")
         XCTAssertEqual(r?.body, Data("abcd".utf8))
+    }
+
+    // R1: each session's state comes from its own hooks: working (reading while it reads or searches), needs you,
+    // finished, failed, and quiet after 30 min with nothing; in the order the sessions started.
+    func testR1_EachSessionsState() {
+        let d = Desk()
+        func state(_ id: String, at t: Double) -> SessionState? { d.members(at: t).first { $0.id == id }?.state }
+        _ = d.take(event("SessionStart"), at: 0)
+        _ = d.take(event("SessionStart", session: "s2", cwd: "/Users/me/fium"), at: 1)
+        XCTAssertEqual(d.members(at: 1).map(\.name), ["yapa", "fium"])
+        _ = d.take(event("UserPromptSubmit"), at: 2)
+        XCTAssertEqual(state("s1", at: 2), .working(reading: false))
+        _ = d.take(event("PreToolUse", ["tool_name": "Grep", "tool_input": ["pattern": "x"]]), at: 3)
+        XCTAssertEqual(state("s1", at: 3), .working(reading: true))
+        _ = d.take(event("PermissionRequest", push), at: 4)
+        XCTAssertEqual(state("s1", at: 4), .needs)
+        _ = d.take(event("PostToolUse", push), at: 5)
+        _ = d.take(event("Stop"), at: 6)
+        XCTAssertEqual(state("s1", at: 6), .finished(at: 6))
+        _ = d.take(event("UserPromptSubmit", session: "s2"), at: 7)
+        _ = d.take(event("StopFailure", session: "s2"), at: 8)
+        XCTAssertEqual(state("s2", at: 8), .failed)
+        XCTAssertEqual(state("s1", at: 6 + 1801), .quiet)
+        let before = d.members(at: 9).first { $0.id == "s1" }!.events
+        _ = d.take(event("UserPromptSubmit"), at: 10)
+        XCTAssertGreaterThan(d.members(at: 10).first { $0.id == "s1" }!.events, before, "each event counts, so a hidden face comes back")
+    }
+
+    // R3: a tap brings one session forward, and its prompt is the one the pad shows and a tap answers.
+    func testR3_FocusPicksWhosePrompt() {
+        let d = Desk()
+        let a = d.take(event("PermissionRequest", push), at: 1).hold!
+        let b = d.take(event("PermissionRequest", push, session: "s2", cwd: "/Users/me/fium"), at: 2).hold!
+        XCTAssertEqual((d.heartbeat(at: 2)["prompt"] as? [String: Any])?["id"] as? String, a)
+        d.focus = "s2"
+        XCTAssertEqual((d.heartbeat(at: 2)["prompt"] as? [String: Any])?["id"] as? String, b)
+        XCTAssertEqual((d.heartbeat(at: 2)["prompt"] as? [String: Any])?["hint"] as? String, "fium: git push")
     }
 }

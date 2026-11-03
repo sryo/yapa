@@ -1,0 +1,19 @@
+#!/bin/sh
+# Measures goal 2's faces, one per session, on this Mac, from 200 seeded minutes of sessions coming, going and
+# changing state: frames where faces overlap and frames where one jumps, per 1,000 runs; ms from a session's event
+# to its face starting to react (p50); µs of CPU per frame for the whole crowd. Prints the path of a K1 run file.
+cd "$(dirname "$0")/.." || exit 1
+out=$(swift run -q -c release --package-path jeta crowdbench) || exit 1
+over=$(echo "$out" | sed -n 1p | tr -d '[]'); jumps=$(echo "$out" | sed -n 2p | tr -d '[]'); react=$(echo "$out" | sed -n 3p | tr -d '[]')
+us=$(echo "$out" | sed -n 4p | tr -d '[]' | tr ',' '\n' | awk 'NF { v = $1 + 0; if (min == "" || v < min) min = v } END { printf "%.3f", min }')
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+file=$runs/crowd-$(date +%s).json
+cat > "$file" <<JSON
+{"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
+ "metrics": {"crowd_overlaps_per_1000": {"dir": "lower", "kind": "count", "samples": [$over]},
+  "crowd_jumps_per_1000": {"dir": "lower", "kind": "quality", "samples": [$jumps]},
+  "crowd_react_ms": {"dir": "lower", "kind": "time", "samples": [$react]},
+  "crowd_frame_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$us]}},
+ "limits": {}}
+JSON
+echo "$file"
