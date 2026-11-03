@@ -33,7 +33,7 @@ When two goals conflict, the higher one wins.
 | 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/health` over SSH to the phone | live: `bench/health` |
 | 5 | bytes of the pad app; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |
 
-Caps: `all=ask quality=hard time=ask+10%`
+Caps: `all=ask quality=hard time=ask+10% loc=ask+1%`
 
 ## Non-goals
 - Pi-hole itself: it's Linux-only. AdGuard Home does the same job as one binary.
