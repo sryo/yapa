@@ -251,22 +251,24 @@ final class FaceTests: XCTestCase {
         XCTAssertEqual(sizes, sizes.sorted(by: >), "trail doesn't taper")
     }
 
-    // R8: the head swings like it hangs from a pivot (follow-through): starting a move it lags behind, stopping it
-    // swings forward past straight, then settles; at rest it stands straight.
-    func testR8_HeadSwingsWithAcceleration() {
-        let fs = darting(to: 60)
-        let vx = fs.map { $0.eyes[0].smear.x }
-        var agree = 0, total = 0
-        for i in 8..<(fs.count - 1) {
-            let ax = (vx[i - 6] - vx[i - 8]) * 30   // acceleration a little earlier: the swing follows it
-            guard abs(ax) > 1.5 else { continue }
-            total += 1
-            if fs[i].tilt * ax < 0 { agree += 1 }
+    // R8: moving sideways the head turns toward where it goes, in 3D: both eyes slide that way, the eye on that
+    // side narrows and shrinks (it's going round the head) and the other grows a little. The face never rotates for it.
+    func testR8_HeadTurnsTowardMotion() {
+        let fs = darting(to: 40)
+        func span(_ s: Stroke) -> SIMD2<Double> {
+            let o = s.outline(); return SIMD2(o.map(\.x).max()! - o.map(\.x).min()!, o.map(\.y).max()! - o.map(\.y).min()!)
         }
-        XCTAssertGreaterThan(total, 30)
-        XCTAssertGreaterThan(Double(agree) / Double(total), 0.7, "head doesn't lag the acceleration")
-        let still = (60..<fs.count).filter { i in vx[(i - 60)...i].allSatisfy { abs($0) < 0.01 } }.map { fs[$0] }
-        XCTAssert(still.allSatisfy { abs($0.tilt) < 0.02 }, "leans while standing still")
+        let right = fs.filter { $0.eyes[0].smear.x > 0.4 }, left = fs.filter { $0.eyes[0].smear.x < -0.4 }
+        XCTAssertFalse(right.isEmpty || left.isEmpty)
+        for (group, lead, trail, sign) in [(right, 1, 0, 1.0), (left, 0, 1, -1.0)] {
+            let turned = group.filter { f in
+                let mid = (f.eyes[0].middle + f.eyes[1].middle) / 2
+                return (mid.x - f.centre.x) * sign > 0.005 && span(f.eyes[lead]).x < span(f.eyes[trail]).x * 0.95
+                    && span(f.eyes[lead]).y < span(f.eyes[trail]).y
+            }
+            XCTAssertGreaterThan(Double(turned.count) / Double(group.count), 0.8, "doesn't turn toward \(sign > 0 ? "right" : "left")")
+        }
+        XCTAssert(fs.allSatisfy { abs($0.tilt) < 0.01 }, "the face rotates while moving")
     }
 
     // R8: stopping after a fast move squashes the eye along the direction it was travelling (and widens it across),

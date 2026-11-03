@@ -61,11 +61,13 @@ public struct Stroke {
     public var trail: [SIMD2<Double>]
     /// Squash along `impactAxis` (negative flattens along it and widens across, positive stretches), keeping area.
     public var impactAxis: SIMD2<Double>, impact: Double
+    /// Horizontal squeeze from the head turning (1 faces you; less is turned away).
+    public var xScale: Double
 
     public init(p0: SIMD2<Double>, c: SIMD2<Double>, p1: SIMD2<Double>, width: Double, smear: SIMD2<Double> = .zero,
-                trail: [SIMD2<Double>] = [], impactAxis: SIMD2<Double> = SIMD2(1, 0), impact: Double = 0) {
+                trail: [SIMD2<Double>] = [], impactAxis: SIMD2<Double> = SIMD2(1, 0), impact: Double = 0, xScale: Double = 1) {
         (self.p0, self.c, self.p1, self.width, self.smear) = (p0, c, p1, width, smear)
-        (self.trail, self.impactAxis, self.impact) = (trail, impactAxis, impact)
+        (self.trail, self.impactAxis, self.impact, self.xScale) = (trail, impactAxis, impact, xScale)
     }
 
     var middle: SIMD2<Double> { (p0 + 2 * c + p1) / 4 }
@@ -106,7 +108,8 @@ public struct Stroke {
             let normal = SIMD2(-d.y, d.x) / len, h = a * max(0, 1 - u * u).squareRoot()
             left.append(p + normal * h); right.append(p - normal * h)
         }
-        let shape = left + right.reversed()
+        var shape = left + right.reversed()
+        if xScale != 1 { let m = middle; shape = shape.map { SIMD2(m.x + ($0.x - m.x) * xScale, $0.y) } }
         guard abs(impact) > 1e-9 else { return shape }
         let along = simd_normalize(impactAxis), k = 1 + max(-0.6, min(0.6, impact)), mid = middle
         return shape.map { p in
@@ -154,6 +157,7 @@ public final class Face {
     private var pose: [Spring] = Mood.idle.pose.fields.map { Spring(x: $0) }
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
+    private var yaw = Spring(x: 0)
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextTilt = 0.0, tiltSide = 1.0, lastEvent: Double
     private var phase = SIMD2<Double>(0, 0), offset = SIMD2<Double>(0, 0)
     private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
@@ -209,19 +213,23 @@ public final class Face {
         let shifts = Face.trailAges.compactMap { age in track.last(where: { $0.0 <= t - age }).map { $0.1 - here } }
         let (cs, sn) = (cos(tilt.x), sin(tilt.x))
         let place = { (v: SIMD2<Double>) in centre + SIMD2(v.x * cs - v.y * sn, v.x * sn + v.y * cs) * scale }
+        // Moving sideways the head turns that way (a yaw, in 3D): the eyes slide toward the turn, the eye on that
+        // side goes round the head (narrower and smaller) and the other comes nearer (a little bigger).
+        let yw = yaw.x, (yc, ys) = (cos(yw), sin(yw))
         let eyes = [(p.left, -1.0), (p.right, 1.0)].map { e, side -> Stroke in
+            let near = 1 - 0.18 * ys * side
             // A blink flattens the eye into a short thin line; max() and min() keep it continuous. The eye only
             // widens once its height has nearly gone, so going between pill and arc it never leans diagonally.
             // Squash shortens and fattens it, stretch does the opposite.
             // Springs overshoot, so clamp lengths at zero before shaping.
-            let ay = max(0, e.ay) * (1 - b) * (1 + sq)
+            let ay = max(0, e.ay) * (1 - b) * (1 + sq) * near
             let ax = max(0, e.ax, 0.03 * b) * (1 - 0.5 * sq) * (1 - smoothstep(0, 0.012, ay))
-            let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1)) * (1 - 0.6 * sq)
-            let c = SIMD2(side * 0.06 * (1 - 0.3 * sq), e.y + breath) + look
+            let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1)) * (1 - 0.6 * sq) * near
+            let c = SIMD2(side * 0.06 * (1 - 0.3 * sq) * yc + ys * 0.05, e.y + breath) + look
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
             let stroke = Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
             return Stroke(p0: stroke.p0, c: stroke.c, p1: stroke.p1, width: stroke.width, smear: velocity,
-                          trail: shifts.map { stroke.middle + $0 * fast }, impactAxis: impactAxis, impact: impact.x)
+                          trail: shifts.map { stroke.middle + $0 * fast }, impactAxis: impactAxis, impact: impact.x, xScale: yc)
         }
         return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale, centre: centre)
     }
@@ -258,10 +266,6 @@ public final class Face {
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)
             gaze[1].step(to: gazeTo.y, k: 120, damping: 0.85, dt: dt)
-            // Curious tilts like a dog. Moving, the head swings as if it hung from a pivot (follow-through): it
-            // lags behind when a move speeds up and swings forward past straight as it slows, then settles.
-            let accel = (posTo.x - pos[0].x) * 30 - 2 * 0.75 * 30.0.squareRoot() * pos[0].v
-            let lean = max(-0.22, min(0.22, -accel * 0.05))
             pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
             // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
@@ -279,7 +283,9 @@ public final class Face {
             track.append((now, whereNow()))
             if let first = track.first, now - first.0 > 0.1 { track.removeFirst() }
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
-            tilt.step(to: (mood == .curious ? 0.2 * tiltSide : 0) + lean, k: 60, damping: 0.5, dt: dt)
+            // Only curious tilts the head (like a dog); moving turns it instead.
+            tilt.step(to: mood == .curious ? 0.2 * tiltSide : 0, k: 60, damping: 0.5, dt: dt)
+            yaw.step(to: max(-0.6, min(0.6, pos[0].v * 0.45)), k: 160, damping: 0.85, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)
             squash.step(to: 0, k: 260, damping: 0.35, dt: dt)
