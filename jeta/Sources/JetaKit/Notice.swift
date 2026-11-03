@@ -65,6 +65,7 @@ public struct NoticeBoard {
                 guard c.hasPrefix("echo ") else { continue }
                 c = String(c.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                 if let q = c.first, q == "'" || q == "\"", c.count > 1, c.last == q { c = String(c.dropFirst().dropLast()) }
+                c = c.trimmingCharacters(in: .whitespaces)
                 if c.hasPrefix("jeta:") { out.append(c) }
             default: continue
             }
