@@ -6,3 +6,4 @@ bench/test-names
 bench/test-r4-talk
 swift test --package-path mac
 bench/test-shell
+bench/test-r5-say

@@ -35,7 +35,7 @@ final class Talk: NSObject {
         guard CACurrentMediaTime() < enterBy else { return false }
         enterBy = 0
         post("/cancel", Data()) { _ in }
-        say("Not sent")
+        show("Not sent")
         return true
     }
 
@@ -46,22 +46,22 @@ final class Talk: NSObject {
 
     private func record() {
         let session = AVAudioSession.sharedInstance()
-        guard session.recordPermission == .granted else { return say("Allow the microphone in Settings > jeta") }
+        guard session.recordPermission == .granted else { return show("Allow the microphone in Settings > jeta") }
         do {
             try session.setCategory(.record)
             try session.setActive(true)
             let r = try AVAudioRecorder(url: clip, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000,
                                                                AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16])
-            guard r.record() else { return say("Can't record: the microphone is busy") }
+            guard r.record() else { return show("Can't record: the microphone is busy") }
             recorder = r
         } catch {
-            return say("Can't record: \(error.localizedDescription)")
+            return show("Can't record: \(error.localizedDescription)")
         }
         began = CACurrentMediaTime()
         turn += 1
         before = face.mood
         face.set(.listening, at: CACurrentMediaTime())
-        say(mac == nil ? "Listening… (no Mac found yet: is che running?)" : "Listening…")
+        show(mac == nil ? "Listening… (no Mac found yet: is che running?)" : "Listening…")
     }
 
     private func send() {
@@ -70,22 +70,32 @@ final class Talk: NSObject {
         recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false)
         face.set(before, at: CACurrentMediaTime())
-        guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return say("") }
-        say("Sending…")
+        guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return show("") }
+        deliver("/talk", wav)
+    }
+
+    /// Types the text on the Mac as if it had been spoken (an option picked on the screen), with the same notes.
+    func say(_ text: String) {
+        turn += 1
+        deliver("/say", Data(text.utf8))
+    }
+
+    private func deliver(_ path: String, _ body: Data) {
+        show("Sending…")
         let turn = turn
-        post("/talk", wav) { [weak self] json in
-            guard let self, let json else { return self?.say("Mac didn't answer: is che running?") ?? () }
+        post(path, body) { [weak self] json in
+            guard let self, let json else { return self?.show("Mac didn't answer: is che running?") ?? () }
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
-            if text.isEmpty { return self.say("Didn't catch that") }
-            self.say(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)")
+            if text.isEmpty { return self.show("Didn't catch that") }
+            self.show(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)")
             self.enterBy = CACurrentMediaTime() + wait
             DispatchQueue.main.asyncAfter(deadline: .now() + max(wait, 2)) {
-                if self.turn == turn { self.say("") }
+                if self.turn == turn { self.show("") }
             }
         }
     }
 
-    private func say(_ text: String) { note.text = text }
+    private func show(_ text: String) { note.text = text }
 
     /// One HTTP/1.1 POST over a raw connection, since URLSession can't dial a Bonjour service; nil on failure.
     private func post(_ path: String, _ body: Data, done: @escaping ([String: Any]?) -> Void) {

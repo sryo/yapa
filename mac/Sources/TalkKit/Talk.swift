@@ -53,6 +53,13 @@ public struct Request {
     }
 }
 
+/// The text a /say body carries, trimmed so a trailing newline can't press Return; nil if it isn't UTF-8 or is blank.
+public func said(_ body: Data) -> String? {
+    guard let text = String(data: body, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !text.isEmpty else { return nil }
+    return text
+}
+
 public let claudeBundle = "com.anthropic.claudefordesktop"
 let terminals: Set = ["com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp-Stable",
                       "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", claudeBundle]

@@ -64,6 +64,14 @@ final class TalkTests: XCTestCase {
         XCTAssertEqual(sent, 1)
         XCTAssertFalse(enter.cancel())
     }
+
+    // R5: /say types a picked option as is; a stray newline must not press Return early, and junk types nothing.
+    func testR5_SayTakesUTF8Text() {
+        XCTAssertEqual(said(Data("server: 8443".utf8)), "server: 8443")
+        XCTAssertEqual(said(Data("Sí, dale\n".utf8)), "Sí, dale")
+        XCTAssertNil(said(Data(" \n".utf8)))
+        XCTAssertNil(said(Data([0xff, 0xfe])))
+    }
 }
 
 func XCTEqual(_ a: Double, _ b: Double, file: StaticString = #filePath, line: UInt = #line) {

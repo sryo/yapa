@@ -11,4 +11,5 @@ plutil -extract NSBonjourServices json -o - "$app/Info.plist" | grep -q '_che._t
 grep -q 'bonjour(type: "_che._tcp"' jeta/App/Talk.swift || { echo "FAIL: app doesn't browse for _che._tcp"; exit 1; }
 grep -q 'POST \\(path) HTTP/1.1\\r\\nHost: yapa\\r\\nContent-Length: \\(body.count)\\r\\n' jeta/App/Talk.swift || { echo "FAIL: Talk.swift POST framing changed; check it against mac Request"; exit 1; }
 grep -q 'face.set(.listening' jeta/App/Talk.swift && grep -q 'face.set(before' jeta/App/Talk.swift || { echo "FAIL: holding should show .listening and release should go back to the mood before"; exit 1; }
+grep -q 'func say(_ text: String)' jeta/App/Talk.swift && grep -q '"/say", Data(text.utf8)' jeta/App/Talk.swift || { echo "FAIL: Talk.say should post the text to /say"; exit 1; }
 echo "ok r4 talk"
