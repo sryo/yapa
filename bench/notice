@@ -1,0 +1,17 @@
+#!/bin/sh
+# Measures goal 2's notice reading on this Mac: notices missed, misread and invented per 1,000 replayed streams of the manager's
+# turn events, and µs of CPU per event, and prints the path of a K1 run file.
+cd "$(dirname "$0")/.." || exit 1
+out=$(swift run -q -c release --package-path jeta noticebench) || exit 1
+miss=$(echo "$out" | sed -n 1p | tr -d '[]'); bad=$(echo "$out" | sed -n 2p | tr -d '[]'); made=$(echo "$out" | sed -n 3p | tr -d '[]'); us=$(echo "$out" | sed -n 4p | tr -d '[]')
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+file=$runs/notice-$(date +%s).json
+cat > "$file" <<JSON
+{"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
+ "metrics": {"notices_missed_per_1000": {"dir": "lower", "kind": "quality", "samples": [$miss]},
+  "notices_misread_per_1000": {"dir": "lower", "kind": "quality", "samples": [$bad]},
+  "notices_invented_per_1000": {"dir": "lower", "kind": "quality", "samples": [$made]},
+  "notice_event_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$us]}},
+ "limits": {}}
+JSON
+echo "$file"

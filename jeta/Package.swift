@@ -9,6 +9,7 @@ let package = Package(
         .target(name: "JetaKit"),
         .executableTarget(name: "facebench", dependencies: ["JetaKit"]),
         .executableTarget(name: "chordbench", dependencies: ["JetaKit"]),
+        .executableTarget(name: "noticebench", dependencies: ["JetaKit"]),
         .testTarget(name: "JetaKitTests", dependencies: ["JetaKit"]),
     ]
 )
