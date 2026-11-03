@@ -133,6 +133,12 @@ public let specChecks: [Check] = [
         let b = buddy(every10(0, 40, prompt("req_1")))
         return first(expect(b.mood(at: 5), .attention, "5 s"), expect(b.mood(at: 41), .impatient, "41 s"))
     },
+    // The desktop leaves `prompt` out for requests it won't let a device answer; the pad still shows that one waits.
+    Check(name: "R3 attention while a session waits without a prompt the pad may answer, and no decision") {
+        let b = buddy(every10(0, 40, ["waiting": 1]))
+        return first(expect(b.mood(at: 5), .attention, "5 s"), expect(b.mood(at: 41), .impatient, "41 s"),
+                     expect(b.waiting(at: 41), true, "waiting"), expect(b.decide(true, at: 41), nil, "decision"))
+    },
     Check(name: "R3 celebrates every 50K tokens, not on connect") {
         let b = buddy([(0, hb(["tokens": 184_502])), (10, hb(["tokens": 199_000]))])
         let calm = b.mood(at: 11)

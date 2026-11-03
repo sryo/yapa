@@ -15,7 +15,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private let view: FaceView
     private var manager: CBPeripheralManager!
     private var timer: Timer?
-    private var outbox: [Data] = [], mtu = 20, wasConnected = false, promptID: String?
+    private var outbox: [Data] = [], mtu = 20, wasConnected = false, wasWaiting = false, promptID: String?
 
     init(view: FaceView) {
         self.view = view
@@ -37,9 +37,13 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         if connected || wasConnected { view.face.set(buddy.mood(at: t), at: t) }
         if connected != wasConnected { log(connected ? "heartbeats" : "no heartbeat for 30 s") }
         wasConnected = connected
-        let id = buddy.prompt(at: t)?.id
-        if let id, id != promptID { AudioServicesPlaySystemSound(kSystemSoundID_Vibrate) }
-        promptID = id
+        // Buzz when a session starts waiting, and again for each prompt a tap can answer.
+        let id = buddy.prompt(at: t)?.id, waiting = buddy.waiting(at: t)
+        if (waiting && !wasWaiting) || (id != nil && id != promptID) {
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            log(id.map { "prompt \($0)" } ?? "waiting, answer at the desktop")
+        }
+        promptID = id; wasWaiting = waiting
     }
 
     private func tap(at p: CGPoint) -> Bool {
@@ -48,6 +52,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         if let line = buddy.decide(p.y < view.bounds.midY, at: t) {
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
             send(line)
+            log("decided \(line.contains("\"once\"") ? "once" : "deny")")
             update()
         }
         return true

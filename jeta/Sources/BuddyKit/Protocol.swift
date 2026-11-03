@@ -43,7 +43,7 @@ public final class Buddy {
 
     private var framer = LineFramer()
     private let start: Double
-    private var heard: Double?, runningSince: Double?, idleSince: Double?
+    private var heard: Double?, runningSince: Double?, idleSince: Double?, waitingSince: Double?
     private var pending: (prompt: Prompt, since: Double)?, answered: String?
     private var tokenStep: Int?, flash: (mood: Mood, until: Double)?
     private var activity = "", approved = 0, denied = 0, lastAnswer = 0.0
@@ -65,6 +65,9 @@ public final class Buddy {
     /// The prompt a tap can answer now: none once the link is dead or this prompt was answered.
     public func prompt(at t: Double) -> Prompt? { connected(at: t) ? pending?.prompt : nil }
 
+    /// Whether a session is blocked on a permission prompt, answerable here or only at the desktop.
+    public func waiting(at t: Double) -> Bool { connected(at: t) && (pending != nil || waitingSince != nil) }
+
     /// The line answering the waiting prompt, or nil when there is nothing that may be answered.
     public func decide(_ approve: Bool, at t: Double) -> String? {
         guard let p = prompt(at: t), let since = pending?.since else { return nil }
@@ -77,7 +80,7 @@ public final class Buddy {
 
     public func mood(at t: Double) -> Mood {
         guard connected(at: t) else { return .sleep }
-        if let p = pending { return t - p.since > 30 ? .impatient : .attention }
+        if let since = pending?.since ?? waitingSince { return t - since > 30 ? .impatient : .attention }
         if let f = flash, t < f.until { return f.mood }
         if let r = runningSince {
             let words = activity.lowercased().split { !$0.isLetter }
@@ -104,7 +107,11 @@ public final class Buddy {
         } else {
             pending = nil
         }
-        idleSince = running == 0 && pending == nil ? idleSince ?? t : nil
+        // A prompt this pad already answered still counts as waiting until the desktop catches up; don't show it again.
+        let waiting = (o["waiting"] as? NSNumber)?.intValue ?? 0
+        let answeredOnly = answered != nil && (o["prompt"] as? [String: Any])?["id"] as? String == answered && waiting <= 1
+        waitingSince = waiting > 0 && pending == nil && !answeredOnly ? waitingSince ?? t : nil
+        idleSince = running == 0 && pending == nil && waitingSince == nil ? idleSince ?? t : nil
         if let tokens = (o["tokens"] as? NSNumber)?.intValue {
             let step = tokens / 50_000
             if let s = tokenStep, step > s { flash = (.celebrate, t + 5) }
