@@ -1,6 +1,7 @@
 #!/bin/sh
 # R4: the pad app builds with push-to-talk: it asks for the mic and the local network, browses for
-# che over Bonjour, listens with the face while held, and frames its POST the way the Mac's parser accepts.
+# che over Bonjour, listens with the face while held, frames its POST the way the Mac's parser accepts,
+# and hands a chosen option to Talk.say.
 cd "$(dirname "$0")/.." || exit 1
 jeta/build-app sim >/dev/null || exit 1
 app=build/jeta/sim/jeta.app
@@ -12,4 +13,5 @@ grep -q 'bonjour(type: "_che._tcp"' jeta/App/Talk.swift || { echo "FAIL: app doe
 grep -q 'POST \\(path) HTTP/1.1\\r\\nHost: yapa\\r\\nContent-Length: \\(body.count)\\r\\n' jeta/App/Talk.swift || { echo "FAIL: Talk.swift POST framing changed; check it against mac Request"; exit 1; }
 grep -q 'face.set(.listening' jeta/App/Talk.swift && grep -q 'face.set(before' jeta/App/Talk.swift || { echo "FAIL: holding should show .listening and release should go back to the mood before"; exit 1; }
 grep -q 'func say(_ text: String)' jeta/App/Talk.swift && grep -q '"/say", Data(text.utf8)' jeta/App/Talk.swift || { echo "FAIL: Talk.say should post the text to /say"; exit 1; }
+grep -q 'onChoose = { \[weak self\] in self?.talk?.say(\$0) }' jeta/App/main.swift || { echo "FAIL: a chosen option should go to Talk.say"; exit 1; }
 echo "ok r4 talk"
