@@ -1,3 +1,6 @@
+#if canImport(JetaKit)
+import JetaKit // the app compiles JetaKit and BuddyKit into one module
+#endif
 import Foundation
 
 // Claude Code's hooks on the Mac post every session's events to the pad's /hook. The pad turns them into the
@@ -11,9 +14,14 @@ public struct Settle: Equatable {
 
 /// Every Claude Code session on the Mac, as their hooks report them to the pad.
 public final class Desk {
-    struct Session { var name: String, running = false, seen = 0.0 }
+    struct Session {
+        var name: String, started: Double, running = false, reading = false, seen = 0.0, events = 0
+        var finished: Double?, failed = false
+    }
     struct Held { let id, session, tool, hint: String, input: NSDictionary, since: Double }
     var sessions: [String: Session] = [:], held: [Held] = [], msg = "", count = 0
+    /// The session a tap brought forward: its prompt is the one shown and answered.
+    public var focus: String?
     // Ids carry this run's tag, so a che that restarted never reuses one the pad already answered.
     let run = UUID().uuidString.prefix(4).lowercased()
 
@@ -24,8 +32,9 @@ public final class Desk {
     public func take(_ e: [String: Any], at t: Double) -> (hold: String?, settled: [Settle]) {
         guard let event = e["hook_event_name"] as? String, let id = e["session_id"] as? String else { return (nil, []) }
         let tool = e["tool_name"] as? String ?? "", input = e["tool_input"] as? [String: Any] ?? [:]
-        var s = sessions[id] ?? Session(name: ((e["cwd"] as? String ?? "") as NSString).lastPathComponent)
+        var s = sessions[id] ?? Session(name: ((e["cwd"] as? String ?? "") as NSString).lastPathComponent, started: t)
         s.seen = t
+        s.events += 1
         sessions[id] = s
         sessions = sessions.filter { t - $0.value.seen < 7200 } // a session that went quiet for 2 h is gone
         switch event {
@@ -38,9 +47,14 @@ public final class Desk {
             sessions[id] = nil
         case "UserPromptSubmit", "PreToolUse":
             sessions[id]?.running = true
+            sessions[id]?.finished = nil
+            sessions[id]?.failed = false
+            sessions[id]?.reading = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "LS"].contains(tool)
             if event == "PreToolUse" { msg = "\(s.name): \(tool) \(detail(input))" }
         case "Stop", "StopFailure":
             sessions[id]?.running = false
+            sessions[id]?.finished = event == "Stop" ? t : nil
+            sessions[id]?.failed = event == "StopFailure"
         default:
             break
         }
@@ -65,6 +79,18 @@ public final class Desk {
     /// Requests older than their hook's own 10 min timeout: that hook has given up, so the pad stops showing them.
     public func expire(at t: Double) -> [Settle] { release(held.filter { t - $0.since > 600 }) }
 
+    /// Each session and what it's doing, in the order they started: quiet after 30 min with nothing new.
+    public func members(at t: Double) -> [SessionInfo] {
+        sessions.sorted { ($0.value.started, $0.key) < ($1.value.started, $1.key) }.map { id, s in
+            let state: SessionState = held.contains { $0.session == id } ? .needs
+                : t - s.seen >= 1800 ? .quiet
+                : s.failed ? .failed
+                : s.running ? .working(reading: s.reading)
+                : s.finished.map { .finished(at: $0) } ?? .quiet
+            return SessionInfo(id: id, name: s.name, state: state, events: s.events)
+        }
+    }
+
     /// Whether any session is reporting: while one is, the hooks drive the face and Bluetooth is ignored.
     public var active: Bool { !sessions.isEmpty }
 
@@ -78,7 +104,7 @@ public final class Desk {
         var h: [String: Any] = ["total": sessions.count, "running": sessions.values.filter(\.running).count,
                                 "waiting": Set(held.map(\.session)).count, "msg": msg,
                                 "entries": sessions.values.map { "\($0.name): \($0.running ? "working" : "idle")" }.sorted()]
-        if let p = held.first { h["prompt"] = ["id": p.id, "tool": p.tool, "hint": p.hint] }
+        if let p = held.first(where: { $0.session == focus }) ?? held.first { h["prompt"] = ["id": p.id, "tool": p.tool, "hint": p.hint] }
         return h
     }
 
