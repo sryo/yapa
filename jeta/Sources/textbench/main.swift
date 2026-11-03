@@ -62,7 +62,7 @@ for run in 0..<1000 {
                 let opts = screen.place(width: w, height: h).filter { $0.style == .option || $0.style == .suggestion }
                 if let o = opts.randomElement(using: &rng) { motion.press(o.key, at: t); choosing = (o.key, t + 0.12) }
             case 8: board.take(turn("jeta: clear \(s)")); screen.update(board)
-            default: if screen.mode == .face { screen.longPress() }
+            default: screen.swipeDown()
             }
         }
         if let c = choosing, t >= c.at { motion.choose(c.key, at: t); choosing = nil }

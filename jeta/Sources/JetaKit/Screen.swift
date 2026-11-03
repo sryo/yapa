@@ -2,11 +2,9 @@ import Foundation
 
 /// What jeta shows besides the face, and what each gesture does. The bare face is the default; a session's question
 /// takes over (who and what); a tap opens the detail and another closes it; a swipe moves between waiting sessions; a
-/// long press on the bare face opens the session list. With anything open, holding is for talking (che), not a list.
+/// swipe down on the bare face opens the session list. Holding is always for talking (che), so it isn't here.
 public struct Screen {
     public enum Mode: Equatable { case face, question, detail, roster }
-    /// What a long press means right now.
-    public enum Hold: Equatable { case roster, talk(to: String?) }
     public enum Style: Equatable { case title, body, hint, option, suggestion }
     public struct Line: Equatable { public var text: String, style: Style }
 
@@ -57,12 +55,9 @@ public struct Screen {
         return "\(n.session): \(n.options[i])"
     }
 
-    @discardableResult public mutating func longPress() -> Hold {
-        switch mode {
-        case .face: mode = .roster; return .roster
-        case .question, .detail: return .talk(to: current?.session)
-        case .roster: return .talk(to: nil)
-        }
+    /// A swipe down: on the bare face it opens the session list.
+    public mutating func swipeDown() {
+        if mode == .face { mode = .roster }
     }
 
     /// A question's options; the first is the suggested one.

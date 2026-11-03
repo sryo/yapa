@@ -139,7 +139,7 @@ final class FaceView: UIView {
 
     // Holding anywhere is talking (Talk owns that gesture), so the session list opens with a swipe down on the bare face.
     @objc private func swipedDown(_ g: UISwipeGestureRecognizer) {
-        if screen.mode == .face { screen.longPress() }
+        screen.swipeDown()
     }
 
     // Two or more fingers are a chord; with a prompt up, two close fingers answer it.

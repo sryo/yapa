@@ -2,7 +2,9 @@
   "rel": {
     "notice_event_us": 0.3,
     "face_frame_us": 0.41,
-    "chord_update_us": 0.2
+    "chord_update_us": 0.2,
+    "text_frame_us": 0.25,
+    "crowd_frame_us": 0.25
   },
   "abs": {}
 }

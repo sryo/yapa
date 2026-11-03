@@ -2,9 +2,10 @@ import AudioToolbox
 import CoreBluetooth
 import UIKit
 
-/// Advertises the pad as a Claude Hardware Buddy on the Nordic UART Service and lets the desktop drive the face.
+/// Advertises the pad as a Claude Hardware Buddy on the Nordic UART Service and lets the desktop drive the face,
+/// or Claude Code's hooks over Wi-Fi when a session reports through them (Bluetooth is ignored then).
 /// While a prompt waits, a tap on the top half approves it and one on the bottom half denies it, and so does a
-/// two-finger drag up or down. Claude Code's hooks, when they report over Wi-Fi, take the desktop's place.
+/// two-finger drag up or down.
 final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private static let service = CBUUID(string: "6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     // Encryption-only characteristics make the first access trigger iOS pairing with a passkey.

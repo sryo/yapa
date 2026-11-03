@@ -38,27 +38,24 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s.mode, .question)
     }
 
-    // R6: a long press on the bare face opens the session list; a tap closes it. Nothing else does: no mood demo.
-    func testR6_LongPressShowsTheSessions() {
+    // R6: a swipe down on the bare face opens the session list; a tap closes it. Nothing else does: no mood demo.
+    func testR6_SwipeDownShowsTheSessions() {
         var s = Screen()
         s.update(board("jeta: list · server needs you; bluetooth working; che done"))
         XCTAssertEqual(s.mode, .face)
-        s.longPress()
+        s.swipeDown()
         XCTAssertEqual(s.mode, .roster)
         XCTAssertEqual(Array(s.lines(width: 40).map(\.text).prefix(3)), ["server · needs you", "bluetooth · working", "che · done"])
         s.tap()
         XCTAssertEqual(s.mode, .face)
     }
 
-    // R6: with a question, detail or list open, holding is for talking, not for the list.
-    func testR6_HoldIsForTalkingWhenSomethingIsOpen() {
+    // R6: with a question or its detail up, a swipe down leaves it where it is.
+    func testR6_SwipeDownOnlyOpensTheListFromTheFace() {
         var s = Screen()
         s.update(board("jeta: server needs you · Which hostname?"))
-        XCTAssertEqual(s.longPress(), .talk(to: "server"))
-        XCTAssertEqual(s.mode, .question)
-        s.tap(); XCTAssertEqual(s.longPress(), .talk(to: "server"))
-        var r = Screen(); r.update(board("jeta: list · che done")); r.longPress()
-        XCTAssertEqual(r.longPress(), .talk(to: nil), "in the list, holding talks to the manager")
+        s.swipeDown(); XCTAssertEqual(s.mode, .question)
+        s.tap(); s.swipeDown(); XCTAssertEqual(s.mode, .detail)
     }
 
     // R9: a question with options shows them as buttons; choosing one gives the line to send the manager.

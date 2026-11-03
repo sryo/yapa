@@ -14,8 +14,8 @@ const statusEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToo
                       "StopFailure", "SessionEnd", "Notification"]
 const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
 
-// Each hook ends in this mark, so off finds exactly them; che's hooks to 127.0.0.1:8078 are an earlier version of them.
-const ours = h => typeof h.command === "string" && (h.command.endsWith("# jeta") || h.command.includes("127.0.0.1:8078/hook"))
+// Each hook ends in this mark, so off finds exactly them.
+const ours = h => typeof h.command === "string" && h.command.endsWith("# jeta")
 
 function off(s) {
   if (!s.hooks) return s

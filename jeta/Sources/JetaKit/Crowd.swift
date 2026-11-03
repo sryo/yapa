@@ -125,7 +125,6 @@ public final class Crowd {
         }
     }
 
-    public func isHidden(_ id: String) -> Bool { hidden[id] != nil }
 
     private var visible: [SessionInfo] { members.filter { hidden[$0.id] == nil } }
 

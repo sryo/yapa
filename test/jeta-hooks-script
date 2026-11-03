@@ -1,18 +1,17 @@
 #!/bin/sh
 # R1: `jeta/hooks on` puts hooks in Claude Code's settings that curl the phone directly, with a 1 s connect timeout,
-# beside the user's own and in place of che's old ones, keeping the original once; `off` takes exactly its own out.
+# beside the user's own, keeping the original once; `off` takes exactly its own out.
 # The phone is the address ./ya install saved, since iOS answers its .local name only some of the time; with none
 # saved, the name.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 s="$tmp/settings.json"
 export YAPA_HOST_FILE="$tmp/no-host"
-che='curl -s -m 2 --data-binary @- http://127.0.0.1:8078/hook >/dev/null 2>&1 || true'
 cat > "$s" <<EOF
 {
   "model": "opus",
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}, {"hooks": [{"type": "command", "command": "$che", "async": true}]}]
+    "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]
   }
 }
 EOF
@@ -29,7 +28,6 @@ def fail(m): print("FAIL:", m); sys.exit(1)
 cmds = [(e, x) for e, gs in h.items() for g in gs for x in g["hooks"]]
 ours = [(e, x) for e, x in cmds if "claude-yapa.local:8079/hook" in x["command"]]
 if len(ours) != 10: fail(f"{len(ours)} hooks to the phone, want 10")
-if any("8078" in x["command"] for _, x in cmds): fail("che's old hook is still there")
 if not any(x["command"] == "say done" for _, x in cmds): fail("the user's own Stop hook is gone")
 for e, x in ours:
     if "--connect-timeout 1" not in x["command"] or not x["command"].endswith("|| true # jeta"): fail(f"{e}: {x['command']}")
@@ -45,7 +43,6 @@ JETA_SETTINGS="$s" jeta/hooks off >/dev/null || { echo "FAIL: jeta/hooks off"; e
 /usr/bin/python3 -I -c '
 import json, sys
 got, want = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
-want["hooks"]["Stop"] = want["hooks"]["Stop"][:1]  # che'"'"'s old hook goes too
 sys.exit(got != want)' "$s" "$tmp/orig" || { echo "FAIL: off didn't give back the user's settings:"; cat "$s"; exit 1; }
 printf 'not json' > "$s"
 JETA_SETTINGS="$s" jeta/hooks on >/dev/null 2>&1 && { echo "FAIL: on overwrote settings that aren't JSON"; exit 1; }

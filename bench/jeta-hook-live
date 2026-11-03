@@ -1,7 +1,7 @@
 #!/bin/sh
 # Measures goal 2 over Wi-Fi, the hooks' way: ms from this Mac sending a Claude Code permission hook to the pad
 # buzzing, and from a tap on the pad to the hook getting its answer (p50); ms each status hook runs in the background;
-# and the two legs together, which need no clock. Someone taps allow on the pad for each prompt. Prints the path of a run file.
+# the two legs together, which need no clock; and ms from a manager's jeta: line leaving this Mac to the pad showing it. Someone taps allow on the pad for each prompt. Prints the path of a run file.
 #   YAPA_HOST  ssh destination of the phone (default: the one ./ya install last used)
 #   JETA_N     prompts to tap (5)
 #   JETA_HOOK  where the hooks go (http://<the phone>:8079/hook, as jeta/hooks on sets them)
@@ -51,6 +51,18 @@ for i in range(n):
     trip.append(buzz[-1] + answer[-1])
 hook("SessionEnd")
 
+# The manager's jeta: lines, as an echo in a Bash call: from the hook leaving this Mac to the notice landing.
+notice = []
+for i in range(5):
+    sent = ms()
+    hook("PreToolUse", tool_name="Bash", tool_input={"command": f"echo 'jeta: bench needs you · Bench line {i + 1}?'"})
+    time.sleep(0.3)
+    landed = re.findall(r"notice bench (\d+)", on(f"grep 'notice bench' {log} | tail -1"))
+    if not landed: stop(f"the pad's log has no notice for bench line {i + 1}")
+    notice.append(int(landed[-1]) - offset - sent)
+    hook("PreToolUse", tool_name="Bash", tool_input={"command": "echo 'jeta: clear bench'"})
+hook("SessionEnd")
+
 # Status hooks run in the background (async); this is how long each one runs there.
 status = []
 for _ in range(20):
@@ -59,7 +71,7 @@ hook("SessionEnd")
 
 def metric(samples): return {"dir": "lower", "kind": "time", "noisy": True, "samples": [round(statistics.median(samples), 1)]}
 run = {"commit": commit, "dirty": dirty == "true",
-       "metrics": {"hook_to_buzz_ms": metric(buzz), "tap_to_answer_ms": metric(answer), "status_hook_ms": metric(status),
+       "metrics": {"hook_to_buzz_ms": metric(buzz), "tap_to_answer_ms": metric(answer), "status_hook_ms": metric(status), "notice_ms": metric(notice),
                    # Both legs together need no clock: what the link adds to a tap, end to end.
                    "link_ms": metric(trip)},
        "limits": {}, "clock_rtt_ms": round(rtt, 1)}
