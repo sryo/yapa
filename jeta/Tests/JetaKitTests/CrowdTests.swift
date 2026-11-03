@@ -102,4 +102,22 @@ final class CrowdTests: XCTestCase {
         c.update([s("a", .quiet, events: 1), s("b", .working(reading: false), events: 2), s("c", .quiet, events: 1)], at: 4)
         XCTAssertTrue(c.slots(at: 6).contains { $0.id == "b" }, "its next event brings it back, growing in")
     }
+
+    // R4: the faces carry no names, since each one's mood says how its session is; touching one shows its folder name
+    // for a few seconds, fading in and out with no jump.
+    func testR4_NameShowsOnlyWhenTouched() {
+        let c = Crowd(seed: 1, now: 0)
+        c.update([s("a", .working(reading: false)), s("b", .needs), s("c", .quiet)], at: 0)
+        XCTAssertTrue(c.slots(at: 3).allSatisfy { $0.named < 0.01 }, "no names until touched")
+        c.touch("c", at: 3)
+        var last = 0.0, worst = 0.0
+        for f in 1...(60 * 8) {
+            let n = c.slots(at: 3 + Double(f) / 60).first { $0.id == "c" }!.named
+            worst = max(worst, abs(n - last)); last = n
+            if f == 60 { XCTAssertGreaterThan(n, 0.95, "shown a second after the touch") }
+            if f == 60 { XCTAssertTrue(c.slots(at: 4).filter { $0.id != "c" }.allSatisfy { $0.named < 0.01 }, "only that one") }
+        }
+        XCTAssertLessThan(last, 0.01, "gone again a few seconds later")
+        XCTAssertLessThan(worst, 0.2, "it fades, never pops")
+    }
 }
