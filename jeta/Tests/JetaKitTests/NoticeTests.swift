@@ -51,6 +51,20 @@ final class NoticeTests: XCTestCase {
         XCTAssertEqual(board.roster.first { $0.session == "server" }?.state, "needs you")
     }
 
+    // R8: every example in the manager's instructions parses here, and covers the three forms, so the instructions
+    // and the phone never drift apart.
+    func testR8_ManagerSkillExamplesParse() throws {
+        let skill = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../.claude/skills/jeta-manager/SKILL.md")
+        let lines = try String(contentsOf: skill, encoding: .utf8).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("jeta:") }
+        XCTAssertGreaterThanOrEqual(lines.count, 3)
+        let parsed = lines.map { NoticeBoard.parse($0) }
+        XCTAssert(parsed.allSatisfy { $0 != nil }, "an example in the skill doesn't parse: \(zip(lines, parsed).filter { $1 == nil }.map(\.0))")
+        XCTAssert(parsed.contains { if case .needs? = $0 { return true }; return false })
+        XCTAssert(parsed.contains { if case .list? = $0 { return true }; return false })
+        XCTAssert(parsed.contains { if case .clear? = $0 { return true }; return false })
+    }
+
     // R3: raw bytes from the Bluetooth link work too, and a broken event is skipped.
     func testR3_TakesRawEvents() {
         var board = NoticeBoard()
