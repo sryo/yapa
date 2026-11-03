@@ -399,6 +399,19 @@ final class FaceTests: XCTestCase {
         XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.08, "reading looks like a single line")
     }
 
+    // R10: after a page of 4 lines it turns the page: the eyes flick from right to left across the page, blink,
+    // and start again from the top line.
+    func testR10_BusyTurnsThePage() {
+        let face = Face(seed: 2, now: 0)
+        face.set(.busy, at: 0)
+        let page = Face.readLine * 4
+        let turn = frames(face, from: page, to: page + Face.pageTurn, hz: 60)
+        XCTAssert(turn.contains { $0.gazeTarget.x > 0.6 } && turn.contains { $0.gazeTarget.x < -0.6 }, "no flick across the page")
+        XCTAssertGreaterThan(turn.map(\.blink).max()!, 0.5, "no blink at the page turn")
+        let next = face.frame(at: page + Face.pageTurn + 0.2)
+        XCTAssertEqual(next.gazeTarget.y, -0.45, accuracy: 0.01, "doesn't start the new page at the top")
+    }
+
     // R10: curious looks like a telescope: one eye much bigger than the other.
     func testR10_CuriousTelescope() {
         let face = Face(seed: 2, now: 0, lively: false)

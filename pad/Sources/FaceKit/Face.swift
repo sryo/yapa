@@ -172,6 +172,9 @@ public final class Face {
     /// Recent (time, position) of the face, for the trail.
     private var track: [(Double, SIMD2<Double>)] = []
     static let trailAges = stride(from: 0.004, through: 0.06, by: 0.004).map { $0 }
+    /// Reading: seconds per line, and for turning the page after every 4 lines.
+    static let readLine = 1.6, pageTurn = 1.2
+    private var pageBlinked = -1
 
     public init(seed: UInt64, now: Double, lively: Bool = true) {
         rng = SplitMix(seed); self.lively = lively; self.now = now; lastEvent = now
@@ -303,9 +306,17 @@ public final class Face {
                 gazeTo = SIMD2(-peekSide, 0); nextDart = max(nextDart, now + 2)
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
             } else if mood == .busy {
-                // Busy is reading: sweep left to right along a line, jump back, drop a line.
-                let u = now - busySince, ph = u.truncatingRemainder(dividingBy: 1.6), line = Double(Int(u / 1.6) % 4)
-                gazeTo = SIMD2(ph < 1.3 ? -0.8 + 1.6 * ph / 1.3 : -0.8, -0.45 + 0.3 * line)
+                // Busy is reading: sweep left to right along a line, jump back, drop a line. After 4 lines it
+                // turns the page: a look at the corner, a flick across with a blink, then the top line again.
+                let r = Face.readLine, cycle = 4 * r + Face.pageTurn, u = now - busySince, c = u.truncatingRemainder(dividingBy: cycle)
+                if c < 4 * r {
+                    let ph = c.truncatingRemainder(dividingBy: r), line = Double(Int(c / r))
+                    gazeTo = SIMD2(ph < 1.3 ? -0.8 + 1.6 * ph / 1.3 : -0.8, -0.45 + 0.3 * line)
+                } else {
+                    let q = c - 4 * r, page = Int(u / cycle)
+                    gazeTo = q < 0.35 ? SIMD2(0.9, 0.3) : q < 0.7 ? SIMD2(-0.9, 0) : SIMD2(-0.8, -0.45)
+                    if q >= 0.45 && pageBlinked != page { pageBlinked = page; blinkAt = now }
+                }
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
             } else {
                 if now >= nextBlink { blinkAt = nextBlink; nextBlink += rng.next(in: 4...12) }
