@@ -8,6 +8,7 @@ final class Talk: NSObject {
     private let face: Face, note = UILabel()
     private let browser = NWBrowser(for: .bonjour(type: "_yapa-talk._tcp", domain: nil), using: .tcp)
     private var mac: NWEndpoint?, recorder: AVAudioRecorder?, began = 0.0, enterBy = 0.0, turn = 0
+    private var before = Mood.idle
     private let clip = FileManager.default.temporaryDirectory.appendingPathComponent("talk.wav")
 
     init(face: Face, in view: UIView) {
@@ -34,7 +35,7 @@ final class Talk: NSObject {
         guard CACurrentMediaTime() < enterBy else { return false }
         enterBy = 0
         post("/cancel", Data()) { _ in }
-        show(.idle, "Not sent")
+        say("Not sent")
         return true
     }
 
@@ -45,20 +46,22 @@ final class Talk: NSObject {
 
     private func record() {
         let session = AVAudioSession.sharedInstance()
-        guard session.recordPermission == .granted else { return show(.dizzy, "Allow the microphone in Settings > yapa") }
+        guard session.recordPermission == .granted else { return say("Allow the microphone in Settings > yapa") }
         do {
             try session.setCategory(.record)
             try session.setActive(true)
             let r = try AVAudioRecorder(url: clip, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000,
                                                                AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16])
-            guard r.record() else { return show(.dizzy, "Can't record: the microphone is busy") }
+            guard r.record() else { return say("Can't record: the microphone is busy") }
             recorder = r
         } catch {
-            return show(.dizzy, "Can't record: \(error.localizedDescription)")
+            return say("Can't record: \(error.localizedDescription)")
         }
         began = CACurrentMediaTime()
         turn += 1
-        show(.attention, mac == nil ? "Listening… (no Mac found yet: is yapa-talk running?)" : "Listening…")
+        before = face.mood
+        face.set(.listening, at: CACurrentMediaTime())
+        say(mac == nil ? "Listening… (no Mac found yet: is yapa-talk running?)" : "Listening…")
     }
 
     private func send() {
@@ -66,25 +69,23 @@ final class Talk: NSObject {
         r.stop()
         recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false)
-        guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return show(.idle, "") }
-        show(.curious, "Sending…")
+        face.set(before, at: CACurrentMediaTime())
+        guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return say("") }
+        say("Sending…")
         let turn = turn
         post("/talk", wav) { [weak self] json in
-            guard let self, let json else { return self?.show(.dizzy, "Mac didn't answer: is yapa-talk running?") ?? () }
+            guard let self, let json else { return self?.say("Mac didn't answer: is yapa-talk running?") ?? () }
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
-            if text.isEmpty { return self.show(.bored, "Didn't catch that") }
-            self.show(wait > 0 ? .impatient : .proud, wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)")
+            if text.isEmpty { return self.say("Didn't catch that") }
+            self.say(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)")
             self.enterBy = CACurrentMediaTime() + wait
             DispatchQueue.main.asyncAfter(deadline: .now() + max(wait, 2)) {
-                if self.turn == turn { self.show(.idle, "") }
+                if self.turn == turn { self.say("") }
             }
         }
     }
 
-    private func show(_ mood: Mood, _ text: String) {
-        face.set(mood, at: CACurrentMediaTime())
-        note.text = text
-    }
+    private func say(_ text: String) { note.text = text }
 
     /// One HTTP/1.1 POST over a raw connection, since URLSession can't dial a Bonjour service; nil on failure.
     private func post(_ path: String, _ body: Data, done: @escaping ([String: Any]?) -> Void) {
