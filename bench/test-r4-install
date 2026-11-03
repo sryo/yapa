@@ -4,7 +4,7 @@
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build"
-for d in yapad caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
+for d in yapad yapa-run caddy cloudflared; do printf "fake $d" > "$tmp/build/$d"; done
 cat > "$tmp/bin/ssh" <<FAKE
 #!/bin/sh
 while [ \$# -gt 1 ]; do shift; done
@@ -61,4 +61,14 @@ grep -q "Zero Trust" "$tmp/out" || fail "a missing token file must say where to 
 [ -s "$tmp/log" ] && fail "a missing token file still touched the phone"
 # The tunnel hands every hostname to Caddy, which routes by name; new sites need only a Caddyfile block.
 plutil -extract ProgramArguments json -o - launchd/com.sryo.yapa.cloudflared.plist | grep -q '"--url","http:\\/\\/127.0.0.1:8080"' || fail "cloudflared must send the tunnel to Caddy (--url http://127.0.0.1:8080)"
+# iOS has no /etc/resolv.conf, so Go's own resolver asks [::1]:53 and fails; daemons that look up names use the system's.
+[ "$(plutil -extract EnvironmentVariables.GODEBUG raw launchd/com.sryo.yapa.cloudflared.plist 2>/dev/null)" = netdns=cgo ] || fail "cloudflared must resolve names through iOS (GODEBUG=netdns=cgo)"
+# iOS kills a launchd daemon past a small default memory cap (jetsam) and launchd ignores JetsamProperties
+# from /var/jb, so each long-running daemon starts through yapa-run with its own cap in MB.
+for d in yapad caddy cloudflared; do
+  [ "$(plutil -extract ProgramArguments.0 raw launchd/com.sryo.yapa.$d.plist)" = /var/jb/usr/libexec/yapa/yapa-run ] || fail "$d must start through yapa-run"
+  lim=$(plutil -extract ProgramArguments.1 raw launchd/com.sryo.yapa.$d.plist)
+  [ "$lim" -ge 64 ] 2>/dev/null || fail "$d's yapa-run cap must be at least 64 MB, not $lim"
+done
+[ -x "$jb/usr/libexec/yapa/yapa-run" ] || fail "yapa-run not installed"
 exit 0

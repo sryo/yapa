@@ -14,7 +14,7 @@ fi
 if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
 
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-for d in yapad caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
+for d in yapad yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
 cp launchd/*.plist phone/Caddyfile phone/tidy "$stage/"
 cp -R phone/www "$stage/www"
 if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
@@ -28,6 +28,7 @@ bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons
 for p in "$ld"/com.sryo.yapa.*.plist; do [ -f "$p" ] && launchctl unload "$p" 2>/dev/null || true; done
 mkdir -p "$bin" "$etc" "$ld" "$jb/var/log/yapa" "$jb/var/yapa/caddy"
 [ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
+cp yapa-run "$bin/yapa-run.new"; chmod 755 "$bin/yapa-run.new"; mv -f "$bin/yapa-run.new" "$bin/yapa-run"
 daemons="yapad caddy tidy"
 [ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
 for d in $daemons; do

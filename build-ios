@@ -12,10 +12,11 @@ export CC="$(xcrun --sdk iphoneos -f clang) -isysroot $sdk -arch arm64 -miphoneo
 out=$(pwd)/build/ios
 mkdir -p "$out"
 go build -trimpath -ldflags="-s -w" -o "$out/yata" ./cmd/yata
+go build -trimpath -ldflags="-s -w" -o "$out/yapa-run" ./cmd/yapa-run
 
 src() { GOOS= GOARCH= GOFLAGS=-mod=mod go mod download -json "$1" | sed -n 's/.*"Dir": "\(.*\)",/\1/p'; }
 (cd "$(src $caddy)" && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o "$out/caddy" ./cmd/caddy)
 (cd "$(src $cloudflared)" && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w -X main.Version=${cloudflared#*@}" -o "$out/cloudflared" ./cmd/cloudflared)
 
-for b in yata caddy cloudflared; do ldid -S "$out/$b"; done
+for b in yata yapa-run caddy cloudflared; do ldid -S "$out/$b"; done
 ls -l "$out"

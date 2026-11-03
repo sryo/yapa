@@ -6,6 +6,8 @@
 	<string>com.sryo.yapa.cloudflared</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/var/jb/usr/libexec/yapa/yapa-run</string>
+		<string>192</string>
 		<string>/var/jb/usr/libexec/yapa/cloudflared</string>
 		<string>tunnel</string>
 		<string>--no-autoupdate</string>
@@ -21,6 +23,11 @@
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>GODEBUG</key>
+		<string>netdns=cgo</string>
+	</dict>
 	<key>ThrottleInterval</key>
 	<integer>2</integer>
 	<key>StandardErrorPath</key>

@@ -6,6 +6,8 @@
 	<string>com.sryo.yapa.yata</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/var/jb/usr/libexec/yapa/yapa-run</string>
+		<string>64</string>
 		<string>/var/jb/usr/libexec/yapa/yata</string>
 	</array>
 	<key>RunAtLoad</key>
