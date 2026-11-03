@@ -85,10 +85,12 @@ final class FaceView: UIView {
             return
         }
         guard screen.mode == .face else { screen.tap(); return }
-        // With a face per session, a tap on one that isn't forward picks it: one that needs you steps forward (its
-        // prompt is then the one answered), another opens its question if it has one, else just looks at you.
-        let t = CACurrentMediaTime()
-        if !crowd.single, let id = crowd.hit(unit(p), at: t), id != crowd.front {
+        // With a face per session, a touch on one shows its folder name for a moment. One that isn't forward is
+        // also picked: one that needs you steps forward (its prompt is then the one answered), another opens its
+        // question if it has one, else just looks at you.
+        let t = CACurrentMediaTime(), hit = crowd.single ? nil : crowd.hit(unit(p), at: t)
+        if let id = hit { crowd.touch(id, at: t) }
+        if let id = hit, id != crowd.front {
             if crowd.slots(at: t).first(where: { $0.id == id }).flatMap({ s in crowd.face(s.id)?.mood }) == .attention {
                 crowd.focus(id, at: t)
                 onFocus?(id)
@@ -226,7 +228,8 @@ extension FaceView {
         return path
     }
 
-    /// Each session's face where its slot is, its folder name under it in dim text, and "+N" for the ones folded away.
+    /// Each session's face where its slot is, its folder name under it in white while touched, and "+N" for the ones
+    /// folded away.
     func drawCrowd(_ slots: [Slot], at t: Double, point: (SIMD2<Double>) -> CGPoint, unit u: Double) {
         let ids = Set(slots.map(\.id))
         for id in Array(crowdEyes.keys) where !ids.contains(id) {
@@ -247,7 +250,7 @@ extension FaceView {
                 let n = CATextLayer()
                 n.contentsScale = UIScreen.main.scale
                 n.fontSize = 11
-                n.foregroundColor = UIColor(white: 0.45, alpha: 1).cgColor
+                n.foregroundColor = UIColor(white: 0.96, alpha: 1).cgColor
                 n.alignmentMode = .center
                 layer.addSublayer(n)
                 crowdNames[s.id] = n
@@ -256,7 +259,7 @@ extension FaceView {
             name.string = s.name
             name.bounds = CGRect(x: 0, y: 0, width: 120, height: 16)
             name.position = point(s.centre + SIMD2(0, 0.17 * s.scale + 0.03))
-            name.opacity = Float(min(1, s.scale / 0.2))
+            name.opacity = Float(min(1, s.scale / 0.2) * s.named)
         }
         more.string = crowd.overflow > 0 && !slots.isEmpty ? "+\(crowd.overflow)" : ""
         if let last = slots.filter({ !$0.front }).max(by: { $0.centre.x < $1.centre.x }) {

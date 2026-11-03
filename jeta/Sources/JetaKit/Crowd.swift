@@ -18,6 +18,8 @@ public struct SessionInfo: Equatable {
 /// Where a session's face sits this frame, in fractions of the screen's short side from its centre.
 public struct Slot: Equatable {
     public var id, name: String, centre: SIMD2<Double>, scale: Double, front: Bool
+    /// How much its folder name shows, 0 to 1: only for a while after a touch, since the mood already says how it is.
+    public var named: Double
 }
 
 /// One small face per session, each showing its session's state. Up to `most` sit in a row; past that the quiet
@@ -35,6 +37,9 @@ public final class Crowd {
     private var faces: [String: Face] = [:], places: [String: [Spring]] = [:]
     private var members: [SessionInfo] = [], hidden: [String: Int] = [:], focused: String?, standing: String?, leaving: String?
     private var order: [String: Int] = [:], started = 0
+    private var touched: [String: Double] = [:], shownNames: [String: Spring] = [:]
+    /// How long a touched face's name stays up.
+    static let nameFor = 3.0
     private var now: Double, rng: SplitMix, phase: SIMD2<Double>
 
     public init(seed: UInt64, now: Double) {
@@ -94,6 +99,12 @@ public final class Crowd {
         pickFront()
     }
 
+    /// Shows a session's folder name for a few seconds.
+    public func touch(_ id: String, at t: Double) {
+        advance(to: t)
+        touched[id] = t + Crowd.nameFor
+    }
+
     /// The face under a point, if any.
     public func hit(_ p: SIMD2<Double>, at t: Double) -> String? {
         slots(at: t).filter { simd_length(p - $0.centre) < Crowd.reach * $0.scale * 1.3 }
@@ -107,9 +118,10 @@ public final class Crowd {
         let f = front, on = shown, names = Dictionary(members.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         // Faces leaving (ended, hidden, folded away) are drawn too, shrinking where they were.
         let ids = on.map(\.id) + places.keys.filter { id in !on.contains { $0.id == id } }.sorted()
-        return ids.compactMap { id in
+        return ids.compactMap { id -> Slot? in
             guard let p = places[id], p[2].x >= 0.02 else { return nil }
-            return Slot(id: id, name: names[id] ?? "", centre: SIMD2(p[0].x, p[1].x), scale: p[2].x, front: id == f)
+            return Slot(id: id, name: names[id] ?? "", centre: SIMD2(p[0].x, p[1].x), scale: p[2].x, front: id == f,
+                        named: min(1, max(0, shownNames[id]?.x ?? 0)))
         }
     }
 
@@ -182,11 +194,14 @@ public final class Crowd {
                 // Growing is slower than moving and shrinking, so a face stepping forward clears the row before it's big.
                 places[id]![2].step(to: g.z, k: g.z > places[id]![2].x ? 10 : 80, damping: 1, dt: dt)
             }
+            for id in Array(places.keys) {
+                shownNames[id, default: Spring(x: 0)].step(to: now < touched[id] ?? -.infinity ? 1 : 0, k: 40, damping: 1, dt: dt)
+            }
             now += dt
         }
         let on = Set(shown.map(\.id))
         for id in Array(places.keys) where !on.contains(id) && places[id]![2].x < 0.02 {
-            places[id] = nil
+            places[id] = nil; shownNames[id] = nil; touched[id] = nil
             if !members.contains(where: { $0.id == id }) { faces[id] = nil; order[id] = nil }
         }
     }
