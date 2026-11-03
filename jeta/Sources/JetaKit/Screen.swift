@@ -7,7 +7,7 @@ public struct Screen {
     public enum Mode: Equatable { case face, question, detail, roster }
     /// What a long press means right now.
     public enum Hold: Equatable { case roster, talk(to: String?) }
-    public enum Style: Equatable { case title, body, hint, option }
+    public enum Style: Equatable { case title, body, hint, option, suggestion }
     public struct Line: Equatable { public var text: String, style: Style }
 
     public private(set) var mode = Mode.face
@@ -55,6 +55,11 @@ public struct Screen {
         }
     }
 
+    /// A question's options; the first is the suggested one.
+    static func options(_ n: Notice) -> [Line] {
+        n.options.enumerated().map { Line(text: $1, style: $0 == 0 ? .suggestion : .option) }
+    }
+
     /// The text to draw, wrapped to `width` characters.
     public func lines(width: Int) -> [Line] {
         func wrap(_ s: String, _ style: Style, max: Int = .max) -> [Line] {
@@ -73,13 +78,13 @@ public struct Screen {
         case .face: return []
         case .question:
             guard let n = current else { return [] }
-            let options = n.options.map { Line(text: $0, style: .option) }
+            let options = Screen.options(n)
             return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + options
                 + wrap(options.isEmpty ? "tap more · hold to answer" : "tap an option · hold to answer", .hint)
         case .detail:
             guard let n = current else { return [] }
             var out = wrap("\(n.session) · waiting on you", .title) + wrap(n.text, .body, max: 5)
-            out += n.options.map { Line(text: $0, style: .option) }
+            out += Screen.options(n)
             out += wrap("hold: answer · swipe: next · tap: close", .hint)
             if board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
             return out

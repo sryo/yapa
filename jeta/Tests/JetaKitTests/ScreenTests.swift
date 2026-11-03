@@ -66,12 +66,14 @@ final class ScreenTests: XCTestCase {
         var s = Screen()
         s.update(board("jeta: server needs you · Which port? · 8080 | 8443"))
         let lines = s.lines(width: 40)
-        XCTAssertEqual(lines.filter { $0.style == .option }.map(\.text), ["8080", "8443"])
+        // The first option is the suggested one: it stands out; the rest are plain.
+        XCTAssertEqual(lines.filter { $0.style == .suggestion }.map(\.text), ["8080"])
+        XCTAssertEqual(lines.filter { $0.style == .option }.map(\.text), ["8443"])
         XCTAssertEqual(lines.last?.text, "tap an option · hold to answer")
         XCTAssertEqual(s.choose(1), "server: 8443")
         XCTAssertNil(s.choose(2))
         s.tap()
-        XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option }.count, 2, "the detail drops the options")
+        XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option || $0.style == .suggestion }.count, 2, "the detail drops the options")
     }
 
     // R10: with a question showing under it, the face rises into the top half, clear of the text, even mid-lunge.
