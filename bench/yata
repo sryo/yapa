@@ -43,6 +43,8 @@ cpu=$(awk -v a="$(printf '%s\n' "$before" | secs)" -v b="$(procs | secs)" -v w="
 restart=
 if [ "$killing" = 1 ]; then
   for d in $daemons; do
+    # Only daemons running now: cloudflared isn't installed until there's a tunnel token.
+    printf '%s\n' "$before" | awk -v d="$d" '{ n = split($3, p, "/"); if (p[n] == d) f = 1 } END { exit !f }' || continue
     t0=$(date +%s)
     on "killall -9 $d" >/dev/null 2>&1
     sleep 1
