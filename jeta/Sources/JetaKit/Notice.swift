@@ -3,6 +3,8 @@ import Foundation
 /// A session's question for you, as the manager session relays it.
 public struct Notice: Equatable {
     public var session: String, text: String
+    /// Answers the user can tap instead of speaking, when the question offers them.
+    public var options: [String] = []
 }
 
 /// One line of the manager's session list.
@@ -13,6 +15,7 @@ public struct Roster: Equatable {
 /// What one manager line says.
 public enum NoticeLine: Equatable {
     case needs(String, String)
+    case choose(String, String, [String])
     case list([Roster])
     case clear(String)
 }
@@ -37,9 +40,11 @@ public struct NoticeBoard {
     public mutating func take(_ event: [String: Any]) {
         for line in NoticeBoard.lines(in: event) {
             switch NoticeBoard.parse(line) {
-            case .needs(let s, let q)?:
+            case .needs(let s, let q)?, .choose(let s, let q, _)?:
+                var options: [String] = []
+                if case .choose(_, _, let o)? = NoticeBoard.parse(line) { options = o }
                 pending.removeAll { $0.session == s }
-                pending.insert(Notice(session: s, text: q), at: 0)
+                pending.insert(Notice(session: s, text: q, options: options), at: 0)
                 if let i = roster.firstIndex(where: { $0.session == s }) { roster[i].state = "needs you" }
                 else { roster.append(Roster(session: s, state: "needs you")) }
             case .list(let r)?: roster = r
@@ -86,7 +91,13 @@ public struct NoticeBoard {
             if let r = b.range(of: "•") ?? b.range(of: " - ") { b.replaceSubrange(r, with: "·") }
         }
         let parts = b.components(separatedBy: "·").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2, !parts[1].isEmpty else { return nil }
+        guard parts.count == 2 || parts.count == 3, !parts[1].isEmpty else { return nil }
+        // A third part offers options, split by bars: at least two, or it isn't a choice.
+        var options: [String] = []
+        if parts.count == 3 {
+            options = parts[2].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            guard options.count >= 2, parts[0] != "list" else { return nil }
+        }
         if parts[0] == "list" {
             let r = parts[1].split(separator: ";").compactMap { item -> Roster? in
                 let w = item.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1).map(String.init)
@@ -96,6 +107,6 @@ public struct NoticeBoard {
         }
         let head = parts[0].split(separator: " ").map(String.init)
         guard head.count == 3, head[1] == "needs", head[2] == "you" else { return nil }
-        return .needs(head[0], parts[1])
+        return options.isEmpty ? .needs(head[0], parts[1]) : .choose(head[0], parts[1], options)
     }
 }

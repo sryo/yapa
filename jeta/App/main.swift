@@ -9,6 +9,9 @@ final class FaceView: UIView {
     /// The manager's notices, and what the screen shows of them.
     private var board = NoticeBoard(), screen = Screen()
     private var texts: [CATextLayer] = []
+    /// Where each option button was drawn, to hit-test taps; and where a chosen line goes (che's text path).
+    private var optionFrames: [CGRect] = [], boxes: [CALayer] = []
+    var onChoose: ((String) -> Void)?
     /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
     private var talk: Talk?
@@ -52,6 +55,13 @@ final class FaceView: UIView {
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         // A tap right after talking stops the pending Enter.
         if talk?.tapped() == true { return }
+        // A tap on an option sends it to the manager, like `server: 8443`.
+        if let i = optionFrames.firstIndex(where: { $0.insetBy(dx: -8, dy: -8).contains(g.location(in: self)) }),
+           let line = screen.choose(i) {
+            AudioServicesPlaySystemSound(1104)
+            onChoose?(line)
+            return
+        }
         guard screen.mode == .face else { screen.tap(); return }
         let p = g.location(in: self)
         if onTap?(p) == true { return }
@@ -144,10 +154,40 @@ extension FaceView {
             layer.addSublayer(t)
             texts.append(t)
         }
-        var y = open ? bounds.height * 0.14 : bounds.height * 0.66
+        var y = open ? bounds.height * 0.14 : bounds.height * (lines.contains { $0.style == .option } ? 0.6 : 0.66)
+        optionFrames = []
+        // Options sit side by side as outlined buttons, on one row.
+        let options = lines.filter { $0.style == .option }
+        let optionWidth = options.isEmpty ? 0 : min(bounds.width * 0.22, (bounds.width - (open ? left : bounds.width * 0.12) * 2) / CGFloat(options.count) - 10)
+        var optionX = open ? left : (bounds.width - (optionWidth + 10) * CGFloat(options.count) + 10) / 2
         for (i, t) in texts.enumerated() {
             guard i < lines.count else { t.string = nil; continue }
-            let l = lines[i], s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
+            let l = lines[i]
+            if l.style == .option {
+                t.string = l.text
+                t.font = UIFont.systemFont(ofSize: size, weight: .medium)
+                t.fontSize = size
+                t.opacity = 1
+                t.alignmentMode = .center
+                // The outline is its own layer, so the label can sit centred inside it.
+                let box = CGRect(x: optionX, y: y, width: optionWidth, height: size * 1.9)
+                t.frame = CGRect(x: box.minX, y: box.midY - size * 0.62, width: box.width, height: size * 1.4)
+                if boxes.count <= optionFrames.count {
+                    let b = CALayer()
+                    b.borderColor = UIColor(white: 0.96, alpha: 0.6).cgColor
+                    b.borderWidth = 1
+                    layer.addSublayer(b)
+                    boxes.append(b)
+                }
+                boxes[optionFrames.count].frame = box
+                boxes[optionFrames.count].cornerRadius = box.height / 2
+                boxes[optionFrames.count].isHidden = false
+                optionFrames.append(box)
+                optionX += optionWidth + 10
+                if i + 1 < lines.count, lines[i + 1].style != .option { y += size * 2.5 }
+                continue
+            }
+            let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
             t.string = l.text
             t.font = UIFont.systemFont(ofSize: s, weight: l.style == .title ? .medium : .regular)
             t.fontSize = s
@@ -156,6 +196,7 @@ extension FaceView {
             t.frame = CGRect(x: open ? left : 0, y: y, width: open ? bounds.width - left : bounds.width, height: s * 1.4)
             y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
         }
+        for b in boxes.dropFirst(optionFrames.count) { b.isHidden = true }
     }
 }
 

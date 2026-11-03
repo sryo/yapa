@@ -65,6 +65,16 @@ final class NoticeTests: XCTestCase {
         XCTAssert(parsed.contains { if case .clear? = $0 { return true }; return false })
     }
 
+    // R9: a question can offer options after a second dot, split by bars; a single option isn't a choice.
+    func testR9_ParsesOptions() {
+        XCTAssertEqual(NoticeBoard.parse("jeta: server needs you · Which port? · 8080 | 8443"),
+                       .choose("server", "Which port?", ["8080", "8443"]))
+        XCTAssertNil(NoticeBoard.parse("jeta: server needs you · Which port? · 8080"))
+        var board = NoticeBoard()
+        board.take(text("jeta: server needs you · Which port? · 8080 | 8443 | none"))
+        XCTAssertEqual(board.pending, [Notice(session: "server", text: "Which port?", options: ["8080", "8443", "none"])])
+    }
+
     // R3: raw bytes from the Bluetooth link work too, and a broken event is skipped.
     func testR3_TakesRawEvents() {
         var board = NoticeBoard()

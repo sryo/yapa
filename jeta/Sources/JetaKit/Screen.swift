@@ -7,7 +7,7 @@ public struct Screen {
     public enum Mode: Equatable { case face, question, detail, roster }
     /// What a long press means right now.
     public enum Hold: Equatable { case roster, talk(to: String?) }
-    public enum Style: Equatable { case title, body, hint }
+    public enum Style: Equatable { case title, body, hint, option }
     public struct Line: Equatable { public var text: String, style: Style }
 
     public private(set) var mode = Mode.face
@@ -41,6 +41,12 @@ public struct Screen {
         page = (page + 1) % board.pending.count
     }
 
+    /// Tapping option `i` of the question showing: the line to send the manager, like `server: 8443`.
+    public func choose(_ i: Int) -> String? {
+        guard let n = current, mode == .question || mode == .detail, n.options.indices.contains(i) else { return nil }
+        return "\(n.session): \(n.options[i])"
+    }
+
     @discardableResult public mutating func longPress() -> Hold {
         switch mode {
         case .face: mode = .roster; return .roster
@@ -67,10 +73,13 @@ public struct Screen {
         case .face: return []
         case .question:
             guard let n = current else { return [] }
-            return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + wrap("tap more · hold to answer", .hint)
+            let options = n.options.map { Line(text: $0, style: .option) }
+            return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + options
+                + wrap(options.isEmpty ? "tap more · hold to answer" : "tap an option · hold to answer", .hint)
         case .detail:
             guard let n = current else { return [] }
             var out = wrap("\(n.session) · waiting on you", .title) + wrap(n.text, .body, max: 5)
+            out += n.options.map { Line(text: $0, style: .option) }
             out += wrap("hold: answer · swipe: next · tap: close", .hint)
             if board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
             return out

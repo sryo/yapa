@@ -61,6 +61,19 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(r.longPress(), .talk(to: nil), "in the list, holding talks to the manager")
     }
 
+    // R9: a question with options shows them as buttons; choosing one gives the line to send the manager.
+    func testR9_ChoosingAnOption() {
+        var s = Screen()
+        s.update(board("jeta: server needs you · Which port? · 8080 | 8443"))
+        let lines = s.lines(width: 40)
+        XCTAssertEqual(lines.filter { $0.style == .option }.map(\.text), ["8080", "8443"])
+        XCTAssertEqual(lines.last?.text, "tap an option · hold to answer")
+        XCTAssertEqual(s.choose(1), "server: 8443")
+        XCTAssertNil(s.choose(2))
+        s.tap()
+        XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option }.count, 2, "the detail drops the options")
+    }
+
     // R7: when text is up the face steps aside to the top-left corner, smaller, and comes back when it closes.
     func testR7_FaceStepsAside() {
         let face = Face(seed: 1, now: 0)
