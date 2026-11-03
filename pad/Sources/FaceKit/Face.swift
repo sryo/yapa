@@ -55,6 +55,12 @@ public enum Mood: String, CaseIterable {
 /// A quadratic stroke from p0 through control c to p1, `width` thick, around the screen centre.
 public struct Stroke {
     public var p0, c, p1: SIMD2<Double>; public var width: Double
+    /// The eye's velocity (fractions of the short side per second); the outline stretches along it like motion blur.
+    public var smear: SIMD2<Double>
+
+    public init(p0: SIMD2<Double>, c: SIMD2<Double>, p1: SIMD2<Double>, width: Double, smear: SIMD2<Double> = .zero) {
+        (self.p0, self.c, self.p1, self.width, self.smear) = (p0, c, p1, width, smear)
+    }
 
     /// The eye's filled outline: the curve extended by half the width at each end, with a half-width that falls
     /// off like an ellipse (`a·√(1-u²)` along the spine). A straight stroke comes out as an exact oval, a curved
@@ -81,7 +87,15 @@ public struct Stroke {
             let normal = SIMD2(-d.y, d.x) / len, h = a * max(0, 1 - u * u).squareRoot()
             left.append(p + normal * h); right.append(p - normal * h)
         }
-        return left + right.reversed()
+        let shape = left + right.reversed()
+        // Motion blur as a cartoon smear: stretch along the velocity, thin across it to keep the area.
+        let speed = simd_length(smear)
+        guard speed > 1e-6 else { return shape }
+        let dir = smear / speed, f = 1 + min(1, 0.35 * speed), mid = (p0 + 2 * c + p1) / 4
+        return shape.map { p in
+            let d = p - mid, along = simd_dot(d, dir) * dir
+            return mid + along * f + (d - along) / f.squareRoot()
+        }
     }
 }
 
@@ -119,7 +133,7 @@ public final class Face {
     private var gaze = [Spring(x: 0), Spring(x: 0)], pos = [Spring(x: 0), Spring(x: 0)]
     private var blink = Spring(x: 0), sleepy = Spring(x: 0), squash = Spring(x: 0), hop = Spring(x: 0), tilt = Spring(x: 0)
     private var now: Double, blinkAt = -1.0, nextBlink: Double, nextDart: Double, nextMove: Double, nextTilt = 0.0, tiltSide = 1.0
-    private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0)
+    private var gazeTo = SIMD2<Double>(0, 0), posTo = SIMD2<Double>(0, 0), lastSpeed = 0.0
 
     public init(seed: UInt64, now: Double, lively: Bool = true) {
         rng = SplitMix(seed); self.lively = lively; self.now = now
@@ -145,19 +159,21 @@ public final class Face {
         // The eyes lead where the face is travelling.
         let look = SIMD2(gaze[0].x * 0.05, gaze[1].x * 0.035) + spin * 0.04 + SIMD2(pos[0].v, pos[1].v) * 0.03
         let centre = SIMD2(pos[0].x, pos[1].x + hop.x), scale = 1 + p.depth
+        let velocity = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + hop.v + gaze[1].v * 0.035) * scale
         let (cs, sn) = (cos(tilt.x), sin(tilt.x))
         let place = { (v: SIMD2<Double>) in centre + SIMD2(v.x * cs - v.y * sn, v.x * sn + v.y * cs) * scale }
         let eyes = [(p.left, -1.0), (p.right, 1.0)].map { e, side -> Stroke in
             // A blink flattens the eye into a short thin line; max() and min() keep it continuous. The eye only
             // widens once its height has nearly gone, so going between pill and arc it never leans diagonally.
-            // Squash shortens and widens it, stretch does the opposite.
+            // Squash shortens and fattens it, stretch does the opposite.
             // Springs overshoot, so clamp lengths at zero before shaping.
             let ay = max(0, e.ay) * (1 - b) * (1 + sq)
             let ax = max(0, e.ax, 0.03 * b) * (1 - 0.5 * sq) * (1 - smoothstep(0, 0.012, ay))
-            let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1))
+            let w = max(0.01, e.width - (e.width - min(e.width, 0.03)) * b) * (1 + 0.04 * s * sin(t * 1.1)) * (1 - 0.6 * sq)
             let c = SIMD2(side * 0.06 * (1 - 0.3 * sq), e.y + breath) + look
             let bow = SIMD2(0, 2 * e.bend * (1 + sq))
-            return Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale)
+            return Stroke(p0: place(c - SIMD2(ax, ay)), c: place(c - bow), p1: place(c + SIMD2(ax, ay)), width: w * scale,
+                          smear: velocity)
         }
         return Frame(eyes: eyes, blink: b, gazeTarget: gazeTo, tilt: tilt.x, scale: scale)
     }
@@ -190,8 +206,14 @@ public final class Face {
             gaze[1].step(to: gazeTo.y, k: 200, damping: 0.5, dt: dt)
             pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
+            // Slowing down, after a move or a glance, presses the eyes flat like landing; the squash spring then stretches them back.
+            let speed = simd_length(SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035))
+            if speed < lastSpeed { squash.v -= (lastSpeed - speed) * 9 }
+            lastSpeed = speed
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
-            tilt.step(to: mood == .curious ? 0.2 * tiltSide : 0, k: 60, damping: 0.5, dt: dt)
+            // Curious tilts like a dog; travelling sideways leans the head into the motion, like banking.
+            let lean = max(-0.2, min(0.2, pos[0].v * 0.15))
+            tilt.step(to: (mood == .curious ? 0.2 * tiltSide : 0) + lean, k: 60, damping: 0.5, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)
             squash.step(to: 0, k: 260, damping: 0.35, dt: dt)

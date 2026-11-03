@@ -195,6 +195,53 @@ final class FaceTests: XCTestCase {
         XCTAssertLessThanOrEqual(gap, width * 1.05, "eyes too far apart")
     }
 
+    // R8: a fast-moving eye smears along its path like motion blur, and is round again at rest.
+    func testR8_FastEyesSmear() {
+        let s = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06, smear: SIMD2(1.5, 0))
+        let o = s.outline()
+        let w = o.map(\.x).max()! - o.map(\.x).min()!, h = o.map(\.y).max()! - o.map(\.y).min()!
+        XCTAssertGreaterThan(w, h * 1.4, "doesn't stretch along the motion")
+        let still = Stroke(p0: .zero, c: .zero, p1: .zero, width: 0.06).outline()
+        let ws = still.map(\.x).max()! - still.map(\.x).min()!
+        XCTAssertEqual(ws, 0.06, accuracy: 0.002)
+        let face = Face(seed: 11, now: 0)
+        let speeds = frames(face, from: 0, to: 20, hz: 60).map { simd_length($0.eyes[0].smear) }
+        XCTAssertGreaterThan(speeds.max()!, 0.3, "the face never moves fast enough to smear")
+        XCTAssertLessThan(speeds.min()!, 0.02, "it never comes to rest")
+    }
+
+    // R8: moving sideways, the head leans into the direction it travels, and stands straight at rest.
+    func testR8_LeansIntoMotion() {
+        let face = Face(seed: 11, now: 0)
+        let fs = frames(face, from: 0, to: 40, hz: 30)
+        let fast = fs.filter { abs($0.eyes[0].smear.x) > 0.3 }
+        XCTAssertGreaterThan(fast.count, 20, "never moves fast sideways")
+        let leaning = fast.filter { $0.tilt * $0.eyes[0].smear.x > 0.0004 }
+        XCTAssertGreaterThan(Double(leaning.count) / Double(fast.count), 0.8, "doesn't lean into the motion")
+        let still = fs.filter { simd_length($0.eyes[0].smear) < 0.01 }
+        XCTAssert(still.allSatisfy { abs($0.tilt) < 0.02 }, "leans while standing still")
+    }
+
+    // R8: stopping after a move squashes the eyes, then they stretch back, so the face lands with weight.
+    func testR8_SquashesOnLanding() {
+        let face = Face(seed: 11, now: 0)
+        let fs = frames(face, from: 0, to: 40, hz: 60)
+        func ratio(_ f: Frame) -> Double {
+            let o = f.eyes[0].outline()
+            return (o.map(\.y).max()! - o.map(\.y).min()!) / (o.map(\.x).max()! - o.map(\.x).min()!)
+        }
+        let rest = ratio(Face(seed: 11, now: 0, lively: false).frame(at: 1))
+        var landings = 0, squashed = 0
+        let speed = fs.map { simd_length($0.eyes[0].smear) }
+        for i in 30..<fs.count where speed[i - 1] >= 0.1 && speed[i] < 0.1 && speed[(i - 30)..<i].max()! > 0.3 {
+            landings += 1
+            let window = fs[max(0, i - 20)..<min(fs.count, i + 20)]
+            if window.contains(where: { ratio($0) < rest * 0.9 && $0.blink < 0.1 }) { squashed += 1 }
+        }
+        XCTAssertGreaterThan(landings, 3)
+        XCTAssertGreaterThan(Double(squashed) / Double(landings), 0.7, "doesn't squash when it lands")
+    }
+
     // R4: sleeping eyes are thin, wide arcs that curve down like closed lids, at the face's small scale.
     func testR4_SleepIsThinWideArc() {
         let e = Mood.sleep.pose.left
