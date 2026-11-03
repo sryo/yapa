@@ -1,7 +1,8 @@
 #!/bin/sh
 # Points Claude Code's hooks at jeta on the phone, so every session on this Mac reports to it over Wi-Fi.
-#   jeta/hooks on [host]   add them (host: claude-yapa.local, the phone's own name); the first time, the settings are
-#                          kept as settings.json.before-yapa
+#   jeta/hooks on [host]   add them; the first time, the settings are kept as settings.json.before-yapa. host: the
+#                          phone ./ya install saved (~/.config/yapa/host), else claude-yapa.local, the phone's own
+#                          name, which iOS answers over mDNS only some of the time
 #   jeta/hooks off         take exactly them out
 #   jeta/hooks             say whether they're on
 # Edits ~/.claude/settings.json (or $JETA_SETTINGS) beside the user's own hooks. It runs as JavaScript in osascript,
@@ -46,8 +47,16 @@ function on(s, host) {
   return s
 }
 
+function savedPhone(env) {
+  const f = env.objectForKey("YAPA_HOST_FILE")
+  const t = $.NSString.stringWithContentsOfFileEncodingError(f.isNil() ? $.NSHomeDirectory().js + "/.config/yapa/host" : f.js, $.NSUTF8StringEncoding, null)
+  const host = t.isNil() ? "" : t.js.trim().split("@").pop()
+  return host || "claude-yapa.local"
+}
+
 function run(argv) {
-  const env = $.NSProcessInfo.processInfo.environment.objectForKey("JETA_SETTINGS")
+  const vars = $.NSProcessInfo.processInfo.environment
+  const env = vars.objectForKey("JETA_SETTINGS")
   const path = env.isNil() ? $.NSHomeDirectory().js + "/.claude/settings.json" : env.js
   const fm = $.NSFileManager.defaultManager
   const text = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null)
@@ -63,12 +72,13 @@ function run(argv) {
   if (argv[0] === "on" && !text.isNil() && !fm.fileExistsAtPath(path + ".before-yapa")) {
     fm.copyItemAtPathToPathError(path, path + ".before-yapa", null)
   }
-  const out = JSON.stringify(argv[0] === "on" ? on(s, argv[1] || "claude-yapa.local") : off(s), null, 2) + "\n"
+  const host = argv[1] || savedPhone(vars)
+  const out = JSON.stringify(argv[0] === "on" ? on(s, host) : off(s), null, 2) + "\n"
   if (!$(out).writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null)) {
     console.log(`jeta/hooks: can't write ${path}`); $.exit(1)
   }
   return argv[0] === "on"
-    ? `hooks on: every Claude Code session on this Mac reports to ${argv[1] || "claude-yapa.local"} (new sessions, or /hooks in open ones). Undo: jeta/hooks off. Your settings as they were: ${path}.before-yapa`
+    ? `hooks on: every Claude Code session on this Mac reports to ${host} (new sessions, or /hooks in open ones). Undo: jeta/hooks off. Your settings as they were: ${path}.before-yapa`
     : "hooks off: the pad goes back to the Claude app over Bluetooth"
 }
 EOF

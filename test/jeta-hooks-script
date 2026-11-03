@@ -1,9 +1,12 @@
 #!/bin/sh
 # R1: `jeta/hooks on` puts hooks in Claude Code's settings that curl the phone directly, with a 1 s connect timeout,
 # beside the user's own and in place of che's old ones, keeping the original once; `off` takes exactly its own out.
+# The phone is the address ./ya install saved, since iOS answers its .local name only some of the time; with none
+# saved, the name.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 s="$tmp/settings.json"
+export YAPA_HOST_FILE="$tmp/no-host"
 che='curl -s -m 2 --data-binary @- http://127.0.0.1:8078/hook >/dev/null 2>&1 || true'
 cat > "$s" <<EOF
 {
@@ -33,8 +36,11 @@ for e, x in ours:
     if (e == "PermissionRequest") != (x.get("async") is None): fail(f"{e}: only the permission hook waits")
     if e == "PermissionRequest" and x.get("timeout") != 600: fail("the permission hook should wait up to 10 min")
 EOF
-JETA_SETTINGS="$s" jeta/hooks on 192.168.1.8 >/dev/null && grep -q '192.168.1.8:8079/hook' "$s" && ! grep -q claude-yapa.local "$s" \
+JETA_SETTINGS="$s" jeta/hooks on 10.0.0.7 >/dev/null && grep -q '10.0.0.7:8079/hook' "$s" && ! grep -q claude-yapa.local "$s" \
   || { echo "FAIL: on <host> should point the hooks at that host instead"; exit 1; }
+echo root@192.168.1.8 > "$tmp/host"
+YAPA_HOST_FILE="$tmp/host" JETA_SETTINGS="$s" jeta/hooks on >/dev/null && grep -q '"curl .*192.168.1.8:8079/hook' "$s" && ! grep -q 10.0.0.7 "$s" \
+  || { echo "FAIL: on with no host should use the phone ./ya install saved"; exit 1; }
 JETA_SETTINGS="$s" jeta/hooks off >/dev/null || { echo "FAIL: jeta/hooks off"; exit 1; }
 /usr/bin/python3 -I -c '
 import json, sys

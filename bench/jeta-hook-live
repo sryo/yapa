@@ -4,12 +4,12 @@
 # and the two legs together, which need no clock. Someone taps allow on the pad for each prompt. Prints the path of a run file.
 #   YAPA_HOST  ssh destination of the phone (default: the one ./ya install last used)
 #   JETA_N     prompts to tap (5)
-#   JETA_HOOK  where the hooks go (http://claude-yapa.local:8079/hook, as jeta/hooks on sets them)
+#   JETA_HOOK  where the hooks go (http://<the phone>:8079/hook, as jeta/hooks on sets them)
 cd "$(dirname "$0")/.." || exit 1
 host=${YAPA_HOST:-$(cat "$HOME/.config/yapa/host" 2>/dev/null)}
 [ -n "$host" ] || { echo "bench/jeta-hook-live: set YAPA_HOST to the phone, like root@192.168.1.8" >&2; exit 1; }
 runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
-exec /usr/bin/python3 -I - "$host" "${JETA_N:-5}" "${JETA_HOOK:-http://claude-yapa.local:8079/hook}" "$runs" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain)" ] && echo true || echo false)" <<'EOF'
+exec /usr/bin/python3 -I - "$host" "${JETA_N:-5}" "${JETA_HOOK:-http://${host#*@}:8079/hook}" "$runs" "$(git rev-parse HEAD)" "$([ -n "$(git status --porcelain)" ] && echo true || echo false)" <<'EOF'
 import json, os, re, statistics, subprocess, sys, time
 host, n, url, runs, commit, dirty = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 log = "/var/mobile/Containers/Data/Application/*/Documents/buddy.log"
