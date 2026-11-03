@@ -7,11 +7,13 @@ host=${YAPA_HOST:-root@192.168.1.8}
 log=/var/mobile/Containers/Data/Application/*/Documents/buddy.log
 scp -q build/jeta/jeta.ipa "$host:/var/mobile/jeta.ipa"
 ssh "$host" "killall jeta 2>/dev/null; \$(ls /var/containers/Bundle/Application/*/TrollStore.app/trollstorehelper) install /var/mobile/jeta.ipa >/dev/null 2>&1 && uiopen --bundleid com.sryo.yapa && sleep 2 && killall -9 bluetoothd"
-# uiopen does nothing while the phone is locked or asleep, and still succeeds.
+# uiopen does nothing while the phone is locked or asleep, and still succeeds; right after an install it can also
+# miss, so it's asked again until the app runs.
 i=0
 until ssh "$host" "ps -A -o comm" | grep -q 'jeta.app/jeta$'; do
   i=$((i+1)); [ $i -gt 5 ] && { echo "installed, but jeta didn't start: is the phone locked? Unlock it and run jeta/install again"; exit 1; }
   sleep 1
+  ssh "$host" "uiopen --bundleid com.sryo.yapa"
 done
 i=0
 # Heartbeats come from Claude Code's hooks over Wi-Fi once a session reports, else from the Claude app over Bluetooth.

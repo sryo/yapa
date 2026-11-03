@@ -1,6 +1,7 @@
 #!/bin/sh
 # jeta/install says the phone is probably locked when the app never starts (uiopen does nothing then), right away
-# instead of after a minute of waiting for heartbeats; and says connected when the app runs and the desktop answers.
+# instead of after a minute of waiting for heartbeats; asks again when the first uiopen misses; and says connected
+# when the app runs and the desktop answers.
 cd "$(dirname "$0")/.." || exit 1
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir -p "$tmp/bin"
@@ -9,6 +10,7 @@ cat > "$tmp/bin/ssh" <<FAKE
 while [ \$# -gt 1 ]; do shift; done
 case "\$1" in
   *trollstorehelper*) exit 0 ;;
+  *uiopen*) [ -f "$tmp/wakes" ] && touch "$tmp/running"; exit 0 ;;
   *"ps -A"*) [ -f "$tmp/running" ] && echo "/var/containers/Bundle/Application/X/jeta.app/jeta"; exit 0 ;;
   *tail*) [ -f "$tmp/running" ] && echo "heartbeats"; exit 0 ;;
 esac
@@ -25,3 +27,6 @@ grep -qi "heartbeats" "$tmp/out" && { echo "jeta-install: blamed heartbeats when
 touch "$tmp/running"
 install || { echo "jeta-install: failed with the app running and heartbeats:"; cat "$tmp/out"; exit 1; }
 grep -q "connected" "$tmp/out" || { echo "jeta-install: didn't say connected; it said:"; cat "$tmp/out"; exit 1; }
+
+rm "$tmp/running"; touch "$tmp/wakes"
+install || { echo "jeta-install: gave up though asking uiopen again starts the app:"; cat "$tmp/out"; exit 1; }
