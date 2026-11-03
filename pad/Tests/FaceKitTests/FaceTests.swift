@@ -217,15 +217,22 @@ final class FaceTests: XCTestCase {
         XCTAssertEqual(sizes, sizes.sorted(by: >), "trail doesn't taper")
     }
 
-    // R8: moving sideways, the head leans into the direction it travels, and stands straight at rest.
-    func testR8_LeansIntoMotion() {
+    // R8: the head swings like it hangs from a pivot (follow-through): starting a move it lags behind, stopping it
+    // swings forward past straight, then settles; at rest it stands straight.
+    func testR8_HeadSwingsWithAcceleration() {
         let face = Face(seed: 11, now: 0)
-        let fs = frames(face, from: 0, to: 40, hz: 30)
-        let fast = fs.filter { abs($0.eyes[0].smear.x) > 0.3 }
-        XCTAssertGreaterThan(fast.count, 20, "never moves fast sideways")
-        let leaning = fast.filter { $0.tilt * $0.eyes[0].smear.x > 0.0004 }
-        XCTAssertGreaterThan(Double(leaning.count) / Double(fast.count), 0.8, "doesn't lean into the motion")
-        let still = fs.filter { simd_length($0.eyes[0].smear) < 0.01 }
+        let fs = frames(face, from: 0, to: 60, hz: 60)
+        let vx = fs.map { $0.eyes[0].smear.x }
+        var agree = 0, total = 0
+        for i in 8..<(fs.count - 1) {
+            let ax = (vx[i - 6] - vx[i - 8]) * 30   // acceleration a little earlier: the swing follows it
+            guard abs(ax) > 1.5 else { continue }
+            total += 1
+            if fs[i].tilt * ax < 0 { agree += 1 }
+        }
+        XCTAssertGreaterThan(total, 30)
+        XCTAssertGreaterThan(Double(agree) / Double(total), 0.7, "head doesn't lag the acceleration")
+        let still = (60..<fs.count).filter { i in vx[(i - 60)...i].allSatisfy { abs($0) < 0.01 } }.map { fs[$0] }
         XCTAssert(still.allSatisfy { abs($0.tilt) < 0.02 }, "leans while standing still")
     }
 
@@ -255,20 +262,13 @@ final class FaceTests: XCTestCase {
         XCTAssertEqual(w * h, 0.06 * 0.06, accuracy: 0.0002, "squash doesn't keep the volume")
     }
 
-    // R8: the smear never tilts an eye: moving diagonally stretches it sideways and up-down, not along a slant,
-    // so the only tilt is the lean into the motion, and it follows the direction.
+    // R8: moving diagonally never slants an eye on its own: the oval's top stays over its bottom.
     func testR8_SmearNeverTilts() {
         for v in [SIMD2(1.2, 1.2), SIMD2(-1.2, 1.2), SIMD2(1.2, -1.2)] {
             let o = Stroke(p0: SIMD2(0, -0.035), c: .zero, p1: SIMD2(0, 0.035), width: 0.06, smear: v).outline()
             let top = o.min(by: { $0.y < $1.y })!, bottom = o.max(by: { $0.y < $1.y })!
             XCTAssertEqual(top.x, bottom.x, accuracy: 0.002, "smear along \(v) slants the eye")
         }
-        let face = Face(seed: 11, now: 0)
-        let fs = frames(face, from: 0, to: 60, hz: 30)
-        let left = fs.filter { $0.eyes[0].smear.x < -0.4 }, right = fs.filter { $0.eyes[0].smear.x > 0.4 }
-        XCTAssertFalse(left.isEmpty || right.isEmpty)
-        XCTAssertLessThan(left.map(\.tilt).reduce(0, +) / Double(left.count), -0.02, "moving left doesn't lean left")
-        XCTAssertGreaterThan(right.map(\.tilt).reduce(0, +) / Double(right.count), 0.02, "moving right doesn't lean right")
     }
 
     // R8: short, slow moves (glances, small shifts) stay clean: no trail and no squash wobble, only fast moves get them.

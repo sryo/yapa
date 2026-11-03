@@ -235,6 +235,10 @@ public final class Face {
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 200, damping: 0.75, dt: dt)
             gaze[1].step(to: gazeTo.y, k: 200, damping: 0.75, dt: dt)
+            // Curious tilts like a dog. Moving, the head swings as if it hung from a pivot (follow-through): it
+            // lags behind when a move speeds up and swings forward past straight as it slows, then settles.
+            let accel = (posTo.x - pos[0].x) * 30 - 2 * 0.75 * 30.0.squareRoot() * pos[0].v
+            let lean = max(-0.22, min(0.22, -accel * 0.05))
             pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
             pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
             // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
@@ -252,8 +256,6 @@ public final class Face {
             track.append((now, whereNow()))
             if let first = track.first, now - first.0 > 0.1 { track.removeFirst() }
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
-            // Curious tilts like a dog; travelling sideways leans the head into the motion, like banking.
-            let lean = max(-0.2, min(0.2, pos[0].v * 0.15))
             tilt.step(to: (mood == .curious ? 0.2 * tiltSide : 0) + lean, k: 60, damping: 0.5, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)
