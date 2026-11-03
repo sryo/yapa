@@ -95,19 +95,25 @@ final class ColonyTests: XCTestCase {
         XCTAssertLessThan(turned, 0.1)
     }
 
-    // Reading a session's text: its ant waits in the top left corner by the text, the others along the bottom; none
-    // walks off, and when the text closes they're the same ants.
-    func testReadingSendsTheTalkerToTheCornerOthersAside() {
+    // Reading a session's text: its ant waits in the top left corner by the text, the others walk off the nearest edge;
+    // when the text closes the same ants walk back to where they were.
+    func testReadingSendsTheTalkerToTheCornerOthersOff() {
         let c = Colony(seed: 6, now: 0)
         let all: [(id: String, mood: Mood, front: Bool, events: Int?)] = [("a", .idle, false, nil), ("b", .busy, false, 1), ("c", .idle, false, nil)]
         c.update(all, at: 0)
+        _ = c.shapes(at: 1)
+        let was = ["a": c.position(of: "a")!, "c": c.position(of: "c")!]
         c.solo = "b"
-        for k in 1...600 { c.update(all, at: Double(k) / 60) }
+        for k in 61...660 { c.update(all, at: Double(k) / 60) }
         XCTAssertLessThan(simd_length(c.position(of: "b")! - SIMD2(44, 70)), 15, "by the corner, drifting")
-        for id in ["a", "c"] { XCTAssertGreaterThan(c.position(of: id)!.y, 568 - 90, "\(id) stepped aside") }
+        for id in ["a", "c"] {
+            let p = c.position(of: id)!
+            XCTAssertTrue(p.x < -20 || p.x > 340 || p.y < -20 || p.y > 588, "\(id) walked off: \(p)")
+        }
+        XCTAssertEqual(Set(c.shapes(at: 11).map(\.id)), ["a", "b", "c"], "off screen, not gone")
         c.solo = nil
-        c.update(all, at: 11)
-        XCTAssertEqual(Set(c.shapes(at: 12).map(\.id)), ["a", "b", "c"])
+        for k in 661...1260 { c.update(all, at: Double(k) / 60) }
+        for id in ["a", "c"] { XCTAssertLessThan(simd_length(c.position(of: id)! - was[id]!), 30, "\(id) came back") }
     }
 
     // The session that needs you comes to the middle and grows; one asleep curls up and stays where it is.

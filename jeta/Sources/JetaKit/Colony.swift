@@ -27,8 +27,8 @@ public final class Colony {
     public var screen = SIMD2<Double>(320, 568)
     /// Where the finger is while talking; every ant turns to it.
     public var listenAt: SIMD2<Double>?
-    /// The session whose text is open: its ant waits in the top left corner, beside the text, and the others step
-    /// aside to the bottom until it closes, so it's clear who's talking.
+    /// The session whose text is open: its ant waits in the top left corner, beside the text, and the others walk off
+    /// the nearest edge until it closes, then come back to where they were, so it's clear who's talking.
     public var solo: String?
 
     static let step = 1.0 / 120
@@ -130,6 +130,8 @@ final class Ant {
     var twitchAt = 0.0, turn = 0.0, pauseTo = 0.0, tap = 0.0, wave = 0.0, phase: Double
     /// The session's hook event count, and when it last went up.
     var events: Int?, worked = -1e9, nextStroll = 0.0
+    /// Where it stood before walking off for someone else's text, and that spot while it walks back.
+    var home: SIMD2<Double>?, comeBack: SIMD2<Double>?
     /// Phases of the burn-in drift.
     var drift: SIMD3<Double>, bounce = SIMD2<Double>(1, 1)
     /// Half a turn per stride walked: what the head bobs to.
@@ -154,6 +156,9 @@ final class Ant {
 
     /// Starts acting out `a`, from a calm pose.
     func set(_ a: Act, at t: Double, rng: inout SplitMix) {
+        let back = act == .wait && a != .wait
+        if a == .wait && act != .wait { home = SIMD2(x, y) }
+        comeBack = back ? home : nil
         act = a; since = t; flags = 0; until = 0
         goal = nil; faceTo = nil; mill = nil; still = false; nervous = true; cruise = 44; tap = 0; wave = 0
         size.target = 1; rear.target = 0; antennae.target = 0; curl.target = 0
@@ -220,7 +225,7 @@ final class Ant {
         }
         if speed > 0 { h += turn * dt * 2.5 } else if nervous && faceTo == nil && want == nil { h += turn * dt * 1.2 }
         let m = 36.0
-        if act != .leave && (x < m || x > screen.x - m || y < m || y > screen.y - m) {
+        if act != .leave && act != .wait && comeBack == nil && (x < m || x > screen.x - m || y < m || y > screen.y - m) {
             h += max(-1, min(1, wrap(atan2(screen.y / 2 - y, screen.x / 2 - x) - h))) * 5 * dt
         }
         h += spin * dt; spin *= exp(-dt * 9)
@@ -266,6 +271,10 @@ final class Ant {
 
     private func think(t: Double, dt: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, rng: inout SplitMix) {
         let el = t - since
+        if let b = comeBack {
+            guard simd_length(b - SIMD2(x, y)) < 4 else { goal = b; still = false; nervous = false; cruise = 50; return }
+            set(act, at: t, rng: &rng)
+        }
         switch act {
         case .wander:
             // Nothing going on, so it mostly stands; now and then it takes a short stroll.
@@ -316,21 +325,30 @@ final class Ant {
             }
         case .listen:
             still = true; faceTo = listenAt ?? SIMD2(screen.x / 2, screen.y - 120); antennae.target = 1; tap = 0.35
-        case .aside, .wait:
-            // Reading: the one talking goes to the corner by the text and faces in; the others wait along the bottom.
+        case .aside:
+            // Reading: the one talking goes to the corner by the text and faces in.
             if flags == 0 {
-                flags = 1
-                goal = act == .aside ? SIMD2(44, 70) : SIMD2(rng.next(in: 50...(screen.x - 50)), screen.y - rng.next(in: 40...80))
+                flags = 1; goal = SIMD2(44, 70)
             } else if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
-                goal = nil; still = true; faceTo = act == .aside ? SIMD2(screen.x / 2, screen.y / 2) : nil
+                goal = nil; still = true; faceTo = SIMD2(screen.x / 2, screen.y / 2)
+            }
+        case .wait:
+            // The others walk off the nearest edge and wait just past it.
+            if flags == 0 {
+                flags = 1; goal = offEdge(screen)
+            } else if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
+                goal = nil; still = true
             }
         case .leave:
-            if goal == nil {
-                let edges: [(Double, SIMD2<Double>)] = [(x, SIMD2(-60, y)), (screen.x - x, SIMD2(screen.x + 60, y)),
-                                                        (y, SIMD2(x, -60)), (screen.y - y, SIMD2(x, screen.y + 60))]
-                goal = edges.min { $0.0 < $1.0 }!.1
-            }
+            if goal == nil { goal = offEdge(screen) }
         }
+    }
+
+    /// The nearest spot just off the screen.
+    private func offEdge(_ screen: SIMD2<Double>) -> SIMD2<Double> {
+        let edges: [(Double, SIMD2<Double>)] = [(x, SIMD2(-60, y)), (screen.x - x, SIMD2(screen.x + 60, y)),
+                                                (y, SIMD2(x, -60)), (screen.y - y, SIMD2(x, screen.y + 60))]
+        return edges.min { $0.0 < $1.0 }!.1
     }
 
     /// A spot a short way off, kept on screen.
