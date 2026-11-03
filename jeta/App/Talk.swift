@@ -46,14 +46,19 @@ final class Talk: NSObject {
     private func record() {
         let session = AVAudioSession.sharedInstance()
         guard session.recordPermission == .granted else { return show(.dizzy, "Allow the microphone in Settings > yapa") }
-        try? session.setCategory(.record)
-        try? session.setActive(true)
-        recorder = try? AVAudioRecorder(url: clip, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000,
-                                                              AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16])
-        recorder?.record()
+        do {
+            try session.setCategory(.record)
+            try session.setActive(true)
+            let r = try AVAudioRecorder(url: clip, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000,
+                                                               AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16])
+            guard r.record() else { return show(.dizzy, "Can't record: the microphone is busy") }
+            recorder = r
+        } catch {
+            return show(.dizzy, "Can't record: \(error.localizedDescription)")
+        }
         began = CACurrentMediaTime()
         turn += 1
-        show(.attention, "")
+        show(.attention, mac == nil ? "Listening… (no Mac found yet: is yapa-talk running?)" : "Listening…")
     }
 
     private func send() {
@@ -62,7 +67,7 @@ final class Talk: NSObject {
         recorder = nil
         try? AVAudioSession.sharedInstance().setActive(false)
         guard CACurrentMediaTime() - began > 0.3, let wav = try? Data(contentsOf: clip) else { return show(.idle, "") }
-        show(.curious, "")
+        show(.curious, "Sending…")
         let turn = turn
         post("/talk", wav) { [weak self] json in
             guard let self, let json else { return self?.show(.dizzy, "Mac didn't answer: is yapa-talk running?") ?? () }
