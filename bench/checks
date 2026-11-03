@@ -7,3 +7,7 @@ test/che-talk
 swift test --package-path mac
 test/scripts-parse
 test/che-say
+test/ya-install
+test/ya-build
+test/ya-add
+test/ya-parts

@@ -14,7 +14,17 @@ func main() {
 	addr := flag.String("addr", ":8077", "listen address for /health")
 	config := flag.String("config", "/var/jb/etc/yapa/services.json", "services to watch")
 	poll := flag.Duration("poll", 2*time.Second, "how often to check each service")
+	logs := flag.String("logs", "/var/jb/var/log/yapa", "folder of yapa's logs, cut hourly so they can't fill the disk")
 	flag.Parse()
+
+	go func() {
+		for {
+			if err := Tidy(*logs); err != nil {
+				log.Printf("yata: tidying %s: %v", *logs, err)
+			}
+			time.Sleep(time.Hour)
+		}
+	}()
 
 	var svcs []Service
 	b, err := os.ReadFile(*config)

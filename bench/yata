@@ -4,12 +4,12 @@
 #   YAPA_PORT   yata's port (8077)
 #   YAPA_IDLE_S seconds to sample idle CPU (60)
 #   YAPA_KILL   1 to kill each daemon once and time its return (default 1 on the phone, 0 locally)
-#   YAPA_DAEMONS process names that make up yapa (yata)
+#   YAPA_DAEMONS process names that make up yapa (yata caddy cloudflared)
 cd "$(dirname "$0")/.." || exit 1
 host=${YAPA_HOST:?set YAPA_HOST to the phone over ssh, like root@192.168.1.20, or to local}
 port=${YAPA_PORT:-8077}
 idle=${YAPA_IDLE_S:-60}
-daemons=${YAPA_DAEMONS:-yata}
+daemons=${YAPA_DAEMONS:-yata caddy cloudflared}
 if [ "$host" = local ]; then
   ip=127.0.0.1; kill_default=0
   on() { sh -c "$1"; }
@@ -43,6 +43,8 @@ cpu=$(awk -v a="$(printf '%s\n' "$before" | secs)" -v b="$(procs | secs)" -v w="
 restart=
 if [ "$killing" = 1 ]; then
   for d in $daemons; do
+    # Only daemons running now: cloudflared isn't installed until there's a tunnel token.
+    printf '%s\n' "$before" | awk -v d="$d" '{ n = split($3, p, "/"); if (p[n] == d) f = 1 } END { exit !f }' || continue
     t0=$(date +%s)
     on "killall -9 $d" >/dev/null 2>&1
     sleep 1

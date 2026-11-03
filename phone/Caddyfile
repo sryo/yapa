@@ -1,0 +1,14 @@
+# yapa's web server. It listens on the phone itself only; the internet reaches it through cloudflared.
+# ./ya generates the phone's Caddyfile from this and the parts that are on: add sites and apps with ./ya add.
+{
+	admin 127.0.0.1:2019
+	auto_https off
+}
+
+http://:8080 {
+	bind 127.0.0.1
+	root * /var/jb/var/yapa/www
+	encode zstd gzip
+	# ya: sites under the main address
+	file_server
+}

@@ -1,0 +1,11 @@
+#!/bin/sh
+# R5: ./build-ios builds every daemon yapa runs as a signed arm64 iOS binary.
+cd "$(dirname "$0")/.." || exit 1
+./build-ios >/dev/null || { echo "R5: ./build-ios failed"; exit 1; }
+for d in yata yapa-run caddy cloudflared; do
+  b=build/ios/$d
+  [ -x "$b" ] || { echo "R5: $b missing"; exit 1; }
+  file "$b" | grep -q "Mach-O 64-bit executable arm64" || { echo "R5: $b isn't an arm64 Mach-O"; exit 1; }
+  otool -l "$b" | grep -A3 LC_BUILD_VERSION | grep -q "platform 2" || { echo "R5: $b isn't built for iOS"; exit 1; }
+  ldid -h "$b" 2>/dev/null | grep -q CodeDirectory || { echo "R5: $b isn't signed"; exit 1; }
+done

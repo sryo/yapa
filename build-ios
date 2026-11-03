@@ -1,12 +1,27 @@
 #!/bin/sh
 # Builds yapa's daemons for the iPhone SE (arm64, iOS 15) into build/ios, signed with ldid.
 # Go links ios/arm64 only through cgo, so this needs Xcode's iPhoneOS SDK.
+# Caddy and cloudflared are built from their own pinned sources, so their go.mod (and its replaces) applies.
 set -e
 cd "$(dirname "$0")"
+caddy=github.com/caddyserver/caddy/v2@v2.11.7
+cloudflared=github.com/cloudflare/cloudflared@2026.10.7
 sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 export GOOS=ios GOARCH=arm64 CGO_ENABLED=1
 export CC="$(xcrun --sdk iphoneos -f clang) -isysroot $sdk -arch arm64 -miphoneos-version-min=15.0"
-mkdir -p build/ios
-go build -trimpath -ldflags="-s -w" -o build/ios/yata ./cmd/yata
-ldid -S build/ios/yata
-ls -l build/ios
+out=$(pwd)/build/ios
+mkdir -p "$out"
+# ./build-ios <name>... builds only those services, from cmd/<name>.
+if [ $# -gt 0 ]; then
+  for n; do go build -trimpath -ldflags="-s -w" -o "$out/$n" "./cmd/$n" && ldid -S "$out/$n"; done
+  exit
+fi
+go build -trimpath -ldflags="-s -w" -o "$out/yata" ./cmd/yata
+go build -trimpath -ldflags="-s -w" -o "$out/yapa-run" ./cmd/yapa-run
+
+src() { GOOS= GOARCH= GOFLAGS=-mod=mod go mod download -json "$1" | sed -n 's/.*"Dir": "\(.*\)",/\1/p'; }
+(cd "$(src $caddy)" && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o "$out/caddy" ./cmd/caddy)
+(cd "$(src $cloudflared)" && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w -X main.Version=${cloudflared#*@}" -o "$out/cloudflared" ./cmd/cloudflared)
+
+for b in yata yapa-run caddy cloudflared; do ldid -S "$out/$b"; done
+ls -l "$out"

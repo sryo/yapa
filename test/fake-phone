@@ -1,0 +1,23 @@
+#!/bin/sh
+# Sourced by ya's tests: a fake ssh runs the phone's side here, under a temp dir standing in for /var/jb, and
+# launchctl, chown and the Mac's cloudflared are logged. ya's own config (the phone, the parts) stays in the temp
+# dir too, never in ~/.config/yapa. Set T to the test's name first.
+cd "$(dirname "$0")/.." || exit 1
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
+mkdir -p "$tmp/bin" "$tmp/jb" "$tmp/build" "$tmp/conf"
+for d in yata yapa-run caddy cloudflared hello other app; do printf "fake $d" > "$tmp/build/$d"; done
+cat > "$tmp/bin/ssh" <<FAKE
+#!/bin/sh
+[ -f "$tmp/down" ] && { echo "ssh: connect to host phone port 22: Operation timed out" >&2; exit 255; }
+while [ \$# -gt 1 ]; do shift; done
+YAPA_JB="$tmp/jb" PATH="$tmp/bin:\$PATH" sh -c "\$1"
+FAKE
+for c in launchctl chown cloudflared; do printf '#!/bin/sh\necho "%s $*" >> "%s/log"\n' "$c" "$tmp" > "$tmp/bin/$c"; done
+chmod +x "$tmp/bin/"*
+jb=$tmp/jb; ld=$jb/Library/LaunchDaemons; etc=$jb/etc/yapa; bin=$jb/usr/libexec/yapa; parts=$tmp/conf/parts
+ya() { PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_CONFIG="$tmp/conf" YAPA_DOMAIN=example.com YAPA_HOST= ./ya "$@" > "$tmp/out" 2>&1; }
+fail() { echo "$T: $*"; exit 1; }
+ok() { : > "$tmp/log"; ya "$@" || { echo "$T: ./ya $* failed:"; cat "$tmp/out"; exit 1; }; }
+no() { : > "$tmp/log"; ya "$@" && { echo "$T: ./ya $* should have failed:"; cat "$tmp/out"; exit 1; }; [ -s "$tmp/log" ] && fail "./ya $* failed but still touched the phone or Cloudflare"; return 0; }
+says() { grep -qi -- "$1" "$tmp/out" || { echo "$T: $2; it said:"; cat "$tmp/out"; exit 1; }; }
+block() { sed -n "/^http:\/\/$1:8080 {/,/^}/p" "$etc/Caddyfile"; }
