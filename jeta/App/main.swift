@@ -11,7 +11,7 @@ final class FaceView: UIView {
     private var texts: [CATextLayer] = []
     /// Holding to talk; che hooks in here with the session to reach (nil: the manager).
     var onTalk: ((String?) -> Void)?
-    /// Takes a tap first while the Hardware Buddy link is up; returns true when it used it.
+    /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
 
     override init(frame: CGRect) {

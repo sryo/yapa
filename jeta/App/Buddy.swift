@@ -52,13 +52,11 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
 
     private func tap(at p: CGPoint) -> Bool {
         let t = CACurrentMediaTime()
-        guard buddy.connected(at: t) else { return false }
-        if let line = buddy.decide(p.y < view.bounds.midY, at: t) {
-            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-            send(line)
-            log("decided \(line.contains("\"once\"") ? "once" : "deny")")
-            update()
-        }
+        guard let line = buddy.decide(p.y < view.bounds.midY, at: t) else { return false }
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+        send(line)
+        log("decided \(line.contains("\"once\"") ? "once" : "deny")")
+        update()
         return true
     }
 
