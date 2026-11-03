@@ -11,6 +11,11 @@ fail() { echo "names: $1"; exit 1; }
 [ -d mac/Sources/che ] || fail "push-to-talk's Mac agent is built as che"
 [ -f mac/com.sryo.yapa.che.plist ] || fail "mac/com.sryo.yapa.che.plist is che's launch agent"
 [ "$(plutil -extract Label raw mac/com.sryo.yapa.che.plist)" = com.sryo.yapa.che ] || fail "che's launch agent label"
-left=$(git grep -nIE 'yapad|FaceKit|package-path pad|build/pad|yatá|yapa-talk|YAPA_TALK' -- . ':!bench/test-names' ':!README.md' ':!GOALS.md' | head -5)
+left=$(git grep -nIE 'yapad|FaceKit|package-path pad|build/pad|yatá|yapa-talk|YAPA_TALK' -- . ':!test/names' ':!README.md' ':!GOALS.md' | head -5)
 [ -z "$left" ] || fail "old names remain:
 $left"
+# Layout: bench/ holds measurements only; tests live in test/, named for what they check; run files stay out of git.
+[ -z "$(git ls-files 'bench/test-*' 'bench/runs/*' bench/baseline.json)" ] || fail "bench/ holds only measurements: tests go in test/, runs in ~/.fium"
+while read -r c; do f=${c%% *}; [ -e "$f" ] || [ "$f" = go ] || [ "$f" = swift ] || fail "bench/checks runs $f, which doesn't exist"; done < bench/checks
+# Benches are named for the project they measure: jeta-*, che, yata; size is the whole repo.
+for old in face chord notice pad ptt health; do [ -e "bench/$old" ] && fail "bench/$old is named for the project now (see AGENTS.md)"; done

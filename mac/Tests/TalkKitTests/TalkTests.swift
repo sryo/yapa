@@ -81,7 +81,7 @@ func XCTEqual(_ a: Double, _ b: Double, file: StaticString = #filePath, line: UI
 final class TranscribeTests: XCTestCase {
     // R1: a fixture clip, in each language, comes back as its reference text with the right language picked.
     func testR1_HearsAFixtureClipInEitherLanguage() async throws {
-        let clips = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../bench/clips")
+        let clips = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../bench/che-clips")
         let t = Transcriber(["en_US", "es_ES"])
         try await t.prepare()
         for (clip, lang) in [("01", "en_US"), ("07", "es_ES")] {

@@ -2,8 +2,8 @@
 # Measures goal 2's protocol core on this Mac: Hardware Buddy spec checks passed, and prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
 n=$(swift run -q -c release --package-path jeta padbench | tail -1) || exit 1
-mkdir -p bench/runs
-out=bench/runs/pad-$(date +%s).json
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+out=$runs/pad-$(date +%s).json
 cat > "$out" <<JSON
 {"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
  "metrics": {"protocol_checks_passed": {"dir": "higher", "kind": "count", "samples": [$n]}},

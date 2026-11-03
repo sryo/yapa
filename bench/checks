@@ -1,9 +1,9 @@
 go test ./...
-bench/test-r2-keepalive
-bench/test-r3-health
+test/yata-restarts
+test/yata-health
 swift test --package-path jeta
-bench/test-names
-bench/test-r4-talk
+test/names
+test/che-talk
 swift test --package-path mac
-bench/test-shell
-bench/test-r5-say
+test/scripts-parse
+test/che-say

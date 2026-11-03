@@ -1,6 +1,6 @@
 #!/bin/sh
 # Measures goal 3 on this Mac: ms from release to text (each clip posted to a fresh che) and word
-# error rate on bench/clips, and prints the path of a K1 run file. Two passes; nothing is typed.
+# error rate on bench/che-clips, and prints the path of a K1 run file. Two passes; nothing is typed.
 cd "$(dirname "$0")/.." || exit 1
 log=$(mktemp)
 swift build -q -c release --package-path mac || exit 1
@@ -10,12 +10,12 @@ agent=$!
 trap 'kill $agent 2>/dev/null' EXIT
 for _ in $(seq 100); do grep -q listening "$log" && break; sleep 0.2; done
 grep -q listening "$log" || { cat "$log"; exit 1; }
-rows=$("$bin/pttbench" http://127.0.0.1:18078 bench/clips && "$bin/pttbench" http://127.0.0.1:18078 bench/clips) || exit 1
+rows=$("$bin/pttbench" http://127.0.0.1:18078 bench/che-clips && "$bin/pttbench" http://127.0.0.1:18078 bench/che-clips) || exit 1
 echo "$rows" >&2
 ms=$(echo "$rows" | awk '{print $1}' | paste -sd, -)
-wer=$(echo "$rows" | head -$(ls bench/clips/*.wav | wc -l | tr -d " ") | awk '{print $2}' | paste -sd, -)
-mkdir -p bench/runs
-out=bench/runs/ptt-$(date +%s).json
+wer=$(echo "$rows" | head -$(ls bench/che-clips/*.wav | wc -l | tr -d " ") | awk '{print $2}' | paste -sd, -)
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+out=$runs/ptt-$(date +%s).json
 cat > "$out" <<JSON
 {"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
  "metrics": {

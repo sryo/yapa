@@ -23,7 +23,7 @@ runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
 
 get() { plutil -extract "$1" raw -o - "$tmp" 2>/dev/null; }
-curl -fsS -m 5 "$url" > "$tmp" || { echo "bench/health: no answer from $url; is yata running on the phone? (launchctl list | grep yapa)" >&2; exit 1; }
+curl -fsS -m 5 "$url" > "$tmp" || { echo "bench/yata: no answer from $url; is yata running on the phone? (launchctl list | grep yapa)" >&2; exit 1; }
 up=$(get up)
 green=$(get green_after_s)
 
@@ -47,7 +47,7 @@ if [ "$killing" = 1 ]; then
     on "killall -9 $d" >/dev/null 2>&1
     sleep 1
     until curl -fsS -m 1 "$url" >/dev/null 2>&1 && [ -n "$(procs | awk -v d="$d" '{ n = split($3, p, "/"); if (p[n] == d) print }')" ]; do
-      [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "bench/health: $d didn't come back within 60 s" >&2; break; }
+      [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "bench/yata: $d didn't come back within 60 s" >&2; break; }
       sleep 0.2
     done
     restart="$restart${restart:+, }$(( $(date +%s) - t0 ))"

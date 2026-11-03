@@ -21,16 +21,16 @@ When two goals conflict, the higher one wins.
 ## How we know
 | Goal | Metric | Where | Run |
 |---|---|---|---|
-| 1 | seconds from jailbreak to every health check green; services up | `bench/health` over SSH to the phone | live: `bench/health` |
-| 1 | seconds for a killed daemon to come back; disk growth MB/day; days since a hand was needed | `bench/health` over SSH to the phone | live: `bench/health` |
-| 2 | protocol checks passed against the Hardware Buddy spec | `bench/pad`, the pad's protocol core run on the Mac | `bench/pad` |
-| 2 | µs of CPU per face frame | `bench/face`, the face model run on the Mac | `bench/face` |
-| 2 | chords misread, and decisions sent that weren't meant, per 1,000 replayed gestures; ms to lock a chord; µs per touch update | `bench/chord`, seeded gestures replayed through the pad's chord reader on the Mac | `bench/chord` |
-| 2 | notices missed, misread and invented per 1,000 replayed streams of the manager's turn events; µs per event | `bench/notice`, seeded streams replayed through the pad's notice reader on the Mac | `bench/notice` |
-| 2 | seconds from the manager writing a `jeta:` line to the face showing it | `bench/notice-live`, the manager writes, the phone's log says when it showed | live: `bench/notice-live` |
-| 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/pad-live`, the Mac acting as the desktop over Bluetooth | live: `bench/pad-live` |
-| 3 | ms from release to text; word error rate on fixture clips | `bench/ptt` with `bench/clips/` | `bench/ptt` |
-| 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/health` over SSH to the phone | live: `bench/health` |
+| 1 | seconds from jailbreak to every health check green; services up | `bench/yata` over SSH to the phone | live: `bench/yata` |
+| 1 | seconds for a killed daemon to come back; disk growth MB/day; days since a hand was needed | `bench/yata` over SSH to the phone | live: `bench/yata` |
+| 2 | protocol checks passed against the Hardware Buddy spec | `bench/jeta-buddy`, the pad's protocol core run on the Mac | `bench/jeta-buddy` |
+| 2 | µs of CPU per face frame | `bench/jeta-face`, the face model run on the Mac | `bench/jeta-face` |
+| 2 | chords misread, and decisions sent that weren't meant, per 1,000 replayed gestures; ms to lock a chord; µs per touch update | `bench/jeta-chord`, seeded gestures replayed through the pad's chord reader on the Mac | `bench/jeta-chord` |
+| 2 | notices missed, misread and invented per 1,000 replayed streams of the manager's turn events; µs per event | `bench/jeta-notice`, seeded streams replayed through the pad's notice reader on the Mac | `bench/jeta-notice` |
+| 2 | seconds from the manager writing a `jeta:` line to the face showing it | `bench/jeta-notice-live`, the manager writes, the phone's log says when it showed | live: `bench/jeta-notice-live` |
+| 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/jeta-buddy-live`, the Mac acting as the desktop over Bluetooth | live: `bench/jeta-buddy-live` |
+| 3 | ms from release to text; word error rate on fixture clips | `bench/che` with `bench/che-clips/` | `bench/che` |
+| 4 | resident MB of all daemons; idle CPU % over 60 s | `bench/yata` over SSH to the phone | live: `bench/yata` |
 | 5 | bytes of the pad app; bytes of daemon binaries; LOC | `bench/size` | `bench/size` |
 
 Caps: `all=ask quality=hard time=ask+10% loc=ask+1%`

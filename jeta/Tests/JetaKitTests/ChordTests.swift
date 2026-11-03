@@ -49,7 +49,7 @@ final class ChordTests: XCTestCase {
 
     // R1: spacing is read once at touch-down: two close fingers stay close however far they spread after.
     // A third finger landing just after two locked, before anything moved, re-counts: it's a three-finger chord,
-    // not a voided two-finger one. (bench/chord found these were all of its misreads.)
+    // not a voided two-finger one. (bench/jeta-chord found these were all of its misreads.)
     func testR1_AnEarlyThirdFingerRecounts() {
         var c = Chord(); c.prompt = true
         let e = play(&c, for: 0.6) { t in
