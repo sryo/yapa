@@ -11,3 +11,4 @@ test/ya-install
 test/ya-build
 test/ya-add
 test/ya-parts
+test/jeta-install
