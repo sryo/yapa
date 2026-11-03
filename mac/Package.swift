@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS("26.0")],
     targets: [
         .target(name: "TalkKit"),
-        .executableTarget(name: "yapa-talk", dependencies: ["TalkKit"]),
+        .executableTarget(name: "che", dependencies: ["TalkKit"]),
         .executableTarget(name: "pttbench", dependencies: ["TalkKit"]),
         .testTarget(name: "TalkKitTests", dependencies: ["TalkKit"]),
     ]

@@ -41,7 +41,7 @@ final class TalkTests: XCTestCase {
         XCTAssertEqual(route(frontmost: "com.apple.Safari", claude: nil), .clipboard)
     }
 
-    // R2: only this Mac and the hosts named in YAPA_TALK_FROM may post, since what they send gets typed into Claude.
+    // R2: only this Mac and the hosts named in CHE_FROM may post, since what they send gets typed into Claude.
     func testR2_OnlyListedHostsMayTalk() {
         XCTAssertTrue(allowed("127.0.0.1", from: []))
         XCTAssertTrue(allowed("::1", from: []))

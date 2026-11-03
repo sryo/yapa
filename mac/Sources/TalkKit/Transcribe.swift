@@ -14,7 +14,7 @@ public final class Transcriber {
     public func prepare() async throws {
         for l in locales {
             guard let have = await SpeechTranscriber.supportedLocale(equivalentTo: l) else {
-                throw NSError(domain: "yapa-talk", code: 1, userInfo: [NSLocalizedDescriptionKey: "no on-device speech model for \(l.identifier)"])
+                throw NSError(domain: "che", code: 1, userInfo: [NSLocalizedDescriptionKey: "no on-device speech model for \(l.identifier)"])
             }
             if let req = try await AssetInventory.assetInstallationRequest(supporting: [module(have)]) {
                 try await req.downloadAndInstall()

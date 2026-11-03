@@ -2,11 +2,11 @@ import AVFoundation
 import Network
 import UIKit
 
-/// Push-to-talk: hold the face to record, release to send the clip to yapa-talk on the Mac (found over
+/// Push-to-talk: hold the face to record, release to send the clip to che on the Mac (found over
 /// Bonjour), which types the words into Claude and presses Enter a moment later. A tap in that moment stops it.
 final class Talk: NSObject {
     private let face: Face, note = UILabel()
-    private let browser = NWBrowser(for: .bonjour(type: "_yapa-talk._tcp", domain: nil), using: .tcp)
+    private let browser = NWBrowser(for: .bonjour(type: "_che._tcp", domain: nil), using: .tcp)
     private var mac: NWEndpoint?, recorder: AVAudioRecorder?, began = 0.0, enterBy = 0.0, turn = 0
     private var before = Mood.idle
     private let clip = FileManager.default.temporaryDirectory.appendingPathComponent("talk.wav")
@@ -46,7 +46,7 @@ final class Talk: NSObject {
 
     private func record() {
         let session = AVAudioSession.sharedInstance()
-        guard session.recordPermission == .granted else { return say("Allow the microphone in Settings > yapa") }
+        guard session.recordPermission == .granted else { return say("Allow the microphone in Settings > jeta") }
         do {
             try session.setCategory(.record)
             try session.setActive(true)
@@ -61,7 +61,7 @@ final class Talk: NSObject {
         turn += 1
         before = face.mood
         face.set(.listening, at: CACurrentMediaTime())
-        say(mac == nil ? "Listening… (no Mac found yet: is yapa-talk running?)" : "Listening…")
+        say(mac == nil ? "Listening… (no Mac found yet: is che running?)" : "Listening…")
     }
 
     private func send() {
@@ -74,7 +74,7 @@ final class Talk: NSObject {
         say("Sending…")
         let turn = turn
         post("/talk", wav) { [weak self] json in
-            guard let self, let json else { return self?.say("Mac didn't answer: is yapa-talk running?") ?? () }
+            guard let self, let json else { return self?.say("Mac didn't answer: is che running?") ?? () }
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
             if text.isEmpty { return self.say("Didn't catch that") }
             self.say(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)")

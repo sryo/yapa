@@ -2,16 +2,16 @@ import AppKit
 import Network
 import TalkKit
 
-// yapa-talk: the pad posts a clip to /talk on release; this hears it and types the text into Claude.
+// che: the pad posts a clip to /talk on release; this hears it and types the text into Claude.
 // /talk?dry only transcribes (for bench/ptt). /cancel stops the Enter that follows the text.
-// Only this Mac and the hosts in YAPA_TALK_FROM (the pad's address, comma-separated) may post.
+// Only this Mac and the hosts in CHE_FROM (the pad's address, comma-separated) may post.
 let env = ProcessInfo.processInfo.environment
-let port = NWEndpoint.Port(env["YAPA_TALK_PORT"] ?? "8078")!
-let enterDelay = Double(env["YAPA_TALK_ENTER"] ?? "2") ?? 2
-let from = (env["YAPA_TALK_FROM"] ?? "").split(separator: ",").map(String.init)
-let transcriber = Transcriber((env["YAPA_TALK_LANGS"] ?? "en_US,es_ES").split(separator: ",").map(String.init))
+let port = NWEndpoint.Port(env["CHE_PORT"] ?? "8078")!
+let enterDelay = Double(env["CHE_ENTER"] ?? "2") ?? 2
+let from = (env["CHE_FROM"] ?? "").split(separator: ",").map(String.init)
+let transcriber = Transcriber((env["CHE_LANGS"] ?? "en_US,es_ES").split(separator: ",").map(String.init))
 
-func log(_ s: String) { FileHandle.standardError.write(Data("yapa-talk: \(s)\n".utf8)) }
+func log(_ s: String) { FileHandle.standardError.write(Data("che: \(s)\n".utf8)) }
 
 var target: Route = .clipboard
 let enter = PendingEnter(after: enterDelay) { key(36, to: target) }
@@ -68,7 +68,7 @@ func handle(_ c: NWConnection, _ r: Request) {
         reply(c, "200 OK", ["cancelled": enter.cancel()])
     case ("POST", let p) where p.hasPrefix("/talk"):
         let start = DispatchTime.now()
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("yapa-talk-\(UUID()).wav")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-\(UUID()).wav")
         Task { @MainActor in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
@@ -105,10 +105,10 @@ Task {
     let params = NWParameters.tcp
     (params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = .v4
     let listener = try! NWListener(using: params, on: port)
-    listener.service = NWListener.Service(name: Host.current().localizedName ?? "yapa", type: "_yapa-talk._tcp")
+    listener.service = NWListener.Service(name: Host.current().localizedName ?? "yapa", type: "_che._tcp")
     listener.newConnectionHandler = { c in
         guard case .hostPort(let host, _) = c.endpoint, allowed("\(host)".components(separatedBy: "%")[0], from: from) else {
-            log("refused \(c.endpoint): add its address to YAPA_TALK_FROM to let it talk")
+            log("refused \(c.endpoint): add its address to CHE_FROM to let it talk")
             return c.cancel()
         }
         c.start(queue: .main)

@@ -1,7 +1,7 @@
 import Foundation
 import TalkKit
 
-// Posts every clip in a folder to a running yapa-talk (/talk?dry, so nothing is typed) and prints
+// Posts every clip in a folder to a running che (/talk?dry, so nothing is typed) and prints
 // "<ms> <wer> <clip>" per clip: ms from the last byte sent (release) to the text back.
 let args = CommandLine.arguments
 let url = URL(string: "\(args[1])/talk?dry")!, dir = URL(fileURLWithPath: args[2])

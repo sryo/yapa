@@ -1,11 +1,11 @@
 #!/bin/sh
-# Measures goal 3 on this Mac: ms from release to text (each clip posted to a fresh yapa-talk) and word
+# Measures goal 3 on this Mac: ms from release to text (each clip posted to a fresh che) and word
 # error rate on bench/clips, and prints the path of a K1 run file. Two passes; nothing is typed.
 cd "$(dirname "$0")/.." || exit 1
 log=$(mktemp)
 swift build -q -c release --package-path mac || exit 1
 bin=$(swift build -c release --package-path mac --show-bin-path)
-YAPA_TALK_PORT=18078 YAPA_TALK_ENTER=0 YAPA_TALK_FROM= "$bin/yapa-talk" 2> "$log" &
+CHE_PORT=18078 CHE_ENTER=0 CHE_FROM= "$bin/che" 2> "$log" &
 agent=$!
 trap 'kill $agent 2>/dev/null' EXIT
 for _ in $(seq 100); do grep -q listening "$log" && break; sleep 0.2; done

@@ -1,16 +1,16 @@
 #!/bin/sh
-# Installs yapa-talk as a login agent: builds it, copies it to a fixed path (so its Accessibility
-# grant survives rebuilds of the repo) and (re)starts it under launchd. Logs: ~/Library/Logs/yapa-talk.log
+# Installs che as a login agent: builds it, copies it to a fixed path (so its Accessibility
+# grant survives rebuilds of the repo) and (re)starts it under launchd. Logs: ~/Library/Logs/che.log
 set -e
 cd "$(dirname "$0")"
 swift build -q -c release
 dir="$HOME/Library/Application Support/yapa"
 mkdir -p "$dir"
-cp "$(swift build -c release --show-bin-path)/yapa-talk" "$dir/yapa-talk"
-codesign -f -s - -i com.sryo.yapa-talk "$dir/yapa-talk"
-from=${YAPA_TALK_FROM:?set YAPA_TALK_FROM to the pad's IP, e.g. YAPA_TALK_FROM=192.168.1.8 mac/install}
-plist="$HOME/Library/LaunchAgents/com.sryo.yapa-talk.plist"
-sed "s|@BIN@|$dir/yapa-talk|; s|@FROM@|$from|; s|@LOG@|$HOME/Library/Logs/yapa-talk.log|g" com.sryo.yapa-talk.plist > "$plist"
-launchctl bootout "gui/$(id -u)/com.sryo.yapa-talk" 2>/dev/null || true
+cp "$(swift build -c release --show-bin-path)/che" "$dir/che"
+codesign -f -s - -i com.sryo.yapa.che "$dir/che"
+from=${CHE_FROM:?set CHE_FROM to the pad's IP, e.g. CHE_FROM=192.168.1.8 mac/install}
+plist="$HOME/Library/LaunchAgents/com.sryo.yapa.che.plist"
+sed "s|@BIN@|$dir/che|; s|@FROM@|$from|; s|@LOG@|$HOME/Library/Logs/che.log|g" com.sryo.yapa.che.plist > "$plist"
+launchctl bootout "gui/$(id -u)/com.sryo.yapa.che" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
-echo "yapa-talk running; if it can't type, allow $dir/yapa-talk in System Settings > Privacy & Security > Accessibility"
+echo "che running; if it can't type, allow $dir/che in System Settings > Privacy & Security > Accessibility"
