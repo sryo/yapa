@@ -36,8 +36,9 @@ func gesture(_ k: Int) -> Gesture {
     }
 }
 
-var misreads = 0, misfires = 0, updates = 0, ns: UInt64 = 0, lockMs: [Double] = []
+var misreads = 0, misfires = 0, updates = 0, ns: UInt64 = 0, lockMs: [Double] = [], batches: [Double] = []
 for k in 0..<1000 {
+    if k % 100 == 0 && updates > 0 { batches.append(Double(ns) / Double(updates) / 1000); ns = 0; updates = 0 }
     let g = gesture(k)
     var chord = Chord(); chord.prompt = g.prompt
     var events: [Chord.Event] = []
@@ -80,7 +81,8 @@ for k in 0..<1000 {
 print("[\(misreads)]")
 print("[\(misfires)]")
 print("[\(String(format: "%.1f", lockMs.reduce(0, +) / Double(lockMs.count)))]")
-print("[\(String(format: "%.3f", Double(ns) / Double(updates) / 1000))]")
+batches.append(Double(ns) / Double(updates) / 1000)
+print("[" + batches.map { String(format: "%.3f", $0) }.joined(separator: ", ") + "]")
 
 extension SystemRandomNumberGenerator {
     /// A seeded generator (splitmix64), so every run replays the same gestures.

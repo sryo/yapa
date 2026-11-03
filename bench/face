@@ -1,7 +1,10 @@
 #!/bin/sh
-# Measures goal 2's face cost on this Mac: µs of CPU per frame, and prints the path of a K1 run file.
+# Measures goal 2's face cost on this Mac: µs of CPU per frame in the fastest batch, and prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
 s=$(swift run -q -c release --package-path jeta facebench | tail -1) || exit 1
+# The fastest batch: what a frame costs when nothing else is running. Other sessions loading the Mac only slow
+# batches down, so the minimum holds still where the mean jumps.
+s=$(echo "$s" | tr ',' '\n' | awk 'NF { v = $1 + 0; if (min == "" || v < min) min = v } END { printf "%.3f", min }')
 runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 out=$runs/face-$(date +%s).json
 cat > "$out" <<JSON

@@ -3,7 +3,7 @@
 # update, and prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
 out=$(swift run -q -c release --package-path jeta chordbench) || exit 1
-miss=$(echo "$out" | sed -n 1p | tr -d '[]'); fire=$(echo "$out" | sed -n 2p | tr -d '[]'); lock=$(echo "$out" | sed -n 3p | tr -d '[]'); us=$(echo "$out" | sed -n 4p | tr -d '[]')
+miss=$(echo "$out" | sed -n 1p | tr -d '[]'); fire=$(echo "$out" | sed -n 2p | tr -d '[]'); lock=$(echo "$out" | sed -n 3p | tr -d '[]'); us=$(echo "$out" | sed -n 4p | tr -d '[]' | tr ',' '\n' | awk 'NF { v = $1 + 0; if (min == "" || v < min) min = v } END { printf "%.3f", min }')
 runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
 file=$runs/chord-$(date +%s).json
 cat > "$file" <<JSON
