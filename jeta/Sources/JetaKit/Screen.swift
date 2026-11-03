@@ -44,6 +44,8 @@ public struct Screen {
     public private(set) var mode = Mode.face
     /// What talking is doing (listening, sending, what che typed); it takes the hint's place while it's up.
     public var note = ""
+    /// The clock replies are stamped with, so an open one can say how long ago it came in.
+    public var now = 0.0
     private var board = NoticeBoard(), page = 0
     private var replies: [Reply] = [], reading: String?, scroll = 0, newest = -Double.infinity
     /// How many lines of a reply show at once.
@@ -189,6 +191,15 @@ public struct Screen {
         let count = shownReply.map { Screen.plain($0.text).reduce(0) { $0 + $1.count / 30 + 1 } } ?? 0
         scroll = max(0, min(scroll + n * (Screen.readLines - 1), max(0, count)))
     }
+    /// How long ago, coarse: it changes at most once a minute.
+    static func ago(_ s: Double) -> String {
+        switch s {
+        case ..<60: return "just now"
+        case ..<3600: return "\(Int(s / 60)) min ago"
+        case ..<86400: return "\(Int(s / 3600)) h ago"
+        default: return Int(s / 86400) == 1 ? "1 day ago" : "\(Int(s / 86400)) days ago"
+        }
+    }
     private var shownReply: Reply? { replies.first { $0.id == reading } }
 
     /// The reply's lines showing, which page that is and how many there are.
@@ -274,7 +285,7 @@ public struct Screen {
             return (rows.isEmpty ? wrap("no sessions yet", .body) : rows) + wrap("tap: close · hold: ask the manager", .hint)
         case .reply:
             guard let r = shownReply, let w = window(width: width) else { return [] }
-            return wrap(r.session, .title) + w.lines
+            return wrap("\(r.session) · \(Screen.ago(now - r.at))", .title) + w.lines
                 + wrap((w.page + 1 < w.pages ? "swipe up: more · " : "") + "hold: answer · tap: close", .hint)
         }
     }
