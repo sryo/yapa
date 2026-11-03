@@ -147,14 +147,14 @@ final class FaceTests: XCTestCase {
             let face = Face(seed: 11, now: 0)
             face.bounds = SIMD2(0.7, 0.35)
             if asleep { face.set(.sleep, at: 0) }
-            let fs = frames(face, from: 0, to: 900, hz: 4)
+            let fs = frames(face, from: 0, to: 1800, hz: 2)
             let centres = fs.map { ($0.eyes[0].c + $0.eyes[1].c) / 2 }
             let xs = centres.map(\.x), ys = centres.map(\.y)
             XCTAssertGreaterThan(xs.max()! - xs.min()!, 0.9, "doesn't cover the screen sideways (asleep: \(asleep))")
             XCTAssertGreaterThan(ys.max()! - ys.min()!, 0.45, "doesn't cover it up and down (asleep: \(asleep))")
             XCTAssert(centres.allSatisfy { abs($0.x) < 0.8 && abs($0.y) < 0.45 }, "leaves the screen")
-            let steps = zip(fs, fs.dropFirst()).dropFirst(8).map { simd_length($1.centre - $0.centre) * 4 }
-            XCTAssertLessThan(steps.max()!, 0.06, "drifts too fast (asleep: \(asleep))")
+            let steps = zip(fs, fs.dropFirst()).dropFirst(8).map { simd_length($1.centre - $0.centre) * 2 }
+            XCTAssertLessThan(steps.max()!, 0.008, "drifts too fast (asleep: \(asleep))")
         }
     }
 

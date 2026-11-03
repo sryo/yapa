@@ -173,9 +173,10 @@ public final class Face {
         if lively { let d = drift(at: now); pos = [Spring(x: d.x), Spring(x: d.y)]; posTo = d }
     }
 
-    /// The slow burn-in drift: two slow sine waves (periods of minutes) sweeping the whole allowed area.
+    /// The burn-in drift: two very slow sine waves (about 15 and 11 minutes) sweeping the whole allowed area,
+    /// barely noticeable moment to moment.
     private func drift(at t: Double) -> SIMD2<Double> {
-        SIMD2(bounds.x * sin(2 * .pi * t / 173 + phase.x), bounds.y * sin(2 * .pi * t / 127 + phase.y))
+        SIMD2(bounds.x * sin(2 * .pi * t / 900 + phase.x), bounds.y * sin(2 * .pi * t / 660 + phase.y))
     }
 
     /// Sends the face quickly to `p` (an event: coming to you, say); from there it eases back into its drift.
