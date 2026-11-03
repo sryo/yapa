@@ -11,6 +11,11 @@ export GOOS=ios GOARCH=arm64 CGO_ENABLED=1
 export CC="$(xcrun --sdk iphoneos -f clang) -isysroot $sdk -arch arm64 -miphoneos-version-min=15.0"
 out=$(pwd)/build/ios
 mkdir -p "$out"
+# ./build-ios <name>... builds only those services, from cmd/<name>.
+if [ $# -gt 0 ]; then
+  for n; do go build -trimpath -ldflags="-s -w" -o "$out/$n" "./cmd/$n" && ldid -S "$out/$n"; done
+  exit
+fi
 go build -trimpath -ldflags="-s -w" -o "$out/yata" ./cmd/yata
 go build -trimpath -ldflags="-s -w" -o "$out/yapa-run" ./cmd/yapa-run
 

@@ -1,48 +1,110 @@
 #!/bin/sh
-# Installs yapa's daemons on a jailbroken (rootless Dopamine) phone over ssh. Safe to rerun.
-#   ./ya root@<phone-ip>
+# ya puts yapa on a jailbroken (rootless Dopamine) phone and publishes things through it. Safe to rerun.
+#   ./ya install root@<phone-ip>   install or update yapa's daemons, and remember the phone (./ya root@<ip> works too)
+#   ./ya site <folder> [name]      publish a folder at https://yapa.<domain>/<folder>/, or with a name at https://<name>.<domain>/
+#   ./ya service <name> [address]  build cmd/<name>, run it on the phone with PORT set and yata watching it;
+#                                  with an address it's public at https://<address>.<domain>/
 #   YAPA_TUNNEL_TOKEN_FILE  a file holding the Cloudflare tunnel token; turns on cloudflared (kept on later runs)
 #   YAPA_BUILD              a folder of daemons already built for the phone, which skips ./build-ios
+#   YAPA_DOMAIN, YAPA_TUNNEL  the domain the tunnel serves (yadarola.com.ar) and the tunnel's name (yapa)
+#   YAPA_HOST, YAPA_CONFIG    the phone, instead of the one remembered in YAPA_CONFIG (~/.config/yapa)
 set -e
 cd "$(dirname "$0")"
-host=${1:?usage: ./ya root@<phone-ip>}
-if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ] && [ ! -s "$YAPA_TUNNEL_TOKEN_FILE" ]; then
-  echo "ya: no tunnel token in $YAPA_TUNNEL_TOKEN_FILE. In dash.cloudflare.com open Zero Trust → Networks → Tunnels," >&2
-  echo "create a Cloudflared tunnel, and save the text after --token in its install command to that file." >&2
-  exit 1
-fi
-if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
+conf=${YAPA_CONFIG:-$HOME/.config/yapa}
+domain=${YAPA_DOMAIN:-yadarola.com.ar} tunnel=${YAPA_TUNNEL:-yapa}
+die() { echo "ya: $*" >&2; exit 1; }
+usage() { sed -n '3,6s/^#  //p' "$0" >&2; exit 2; }
+
+phone_host() {
+  host=${YAPA_HOST:-$(cat "$conf/host" 2>/dev/null || true)}
+  [ -n "$host" ] || die "I don't know where the phone is yet. Run ./ya install root@<phone-ip> once; the phone's IP is in Settings > Wi-Fi > (i)."
+}
+# A web address name of ours: never the domain itself, www or the main site, which aren't yapa's to give.
+address() {
+  case $1 in www|"$tunnel") die "$1.$domain can't be used: pick another name, like blog." ;; esac
+  printf %s "$1" | grep -qE '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' ||
+    die "\"$1\" can't be part of a web address: use lowercase letters, digits and dashes, like blog or my-app."
+}
+# Gives <name>.<domain> a DNS name pointing at the tunnel, which hands every hostname to Caddy.
+dns() {
+  command -v cloudflared >/dev/null ||
+    die "$1 works on the phone, but to make it public I need cloudflared on this Mac: run brew install cloudflared, then cloudflared tunnel login, then this again."
+  out=$(cloudflared tunnel route dns "$tunnel" "$1" 2>&1) || case $out in
+    *already*) ;;
+    *) die "Cloudflare didn't add $1 ($out). If it says you're not logged in, run cloudflared tunnel login, then this again." ;;
+  esac
+}
 
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-for d in yata yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
-cp launchd/*.plist phone/Caddyfile "$stage/"
-cp -R phone/www "$stage/www"
-if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
+# Runs the phone's side of a command over one ssh connection, with $stage's files beside it.
+on_phone() {
+  key=; [ -f "$HOME/.ssh/yapa_ed25519" ] && key="-i $HOME/.ssh/yapa_ed25519"
+  args=; for a; do args="$args '$a'"; done
+  rc=0
+  tar -cf - -C "$stage" . | ssh -o ConnectTimeout=5 -o BatchMode=yes $key "$host" \
+    "d=\$(mktemp -d) && tar -xf - -C \"\$d\" && sh \"\$d/setup\" \"\$d\"$args; s=\$?; rm -rf \"\$d\"; exit \$s" 2> "$stage.err" || rc=$?
+  if [ $rc = 255 ]; then
+    rm -f "$stage.err"
+    die "I can't reach the phone at ${host#*@}. Check it's on, on the same Wi-Fi, and unlocked; after a restart, open Dopamine and tap Jailbreak."
+  fi
+  cat "$stage.err" >&2; rm -f "$stage.err"
+  return $rc
+}
+
+cmd=$1; [ $# -gt 0 ] && shift
+case $cmd in *@*) set -- "$cmd" "$@"; cmd=install ;; esac
+case $cmd in
+install)
+  if [ -n "$1" ]; then host=$1; else phone_host; fi
+  if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ] && [ ! -s "$YAPA_TUNNEL_TOKEN_FILE" ]; then
+    echo "ya: no tunnel token in $YAPA_TUNNEL_TOKEN_FILE. In dash.cloudflare.com open Zero Trust → Networks → Tunnels," >&2
+    echo "create a Cloudflared tunnel, and save the text after --token in its install command to that file." >&2
+    exit 1
+  fi
+  if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
+  for d in yata yapa-run caddy cloudflared; do cp "$YAPA_BUILD/$d" "$stage/"; done
+  cp launchd/*.plist phone/Caddyfile "$stage/"
+  cp -R phone/www "$stage/www"
+  if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ]; then (umask 077; cp "$YAPA_TUNNEL_TOKEN_FILE" "$stage/tunnel.token"); fi
+  ;;
+site)
+  folder=$1 name=$2
+  [ -n "$folder" ] || usage
+  [ -d "$folder" ] || die "There's no folder at $folder. Give the folder that holds the site's index.html."
+  [ -n "$name" ] && address "$name"
+  phone_host
+  cp -R "$folder/." "$stage/site"
+  dir=$(basename "$(cd "$folder" && pwd)" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._-')
+  [ -n "$dir" ] || dir=site
+  set -- "$dir" "$name" "$domain"
+  ;;
+service)
+  name=$1 public=$2
+  [ -n "$name" ] || usage
+  case $name in yata|yapa-run|caddy|cloudflared) die "$name is part of yapa itself; ./ya install updates it. Pick another name." ;; esac
+  printf %s "$name" | grep -qE '^[a-z0-9][a-z0-9-]*$' || die "\"$name\" can't be a service name: use lowercase letters, digits and dashes."
+  [ -n "$public" ] && address "$public"
+  if [ -z "$YAPA_BUILD" ]; then
+    [ -d "cmd/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
+    ./build-ios "$name" >/dev/null || die "cmd/$name didn't build; the errors are above."
+    YAPA_BUILD=build/ios
+  fi
+  [ -f "$YAPA_BUILD/$name" ] || die "There's no service called $name: its Go code goes in cmd/$name, a main package that listens on 127.0.0.1:\$PORT."
+  phone_host
+  cp "$YAPA_BUILD/$name" "$stage/"
+  set -- "$name" "$public" "$domain"
+  ;;
+*) usage ;;
+esac
+
 # Runs on the phone. /var/jb is Dopamine's rootless prefix; launchd refuses a plist not owned by root:wheel.
-# Config the user may have edited (services.json entries, Caddyfile, the site) is only ever added to.
-# Jobs and binaries from older installs (other names) are removed, so only what this ships runs.
+# Config the user may have edited (services.json entries, Caddyfile, the sites) is only ever added to.
 cat > "$stage/setup" <<'PHONE'
 set -e
-cd "$1"
+cd "$1"; cmd=$2; shift 2
 jb=${YAPA_JB:-/var/jb}
-bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons
-for p in "$ld"/com.sryo.yapa.*.plist; do [ -f "$p" ] && { launchctl unload "$p" 2>/dev/null || true; rm -f "$p"; }; done
+bin=$jb/usr/libexec/yapa etc=$jb/etc/yapa ld=$jb/Library/LaunchDaemons s=$jb/etc/yapa/services.json
 mkdir -p "$bin" "$etc" "$ld" "$jb/var/log/yapa" "$jb/var/yapa/caddy"
-[ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
-cp yapa-run "$bin/yapa-run.new"; chmod 755 "$bin/yapa-run.new"; mv -f "$bin/yapa-run.new" "$bin/yapa-run"
-daemons="yata caddy"
-[ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
-for d in $daemons; do
-  src=$d; [ -f "$src" ] || continue
-  cp "$src" "$bin/$d.new"; chmod 755 "$bin/$d.new"; mv -f "$bin/$d.new" "$bin/$d"
-done
-for f in "$bin"/*; do
-  case " $daemons yapa-run " in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
-done
-[ -f "$etc/Caddyfile" ] || cp Caddyfile "$etc/Caddyfile"
-[ -d "$jb/var/yapa/www" ] || cp -R www "$jb/var/yapa/www"
-
-s=$etc/services.json
 [ -f "$s" ] || echo '[]' > "$s"
 watch() {
   grep -q "\"name\":\"$1\"" "$s" && return
@@ -54,18 +116,125 @@ watch() {
   if grep -q '^[[:space:]]*\[[[:space:]]*\][[:space:]]*$' "$s"; then echo "[$e]" > "$s"
   else sed "\$ s/\][[:space:]]*\$/,$e]/" "$s" > "$s.new" && mv -f "$s.new" "$s"; fi
 }
-watch yata tcp:127.0.0.1:8077
-watch caddy tcp:127.0.0.1:8080
-[ -f "$etc/tunnel.token" ] && watch cloudflared tcp:127.0.0.1:20241
+put() { cp "$1" "$bin/$1.new"; chmod 755 "$bin/$1.new"; mv -f "$bin/$1.new" "$bin/$1"; }
+plist() { p=$ld/com.sryo.yapa.$1.plist; chmod 644 "$p"; chown root:wheel "$p"; }
+restart() { launchctl unload "$ld/com.sryo.yapa.$1.plist" 2>/dev/null || true; launchctl load "$ld/com.sryo.yapa.$1.plist"; }
+# Whether the Caddyfile already serves host $1 with $2 (0), doesn't serve it (1), or serves something else there.
+served() {
+  b=$(sed -n "/^http:\/\/$1:8080 {/,/^}/p" "$etc/Caddyfile")
+  [ -z "$b" ] && return 1
+  printf '%s\n' "$b" | grep -qF "$2" && return 0
+  echo "$1 is already taken by something else on the phone; pick another name." >&2; exit 3
+}
+# A Caddyfile block for host $1 with the directives after it, then Caddy restarted to serve it.
+route() {
+  h=$1; shift
+  served "$h" "$1" && return
+  { printf '\nhttp://%s:8080 {\n\tbind 127.0.0.1\n' "$h"; for l; do printf '\t%s\n' "$l"; done; echo '}'; } >> "$etc/Caddyfile"
+  restart caddy
+}
 
-for d in $daemons; do
-  p=$ld/com.sryo.yapa.$d.plist
-  cp "com.sryo.yapa.$d.plist" "$p"; chmod 644 "$p"; chown root:wheel "$p"
-done
-for d in $daemons; do launchctl load "$ld/com.sryo.yapa.$d.plist"; done
-echo "$daemons"
+case $cmd in
+install)
+  [ -f tunnel.token ] && { cp tunnel.token "$etc/tunnel.token"; chmod 600 "$etc/tunnel.token"; }
+  daemons="yata caddy"
+  [ -f "$etc/tunnel.token" ] && daemons="$daemons cloudflared"
+  watch yata tcp:127.0.0.1:8077
+  watch caddy tcp:127.0.0.1:8080
+  [ -f "$etc/tunnel.token" ] && watch cloudflared tcp:127.0.0.1:20241
+  # Jobs and binaries named nowhere (left by older installs) are removed; services added with ya service stay running.
+  keep=" $daemons yapa-run $(grep -o '"name":"[^"]*"' "$s" | cut -d'"' -f4 | tr '\n' ' ') "
+  for p in "$ld"/com.sryo.yapa.*.plist; do
+    [ -f "$p" ] || continue
+    n=${p##*/com.sryo.yapa.}; n=${n%.plist}
+    case $keep in *" $n "*) ;; *) launchctl unload "$p" 2>/dev/null || true; rm -f "$p"; continue ;; esac
+    case " $daemons " in *" $n "*) launchctl unload "$p" 2>/dev/null || true ;; esac
+  done
+  put yapa-run
+  for d in $daemons; do [ -f "$d" ] && put "$d"; done
+  for f in "$bin"/*; do
+    case $keep in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
+  done
+  [ -f "$etc/Caddyfile" ] || cp Caddyfile "$etc/Caddyfile"
+  [ -d "$jb/var/yapa/www" ] || cp -R www "$jb/var/yapa/www"
+  for d in $daemons; do cp "com.sryo.yapa.$d.plist" "$ld/"; plist "$d"; done
+  for d in $daemons; do launchctl load "$ld/com.sryo.yapa.$d.plist"; done
+  echo "$daemons"
+  ;;
+site)
+  dir=$1 name=$2 domain=$3
+  if [ -n "$name" ]; then dest=$jb/var/yapa/sites/$name; served "$name.$domain" "root * $dest" || true
+  else dest=$jb/var/yapa/www/$dir; fi
+  # The new files go in beside the old, then swap, so the site is never half there.
+  mkdir -p "${dest%/*}"; rm -rf "$dest.new" "$dest.old"; cp -R site "$dest.new"
+  [ -d "$dest" ] && mv "$dest" "$dest.old"; mv "$dest.new" "$dest"; rm -rf "$dest.old"
+  if [ -n "$name" ]; then route "$name.$domain" "root * $dest" file_server; fi
+  ;;
+service)
+  name=$1 public=$2 domain=$3
+  port=$(grep -o "\"name\":\"$name\",\"check\":\"tcp:127.0.0.1:[0-9]*\"" "$s" | sed 's/.*://; s/"//' || true)
+  if [ -z "$port" ]; then
+    port=$(grep -o '"tcp:127.0.0.1:9[0-9][0-9][0-9]"' "$s" | sed 's/.*://; s/"//' | sort -n | tail -1 || true)
+    port=$((${port:-8999} + 1))
+  fi
+  [ -n "$public" ] && { served "$public.$domain" "reverse_proxy 127.0.0.1:$port" || true; }
+  put "$name"
+  cat > "$ld/com.sryo.yapa.$name.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.sryo.yapa.$name</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/var/jb/usr/libexec/yapa/yapa-run</string>
+		<string>128</string>
+		<string>/var/jb/usr/libexec/yapa/$name</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PORT</key>
+		<string>$port</string>
+		<key>GODEBUG</key>
+		<string>netdns=cgo</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>2</integer>
+	<key>StandardOutPath</key>
+	<string>/var/jb/var/log/yapa/$name.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/jb/var/log/yapa/$name.log</string>
+</dict>
+</plist>
+PLIST
+  plist "$name"
+  restart "$name"
+  watch "$name" "tcp:127.0.0.1:$port"
+  restart yata
+  if [ -n "$public" ]; then route "$public.$domain" "reverse_proxy 127.0.0.1:$port"; fi
+  echo "$port"
+  ;;
+esac
 PHONE
 
-running=$(tar -cf - -C "$stage" . | ssh "$host" 'd=$(mktemp -d) && tar -xf - -C "$d" && sh "$d/setup" "$d"; s=$?; rm -rf "$d"; exit $s')
-echo "installed on $host: $running"
-echo "check it with: curl http://${host#*@}:8077/health"
+out=$(on_phone "$cmd" "$@")
+case $cmd in
+install)
+  mkdir -p "$conf"; echo "$host" > "$conf/host"
+  echo "installed on $host: $out"
+  echo "check it with: curl http://${host#*@}:8077/health"
+  ;;
+site)
+  if [ -n "$name" ]; then dns "$name.$domain"; echo "published: https://$name.$domain/"
+  else echo "published: https://$tunnel.$domain/$dir/"; fi
+  ;;
+service)
+  if [ -n "$public" ]; then dns "$public.$domain"; echo "$name is running and public at https://$public.$domain/"
+  else echo "$name is running on the phone at 127.0.0.1:$out, watched by yata. To make it public: ./ya service $name <address>"; fi
+  ;;
+esac

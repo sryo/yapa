@@ -17,6 +17,16 @@ Open the yapa app on the phone. In the Claude desktop app, turn on Help → Trou
 CHE_FROM=<phone-ip> mac/install
 ```
 
+Put things on it from the Mac, one command each:
+
+```bash
+./ya site ~/Sites/blog            # https://yapa.yadarola.com.ar/blog/
+./ya site ~/Sites/blog blog       # https://blog.yadarola.com.ar/
+./ya service hello api            # builds cmd/hello, runs it, https://api.yadarola.com.ar/
+```
+
+A service is a Go main package in `cmd/<name>` that listens on `127.0.0.1:$PORT`. Run either command again to update it.
+
 ```bash
 yapa status        # each service, up or down, and since when
 yapa logs gitea    # one service's recent log
