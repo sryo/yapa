@@ -15,7 +15,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private let view: FaceView
     private var manager: CBPeripheralManager!
     private var timer: Timer?
-    private var outbox: [Data] = [], mtu = 20, wasConnected = false, wasWaiting = false, promptID: String?
+    private var outbox: [Data] = [], mtu = 20, wasConnected = false, wasWaiting = false, shown: Mood?, promptID: String?
 
     init(view: FaceView) {
         self.view = view
@@ -34,7 +34,11 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         }
         if d.batteryLevel >= 0 { buddy.battery = (Int(d.batteryLevel * 100), d.batteryState == .charging || d.batteryState == .full) }
         // Once the link drops the face sleeps, and taps go back to showing moods.
-        if connected || wasConnected { view.face.set(buddy.mood(at: t), at: t) }
+        // Only a change of mood reaches the face, so a face that dozed off on its own stays asleep through idle heartbeats.
+        let mood = connected || wasConnected ? buddy.mood(at: t) : nil
+        // Boredom never wakes a face that has dozed off.
+        if let mood, mood != shown, !(mood == .bored && view.face.mood == .sleep) { view.face.set(mood, at: t) }
+        shown = mood
         if connected != wasConnected { log(connected ? "heartbeats" : "no heartbeat for 30 s") }
         wasConnected = connected
         // Buzz when a session starts waiting, and again for each prompt a tap can answer.
