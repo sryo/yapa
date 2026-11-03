@@ -160,7 +160,7 @@ public final class Crowd {
         var out: [String: SIMD3<Double>] = [:]
         if let f { out[f] = SIMD3(drift.x, drift.y - 0.1, 0.7) }
         let spacing = 2 * screen.x * 0.9 / Double(max(1, row.count))
-        let scale = min(f == nil ? 0.45 : 0.28, spacing / (2 * Crowd.reach * 1.2))
+        let scale = min(f == nil ? 0.6 : 0.32, spacing / (2 * Crowd.reach * 1.2))
         for (i, id) in row.enumerated() {
             out[id] = SIMD3(drift.x + (Double(i) - Double(row.count - 1) / 2) * spacing, drift.y + (f == nil ? 0 : 0.32),
                             leaving.contains(id) ? 0 : scale)
