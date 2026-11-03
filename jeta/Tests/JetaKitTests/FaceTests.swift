@@ -467,4 +467,18 @@ final class FaceTests: XCTestCase {
         XCTAssertEqual(e.bend, -0.013, accuracy: 1e-9)
         XCTAssertEqual(e.width, 0.02, accuracy: 1e-9)
     }
+
+    // T8: with a question up the face stays in the top half, over it: its drift and its sleep never bring it down
+    // onto the text.
+    func testT8_LiftedFaceStaysAboveTheQuestion() {
+        for seed in 0..<20 as Range<UInt64> {
+            let face = Face(seed: seed, now: 0)
+            face.bounds = SIMD2(0.62, 0.3); face.screen = SIMD2(0.89, 0.5); face.dozeAfter = 60
+            face.lift(true, at: 0)
+            for t in stride(from: 2.0, through: 400, by: 0.5) {
+                let low = face.frame(at: t).eyes.flatMap { $0.outline() }.map(\.y).max()!
+                XCTAssertLessThan(low, 0.05, "seed \(seed): the lifted face reaches the question at \(t) s")
+            }
+        }
+    }
 }

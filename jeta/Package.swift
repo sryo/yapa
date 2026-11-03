@@ -10,6 +10,7 @@ let package = Package(
         .executableTarget(name: "facebench", dependencies: ["JetaKit"]),
         .executableTarget(name: "chordbench", dependencies: ["JetaKit"]),
         .executableTarget(name: "noticebench", dependencies: ["JetaKit"]),
+        .executableTarget(name: "textbench", dependencies: ["JetaKit"]),
         .testTarget(name: "JetaKitTests", dependencies: ["JetaKit"]),
         .target(name: "BuddyKit", dependencies: ["JetaKit"]),
         .target(name: "BuddySpec", dependencies: ["BuddyKit"]),

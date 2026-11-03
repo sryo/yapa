@@ -1,0 +1,19 @@
+#!/bin/sh
+# Measures goal 2's text motion on this Mac, from 1,000 seeded runs of jeta's screen: frames where a line jumps, and where
+# a visible line covers the face, per 1,000 runs; ms for a change to settle (p50); µs of CPU per frame of text. Prints the
+# path of a K1 run file.
+cd "$(dirname "$0")/.." || exit 1
+out=$(swift run -q -c release --package-path jeta textbench) || exit 1
+jumps=$(echo "$out" | sed -n 1p | tr -d '[]'); over=$(echo "$out" | sed -n 2p | tr -d '[]'); settle=$(echo "$out" | sed -n 3p | tr -d '[]')
+us=$(echo "$out" | sed -n 4p | tr -d '[]' | tr ',' '\n' | awk 'NF { v = $1 + 0; if (min == "" || v < min) min = v } END { printf "%.3f", min }')
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+file=$runs/text-$(date +%s).json
+cat > "$file" <<JSON
+{"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
+ "metrics": {"text_jumps_per_1000": {"dir": "lower", "kind": "quality", "samples": [$jumps]},
+  "text_over_face_per_1000": {"dir": "lower", "kind": "quality", "samples": [$over]},
+  "text_settle_ms": {"dir": "lower", "kind": "time", "samples": [$settle]},
+  "text_frame_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$us]}},
+ "limits": {}}
+JSON
+echo "$file"

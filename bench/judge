@@ -6,3 +6,4 @@ jeta/Sources/chordbench/**
 jeta/Package.swift
 .claude/skills/**
 test/**
+jeta/Sources/textbench/**

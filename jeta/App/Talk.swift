@@ -5,7 +5,9 @@ import UIKit
 /// Push-to-talk: hold the face to record, release to send the clip to che on the Mac (found over
 /// Bonjour), which types the words into Claude and presses Enter a moment later. A tap in that moment stops it.
 final class Talk: NSObject {
-    private let face: Face, note = UILabel()
+    private let face: Face
+    /// What it's doing, for the screen to show in the hint's place ("" when there's nothing to say).
+    var onNote: ((String) -> Void)?
     private let browser = NWBrowser(for: .bonjour(type: "_che._tcp", domain: nil), using: .tcp)
     private var mac: NWEndpoint?, recorder: AVAudioRecorder?, began = 0.0, enterBy = 0.0, turn = 0
     private var before = Mood.idle
@@ -14,14 +16,6 @@ final class Talk: NSObject {
     init(face: Face, in view: UIView) {
         self.face = face
         super.init()
-        note.textColor = UIColor(white: 0.6, alpha: 1)
-        note.font = .systemFont(ofSize: 13)
-        note.textAlignment = .center
-        note.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(note)
-        NSLayoutConstraint.activate([note.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                                     note.widthAnchor.constraint(equalTo: view.widthAnchor, constant: -32),
-                                     note.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12)])
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(held))
         hold.minimumPressDuration = 0.15
         view.addGestureRecognizer(hold)
@@ -95,7 +89,7 @@ final class Talk: NSObject {
         }
     }
 
-    private func show(_ text: String) { note.text = text }
+    private func show(_ text: String) { onNote?(text) }
 
     /// One HTTP/1.1 POST over a raw connection, since URLSession can't dial a Bonjour service; nil on failure.
     private func post(_ path: String, _ body: Data, done: @escaping ([String: Any]?) -> Void) {

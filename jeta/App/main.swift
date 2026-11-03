@@ -8,9 +8,11 @@ final class FaceView: UIView {
     private var link: CADisplayLink?
     /// The manager's notices, and what the screen shows of them.
     private var board = NoticeBoard(), screen = Screen()
-    private var texts: [CATextLayer] = []
-    /// Where each option button was drawn, to hit-test taps; and where a chosen line goes (che's text path).
-    private var optionFrames: [CGRect] = []
+    /// The text's springs, a layer for each line they show, and where each line rests (to hit-test options).
+    private let motion = TextMotion()
+    private var texts: [String: CATextLayer] = [:], placed: [Placed] = []
+    /// The way the last swipe went (-1 left, 1 right), and the mode the text was last shown for.
+    private var swipeWay = 0.0, was = Screen.Mode.face
     var onChoose: ((String) -> Void)?
     /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
@@ -24,15 +26,18 @@ final class FaceView: UIView {
             layer.addSublayer(eye)
         }
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
-        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped))
-        swipe.direction = [.left, .right]
-        addGestureRecognizer(swipe)
+        for way in [UISwipeGestureRecognizer.Direction.left, .right] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped))
+            swipe.direction = way
+            addGestureRecognizer(swipe)
+        }
         let down = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
         down.direction = .down
         addGestureRecognizer(down)
         isMultipleTouchEnabled = true
         talk = Talk(face: face, in: self)
         onChoose = { [weak self] in self?.talk?.say($0) }
+        talk?.onNote = { [weak self] in self?.screen.note = $0 }
         link = CADisplayLink(target: self, selector: #selector(tick))
         link?.add(to: .main, forMode: .common)
     }
@@ -56,21 +61,38 @@ final class FaceView: UIView {
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         // A tap right after talking stops the pending Enter.
         if talk?.tapped() == true { return }
-        // A tap on an option sends it to the manager, like `server: 8443`.
-        if let i = optionFrames.firstIndex(where: { $0.insetBy(dx: -8, dy: -8).contains(g.location(in: self)) }),
-           let line = screen.choose(i) {
+        // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
+        let p = g.location(in: self)
+        if let (i, o) = option(at: p), let line = screen.choose(i) {
             AudioServicesPlaySystemSound(1104)
+            motion.choose(o.key, at: CACurrentMediaTime())
+            poke(at: CGPoint(x: o.x + o.width / 2, y: o.y + o.height / 2))
             onChoose?(line)
             return
         }
         guard screen.mode == .face else { screen.tap(); return }
-        let p = g.location(in: self)
         if onTap?(p) == true { return }
+        poke(at: p)
+    }
+
+    private func poke(at p: CGPoint) {
         let u = Double(min(bounds.width, bounds.height))
         face.poke(at: SIMD2((Double(p.x) - Double(bounds.midX)) / u, (Double(p.y) - Double(bounds.midY)) / u), t: CACurrentMediaTime())
     }
 
-    @objc private func swiped(_ g: UISwipeGestureRecognizer) { screen.swipe() }
+    /// The option under a finger, and its index among the options.
+    private func option(at p: CGPoint) -> (Int, Placed)? {
+        let options = placed.filter { $0.style == .option || $0.style == .suggestion }
+        guard let i = options.firstIndex(where: {
+            CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height).insetBy(dx: -8, dy: -12).contains(p)
+        }) else { return nil }
+        return (i, options[i])
+    }
+
+    @objc private func swiped(_ g: UISwipeGestureRecognizer) {
+        swipeWay = g.direction == .left ? -1 : 1
+        screen.swipe()
+    }
 
     // Holding anywhere is talking (Talk owns that gesture), so the session list opens with a swipe down on the bare face.
     @objc private func swipedDown(_ g: UISwipeGestureRecognizer) {
@@ -89,10 +111,15 @@ final class FaceView: UIView {
         }
         feedChord(at: CACurrentMediaTime())
     }
-    override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) { track(e) }
+    // One finger down on an option squashes it until it lifts.
+    override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
+        track(e)
+        let down = e?.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled } ?? []
+        motion.press(down.count == 1 ? down.first.flatMap { option(at: $0.location(in: self)) }?.1.key : nil, at: CACurrentMediaTime())
+    }
     override func touchesMoved(_ t: Set<UITouch>, with e: UIEvent?) { track(e) }
-    override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) { track(e) }
-    override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { track(e) }
+    override func touchesEnded(_ t: Set<UITouch>, with e: UIEvent?) { track(e); motion.press(nil, at: CACurrentMediaTime()) }
+    override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { track(e); motion.press(nil, at: CACurrentMediaTime()) }
 
     private func feedChord(at t: Double) {
         chord.prompt = face.mood == .attention
@@ -126,9 +153,15 @@ final class FaceView: UIView {
         let point = { (p: SIMD2<Double>) in CGPoint(x: mid.x + p.x * u, y: mid.y + p.y * u) }
         face.aside(screen.mode == .detail || screen.mode == .roster, at: t)
         face.lift(screen.mode == .question, at: t)
-        drawText(u: CGFloat(u))
+        placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
+        motion.show(placed, from: SIMD2(Double(point(f.centre).x), Double(point(f.centre).y)), swipe: swipeWay,
+                    wait: Screen.wait(from: was, to: screen.mode), at: t)
+        swipeWay = 0
+        was = screen.mode
+        // The springs are the only motion: Core Animation's own fades and slides stay off.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        drawText(motion.frame(at: t))
         for (eye, s) in zip(eyes, f.eyes) {
             let path = CGMutablePath()
             for shape in [s.outline()] + s.trailOutlines() {
@@ -142,52 +175,31 @@ final class FaceView: UIView {
 }
 
 extension FaceView {
-    /// White text on black: a title, the body a little dimmer, hints dimmer still. A question sits under the face;
-    /// the detail and the session list take the right of the screen while the face waits in the corner.
-    func drawText(u: CGFloat) {
-        let open = screen.mode == .detail || screen.mode == .roster
-        let size = u * 0.055, left = open ? bounds.width * 0.3 : bounds.width * 0.12
-        let width = Int((bounds.width - left - bounds.width * 0.08) / (size * 0.52))
-        let lines = screen.lines(width: max(12, width))
-        while texts.count < lines.count {
-            let t = CATextLayer()
-            t.contentsScale = UIScreen.main.scale
-            t.foregroundColor = UIColor(white: 0.96, alpha: 1).cgColor
-            layer.addSublayer(t)
-            texts.append(t)
-        }
-        var y = open ? bounds.height * 0.14 : bounds.height * (lines.contains { $0.style == .option || $0.style == .suggestion } ? 0.6 : 0.66)
-        optionFrames = []
-        // Options sit side by side on one row as plain text: the suggested one first, bigger and bolder.
-        let options = lines.filter { $0.style == .option || $0.style == .suggestion }
-        let optionWidth = options.isEmpty ? 0 : min(bounds.width * 0.22, (bounds.width - (open ? left : bounds.width * 0.12) * 2) / CGFloat(options.count) - 10)
-        var optionX = open ? left : (bounds.width - (optionWidth + 10) * CGFloat(options.count) + 10) / 2
-        for (i, t) in texts.enumerated() {
-            guard i < lines.count else { t.string = nil; continue }
-            let l = lines[i]
-            if l.style == .option || l.style == .suggestion {
-                let suggested = l.style == .suggestion, s = suggested ? size * 1.35 : size
-                let box = CGRect(x: optionX, y: y, width: optionWidth, height: size * 1.9)
+    /// White text on black, one layer per line, placed and scaled as its springs say this frame.
+    func drawText(_ shown: [Shown]) {
+        for s in shown {
+            let l = s.line, t = texts[l.key] ?? {
+                let t = CATextLayer()
+                t.contentsScale = UIScreen.main.scale
+                t.foregroundColor = UIColor(white: 0.96, alpha: 1).cgColor
                 t.string = l.text
-                t.font = UIFont.systemFont(ofSize: s, weight: suggested ? .bold : .regular)
-                t.fontSize = s
-                t.opacity = suggested ? 1 : 0.6
-                t.alignmentMode = open ? .left : .center
-                t.frame = CGRect(x: box.minX, y: box.midY - s * 0.62, width: box.width, height: s * 1.4)
-                optionFrames.append(box)
-                optionX += optionWidth + 10
-                if i + 1 < lines.count, lines[i + 1].style != .option { y += size * 2.5 }
-                continue
+                layer.addSublayer(t)
+                texts[l.key] = t
+                return t
+            }()
+            let weight: UIFont.Weight = l.bold ? .bold : l.style == .title ? .medium : .regular
+            if t.fontSize != CGFloat(l.size) {
+                t.font = UIFont.systemFont(ofSize: CGFloat(l.size), weight: weight)
+                t.fontSize = CGFloat(l.size)
             }
-            let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
-            t.string = l.text
-            t.font = UIFont.systemFont(ofSize: s, weight: l.style == .title ? .medium : .regular)
-            t.fontSize = s
-            t.opacity = l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4
-            t.alignmentMode = open ? .left : .center
-            t.frame = CGRect(x: open ? left : 0, y: y, width: open ? bounds.width - left : bounds.width, height: s * 1.4)
-            y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
+            t.alignmentMode = l.left ? .left : .center
+            t.bounds = CGRect(x: 0, y: 0, width: l.width, height: l.height)
+            t.position = CGPoint(x: s.cx, y: s.cy)
+            t.opacity = Float(s.opacity)
+            t.transform = CATransform3DMakeScale(CGFloat(s.sx), CGFloat(s.sy), 1)
         }
+        let keys = Set(shown.map(\.line.key))
+        for (k, t) in texts where !keys.contains(k) { t.removeFromSuperlayer(); texts[k] = nil }
     }
 }
 

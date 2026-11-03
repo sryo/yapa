@@ -25,6 +25,7 @@ When two goals conflict, the higher one wins.
 | 2 | protocol checks passed against the Hardware Buddy spec | `bench/jeta-buddy`, the pad's protocol core run on the Mac | `bench/jeta-buddy` |
 | 2 | µs of CPU per face frame | `bench/jeta-face`, the face model run on the Mac | `bench/jeta-face` |
 | 2 | chords misread, and decisions sent that weren't meant, per 1,000 replayed gestures; ms to lock a chord; µs per touch update | `bench/jeta-chord`, seeded gestures replayed through the pad's chord reader on the Mac | `bench/jeta-chord` |
+| 2 | frames where text jumps, and where it covers the face, per 1,000 replayed runs of the screen; ms for a change to settle (p50); µs per frame of text | `bench/jeta-text`, seeded screen changes replayed through the pad's text motion with the face on the Mac | `bench/jeta-text` |
 | 2 | notices missed, misread and invented per 1,000 replayed streams of the manager's turn events; µs per event | `bench/jeta-notice`, seeded streams replayed through the pad's notice reader on the Mac | `bench/jeta-notice` |
 | 2 | seconds from the manager writing a `jeta:` line to the face showing it | `bench/jeta-notice-live`, the manager writes, the phone's log says when it showed | live: `bench/jeta-notice-live` |
 | 2 | ms from prompt received to buzz, and from tap to decision sent (p50); frame time p95; idle fps | `bench/jeta-buddy-live`, the Mac acting as the desktop over Bluetooth | live: `bench/jeta-buddy-live` |

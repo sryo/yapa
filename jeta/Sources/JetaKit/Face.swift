@@ -345,6 +345,8 @@ public final class Face {
                 // Asleep it rests low on the screen, still drifting sideways.
                 posTo = mood == .sleep ? SIMD2(d.x + offset.x, screen.y - 0.12) : d + offset
                 if asideOn { posTo = SIMD2(-(screen.x - 0.17), -(screen.y - 0.13)) }
+                // Over a question it drifts and sleeps in the top half, clear of the text.
+                if liftOn && !asideOn { posTo.y = min(posTo.y, -0.02) }
             }
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)

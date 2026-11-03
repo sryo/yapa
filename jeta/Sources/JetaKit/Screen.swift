@@ -11,6 +11,8 @@ public struct Screen {
     public struct Line: Equatable { public var text: String, style: Style }
 
     public private(set) var mode = Mode.face
+    /// What talking is doing (listening, sending, what che typed); it takes the hint's place while it's up.
+    public var note = ""
     private var board = NoticeBoard(), page = 0
 
     public init() {}
@@ -62,18 +64,26 @@ public struct Screen {
 
     /// The text to draw, wrapped to `width` characters.
     public func lines(width: Int) -> [Line] {
-        func wrap(_ s: String, _ style: Style, max: Int = .max) -> [Line] {
-            var out: [String] = [], line = ""
-            for word in s.split(separator: " ") {
-                if line.isEmpty { line = String(word) }
-                else if line.count + 1 + word.count <= width { line += " " + word }
-                else { out.append(line); line = String(word) }
-            }
-            if !line.isEmpty { out.append(line) }
-            out = out.map { $0.count > width ? String($0.prefix(width - 1)) + "…" : $0 }
-            if out.count > max { out = Array(out.prefix(max)); out[max - 1] = String(out[max - 1].prefix(width - 1)) + "…" }
-            return out.map { Line(text: $0, style: style) }
+        let all = text(width: width)
+        guard !note.isEmpty else { return all }
+        return all.filter { $0.style != .hint } + Screen.wrap(note, .hint, width: width, max: 2)
+    }
+
+    static func wrap(_ s: String, _ style: Style, width: Int, max: Int = .max) -> [Line] {
+        var out: [String] = [], line = ""
+        for word in s.split(separator: " ") {
+            if line.isEmpty { line = String(word) }
+            else if line.count + 1 + word.count <= width { line += " " + word }
+            else { out.append(line); line = String(word) }
         }
+        if !line.isEmpty { out.append(line) }
+        out = out.map { $0.count > width ? String($0.prefix(width - 1)) + "…" : $0 }
+        if out.count > max { out = Array(out.prefix(max)); out[max - 1] = String(out[max - 1].prefix(width - 1)) + "…" }
+        return out.map { Line(text: $0, style: style) }
+    }
+
+    private func text(width: Int) -> [Line] {
+        func wrap(_ s: String, _ style: Style, max: Int = .max) -> [Line] { Screen.wrap(s, style, width: width, max: max) }
         switch mode {
         case .face: return []
         case .question:
