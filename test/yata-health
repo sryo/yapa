@@ -17,6 +17,6 @@ for m in green_after_s rss_mb idle_cpu_pct; do
 done
 rm -f "$run"
 # A daemon that isn't installed (cloudflared before its token) gets no restart time instead of a 60 s timeout.
-run=$(YAPA_HOST=local YAPA_PORT=$port YAPA_IDLE_S=1 YAPA_KILL=1 YAPA_DAEMONS=absentd bench/health 2>&1 | tail -1)
+run=$(YAPA_HOST=local YAPA_PORT=$port YAPA_IDLE_S=1 YAPA_KILL=1 YAPA_DAEMONS=absentd bench/yata 2>&1 | tail -1)
 plutil -extract metrics.restart_s raw "$run" >/dev/null 2>&1 && { echo "R3: timed a restart of a daemon that isn't running"; exit 1; }
 rm -f "$run"
