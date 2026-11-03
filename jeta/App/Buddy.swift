@@ -3,7 +3,8 @@ import CoreBluetooth
 import UIKit
 
 /// Advertises the pad as a Claude Hardware Buddy on the Nordic UART Service and lets the desktop drive the face.
-/// While a prompt waits, a tap on the top half approves it and one on the bottom half denies it.
+/// While a prompt waits, a tap on the top half approves it and one on the bottom half denies it, and so does a
+/// two-finger drag up or down. Claude Code's hooks, when they report over Wi-Fi, take the desktop's place.
 final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private static let service = CBUUID(string: "6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     // Encryption-only characteristics make the first access trigger iOS pairing with a passkey.
@@ -34,17 +35,18 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.view.crowd.update(self.hooks.desk.members(at: t), at: t)
             self.update()
         }
-        view.onTap = { [weak self] p in self?.tap(at: p) ?? false }
+        view.onTap = { [weak self] p in guard let self else { return false }; return self.decide(p.y < self.view.bounds.midY) }
+        view.onDecide = { [weak self] in self?.decide($0) ?? false }
+        view.canDecide = { [weak self] in self?.buddy.prompt(at: CACurrentMediaTime()) != nil }
         // A tap on a session's face brings its prompt forward, so the next tap answers that session's hook.
         view.onFocus = { [weak self] id in
             self?.hooks.desk.focus = id
             self?.hooks.onChange?()
         }
         // Every session's turn events go to the face's notice board; the time each notice lands is logged.
-        buddy.onTurn = { [weak self] line in
-            guard let self else { return }
-            for s in self.view.take(Data(line.utf8)) { self.log("notice \(s) \(Int(Date().timeIntervalSince1970 * 1000))") }
-        }
+        buddy.onTurn = { [weak self] line in self?.notice(Data(line.utf8)) }
+        hooks.onTurn = { [weak self] in self?.notice($0) }
+        hooks.onLog = { [weak self] in self?.log($0) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
     }
 
@@ -72,9 +74,14 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         promptID = id; wasWaiting = waiting
     }
 
-    private func tap(at p: CGPoint) -> Bool {
+    private func notice(_ event: Data) {
+        for s in view.take(event) { log("notice \(s) \(Self.ms())") }
+    }
+
+    /// Answers the waiting prompt; false when none can be answered.
+    private func decide(_ approve: Bool) -> Bool {
         let t = CACurrentMediaTime()
-        guard let line = buddy.decide(p.y < view.bounds.midY, at: t) else { return false }
+        guard let line = buddy.decide(approve, at: t) else { return false }
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
         send(line)
         log("decided \(line.contains("\"once\"") ? "once" : "deny") \(Self.ms())")

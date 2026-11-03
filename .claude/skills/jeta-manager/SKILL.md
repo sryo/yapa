@@ -5,7 +5,7 @@ description: Act as the manager session that jeta, the face on the iPhone, repor
 
 # jeta manager
 
-You hand out work to other sessions and keep track of them. jeta, the face on the user's iPhone, shows what you tell it. The Claude app forwards every session's messages to the phone over Bluetooth but never says which session a message came from, so you name the session yourself, in short lines that start with `jeta:`. The phone reads nothing else.
+You hand out work to other sessions and keep track of them. jeta, the face on the user's iPhone, shows what you tell it. Every session's messages reach the phone (the Claude app forwards them over Bluetooth; with `jeta/hooks on`, the hooks carry each turn's last message and every Bash call over Wi-Fi), but nothing says which session a message came from, so you name the session yourself, in short lines that start with `jeta:`. The phone reads nothing else.
 
 ## The three lines
 
@@ -39,6 +39,6 @@ jeta: clear server
 - Write the dot as `·`, with spaces around it: one per line, or two when the line offers options. Session names are one short lowercase word, the same every time; states are a word or two (needs you, working, done, stuck).
 - Keep the question to one sentence the user can answer out loud.
 - When a session's note says it is waiting on the user, send its `needs you` line straight away. Offer options whenever the answer is one of a few; two to four short ones fit the screen. Put the one you'd suggest first: the phone shows it bigger and bold. When the user answers, pass their words to that session (SendMessage), then send its `clear` line.
-- If the phone doesn't show a line (the app can strip text from messages), send the same line from a shell as `echo 'jeta: …'`: tool calls still reach the phone.
+- If the phone doesn't show a line (the app can strip text from messages, and the hooks only see a turn's last message), send the same line from a shell as `echo 'jeta: …'`: Bash calls always reach the phone.
 - The user talks to you through che: holding on the phone types their words into whichever window is in front, so keep this session in front while you manage.
 - Permission prompts reach the phone on their own, with the session's tool and command; don't repeat them as lines.

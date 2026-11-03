@@ -16,6 +16,8 @@ final class FaceView: UIView {
     var onChoose: ((String) -> Void)?
     /// Takes a tap first, to answer a waiting prompt; returns true when it used it.
     var onTap: ((CGPoint) -> Bool)?
+    /// A chord's decision (true for once), and whether a prompt is up for one to answer.
+    var onDecide: ((Bool) -> Bool)?, canDecide: (() -> Bool)?
     /// A tap brought a session that needs you forward: its prompt is the one the next tap answers.
     var onFocus: ((String) -> Void)?
     private var talk: Talk?
@@ -140,7 +142,7 @@ final class FaceView: UIView {
         if screen.mode == .face { screen.longPress() }
     }
 
-    // Two or more fingers are a chord. Until the Buddy link lands, the attention mood stands in for a prompt.
+    // Two or more fingers are a chord; with a prompt up, two close fingers answer it.
     private var chord = Chord()
     private var fingers: [Int: SIMD2<Double>] = [:]
 
@@ -163,7 +165,7 @@ final class FaceView: UIView {
     override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { track(e); motion.press(nil, at: CACurrentMediaTime()) }
 
     private func feedChord(at t: Double) {
-        chord.prompt = face.mood == .attention
+        chord.prompt = canDecide?() ?? false
         let u = Double(min(bounds.width, bounds.height)), mid = SIMD2(Double(bounds.midX), Double(bounds.midY))
         let centre = fingers.isEmpty ? nil : (fingers.values.reduce(.zero, +) / Double(fingers.count) - mid) / u
         for event in chord.update(fingers, at: t) {
@@ -175,7 +177,8 @@ final class FaceView: UIView {
             case .armed(.once): face.set(.proud, at: t)
             case .armed(.deny): face.set(.focused, at: t)
             case .armed(nil): face.set(.attention, at: t)
-            case .decided(let d): face.set(d == .once ? .celebrate : .idle, at: t)
+            case .decided(let d):
+                if onDecide?(d == .once) == true { face.set(d == .once ? .celebrate : .idle, at: t) }
             case .ended: break
             }
         }

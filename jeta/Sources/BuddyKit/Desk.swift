@@ -22,7 +22,7 @@ public final class Desk {
     var sessions: [String: Session] = [:], held: [Held] = [], msg = "", count = 0
     /// The session a tap brought forward: its prompt is the one shown and answered.
     public var focus: String?
-    // Ids carry this run's tag, so a che that restarted never reuses one the pad already answered.
+    // Ids carry this run's tag, so a pad that restarted never reuses one a hook still holds from before.
     let run = UUID().uuidString.prefix(4).lowercased()
 
     public init() {}
@@ -63,6 +63,23 @@ public final class Desk {
         guard event != "Notification" else { return (nil, []) }
         let done = held.filter { $0.session == id && !(event == "PreToolUse" && $0.tool == tool && $0.input == input as NSDictionary) }
         return (nil, release(done))
+    }
+
+    /// The manager's `jeta:` lines, which over Bluetooth come in the Claude app's turn events, as a turn event the
+    /// notice board reads: an `echo` in a Bash call (seen before it runs), or the text a session ended its turn on.
+    public static func turn(_ e: [String: Any]) -> Data? {
+        let block: [String: Any]
+        switch e["hook_event_name"] as? String {
+        case "PreToolUse":
+            guard let c = (e["tool_input"] as? [String: Any])?["command"] as? String, c.contains("jeta:") else { return nil }
+            block = ["type": "tool_use", "input": ["command": c]]
+        case "Stop":
+            guard let m = e["last_assistant_message"] as? String, m.contains("jeta:") else { return nil }
+            block = ["type": "text", "text": m]
+        default:
+            return nil
+        }
+        return try? JSONSerialization.data(withJSONObject: ["evt": "turn", "role": "assistant", "content": [block]])
     }
 
     /// Answers a held request with the pad's `{"cmd":"permission"}` line, or nil if it's no longer waiting.

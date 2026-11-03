@@ -151,4 +151,18 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual((d.heartbeat(at: 2)["prompt"] as? [String: Any])?["id"] as? String, b)
         XCTAssertEqual((d.heartbeat(at: 2)["prompt"] as? [String: Any])?["hint"] as? String, "fium: git push")
     }
+
+    // R2: with the hooks on, the manager's jeta: lines still reach the notice board: from an echo in a Bash call
+    // and from the text a session ended its turn on; nothing else becomes a turn.
+    func testR2_ManagerLinesComeThroughTheHooks() {
+        var board = NoticeBoard()
+        let echo = event("PreToolUse", ["tool_name": "Bash", "tool_input": ["command": "echo 'jeta: server needs you · Which hostname?'"]])
+        board.take(Desk.turn(echo)!)
+        XCTAssertEqual(board.pending.map(\.session), ["server"])
+        board.take(Desk.turn(event("Stop", ["last_assistant_message": "Done.\njeta: clear server"]))!)
+        XCTAssertEqual(board.pending.count, 0)
+        XCTAssertNil(Desk.turn(event("PreToolUse", push)))
+        XCTAssertNil(Desk.turn(event("Stop", ["last_assistant_message": "All done."])))
+        XCTAssertNil(Desk.turn(event("PostToolUse", ["tool_input": ["command": "echo 'jeta: clear server'"]])))
+    }
 }

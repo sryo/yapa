@@ -7,18 +7,40 @@ final class HookListener {
     let desk = Desk()
     /// After every event, and every 10 s so the Buddy core keeps counting the link as alive.
     var onChange: (() -> Void)?
+    /// The manager's `jeta:` lines, as the turn events the notice board reads.
+    var onTurn: ((Data) -> Void)?
     private var waiting: [String: NWConnection] = [:]
-    private let listener = try? NWListener(using: .tcp, on: 8079)
+    private var listener: NWListener?
     private var timer: Timer?
+    /// Says when the port couldn't be opened, and when it opened after all.
+    var onLog: ((String) -> Void)?
 
     init() {
-        listener?.newConnectionHandler = { [weak self] c in self?.accept(c) }
-        listener?.start(queue: .main)
+        listen()
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.settle(self.desk.expire(at: CACurrentMediaTime()))
             self.onChange?()
         }
+    }
+
+    // Started right after the app before it quit, the port can still be taken: the listener fails, so it tries again.
+    private func listen(retry: Bool = false) {
+        guard let l = try? NWListener(using: .tcp, on: 8079) else { return again() }
+        listener = l
+        l.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            switch state {
+            case .ready: if retry { self?.onLog?("hooks port open") }
+            case .failed(let e), .waiting(let e): l?.cancel(); self?.onLog?("hooks port: \(e)"); self?.again()
+            default: break
+            }
+        }
+        l.start(queue: .main)
+    }
+
+    private func again() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.listen(retry: true) }
     }
 
     /// Answers the waiting hook with the core's `{"cmd":"permission"}` line; false if it isn't one the hooks hold.
@@ -50,6 +72,7 @@ final class HookListener {
             return send(c, Data(#"{"error":"POST /hook takes a Claude Code hook event"}"#.utf8), status: "404 Not Found")
         }
         let got = desk.take(e, at: CACurrentMediaTime())
+        if let turn = Desk.turn(e) { onTurn?(turn) }
         settle(got.settled)
         if let id = got.hold { waiting[id] = c } else { send(c, Data()) }
         onChange?()
