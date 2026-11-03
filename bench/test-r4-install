@@ -59,4 +59,6 @@ run
 PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./install root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
 grep -q "Zero Trust" "$tmp/out" || fail "a missing token file must say where to get the token"
 [ -s "$tmp/log" ] && fail "a missing token file still touched the phone"
+# The tunnel hands every hostname to Caddy, which routes by name; new sites need only a Caddyfile block.
+plutil -extract ProgramArguments json -o - launchd/com.sryo.yapa.cloudflared.plist | grep -q '"--url","http:\\/\\/127.0.0.1:8080"' || fail "cloudflared must send the tunnel to Caddy (--url http://127.0.0.1:8080)"
 exit 0

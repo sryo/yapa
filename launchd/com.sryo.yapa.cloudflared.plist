@@ -12,6 +12,8 @@
 		<string>--metrics</string>
 		<string>127.0.0.1:20241</string>
 		<string>run</string>
+		<string>--url</string>
+		<string>http://127.0.0.1:8080</string>
 		<string>--token-file</string>
 		<string>/var/jb/etc/yapa/tunnel.token</string>
 	</array>
