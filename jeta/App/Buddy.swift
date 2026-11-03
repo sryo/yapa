@@ -28,6 +28,10 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
 
     private func update() {
         let t = CACurrentMediaTime(), connected = buddy.connected(at: t), d = UIDevice.current
+        var info = task_vm_info_data_t(), n = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        if withUnsafeMutablePointer(to: &info, { $0.withMemoryRebound(to: integer_t.self, capacity: Int(n)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &n) } }) == KERN_SUCCESS {
+            buddy.heap = Int(info.phys_footprint)
+        }
         if d.batteryLevel >= 0 { buddy.battery = (Int(d.batteryLevel * 100), d.batteryState == .charging || d.batteryState == .full) }
         // Once the link drops the face sleeps, and taps go back to showing moods.
         if connected || wasConnected { view.face.set(buddy.mood(at: t), at: t) }

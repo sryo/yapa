@@ -38,13 +38,15 @@ public final class Buddy {
     /// Whether the link is encrypted; reported as `sec` in the status ack.
     public var secure = false
     public var battery: (pct: Int, usb: Bool)?
+    /// Bytes of memory the app uses, reported as `sys.heap`.
+    public var heap = 0
 
     private var framer = LineFramer()
     private let start: Double
     private var heard: Double?, runningSince: Double?, idleSince: Double?
     private var pending: (prompt: Prompt, since: Double)?, answered: String?
     private var tokenStep: Int?, flash: (mood: Mood, until: Double)?
-    private var activity = ""
+    private var activity = "", approved = 0, denied = 0, lastAnswer = 0.0
 
     public init(name: String, now: Double) { self.name = name; start = now }
 
@@ -67,6 +69,8 @@ public final class Buddy {
     public func decide(_ approve: Bool, at t: Double) -> String? {
         guard let p = prompt(at: t), let since = pending?.since else { return nil }
         answered = p.id; pending = nil
+        if approve { approved += 1 } else { denied += 1 }
+        lastAnswer = t - since
         if approve && t - since < 5 { flash = (.heart, t + 5) }
         return encode(["cmd": "permission", "id": p.id, "decision": approve ? "once" : "deny"])
     }
@@ -111,8 +115,13 @@ public final class Buddy {
     private func command(_ cmd: String, _ o: [String: Any], at t: Double) -> String? {
         switch cmd {
         case "status":
-            var data: [String: Any] = ["name": name, "sec": secure, "sys": ["up": Int(t - start)]]
-            if let b = battery { data["bat"] = ["pct": b.pct, "usb": b.usb] }
+            // The desktop drops a status that lacks any of these fields, so unknown ones are sent as 0.
+            let data: [String: Any] = [
+                "name": name, "sec": secure,
+                "bat": ["pct": battery?.pct ?? 0, "mV": 0, "mA": 0, "usb": battery?.usb ?? false],
+                "sys": ["up": Int(t - start), "heap": heap],
+                "stats": ["appr": approved, "deny": denied, "vel": Int(lastAnswer.rounded()), "nap": 0, "lvl": 0],
+            ]
             return encode(["ack": cmd, "ok": true, "n": 0, "data": data])
         case "name":
             if let n = o["name"] as? String { name = n }

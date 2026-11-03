@@ -67,6 +67,20 @@ public let specChecks: [Check] = [
                      expect(bat["pct"] as? Int, 87, "bat.pct"), expect(bat["usb"] as? Bool, true, "bat.usb"),
                      expect(sys["up"] as? Int, 42, "sys.up"))
     },
+    // Claude's desktop app rejects a status ack unless bat, sys and stats each carry every field, so none is optional here.
+    Check(name: "R2 status ack has every field the desktop validates, and counts decisions") {
+        let b = buddy([(0, hb(prompt("a")))])
+        _ = b.decide(true, at: 2); _ = b.receive(hb(prompt("b")), at: 3); _ = b.decide(false, at: 4)
+        guard let r = b.receive(line(["cmd": "status"]), at: 5).first.map(json), let d = r["data"] as? [String: Any] else { return "no data" }
+        let need = ["bat": ["pct", "mV", "mA"], "sys": ["up", "heap"], "stats": ["appr", "deny", "vel", "nap", "lvl"]]
+        for (k, fields) in need {
+            guard let o = d[k] as? [String: Any] else { return "\(k) missing" }
+            if let f = fields.first(where: { (o[$0] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? true }) { return "\(k).\(f) not a number" }
+        }
+        let bat = d["bat"] as? [String: Any], stats = d["stats"] as? [String: Any]
+        return first(expect(bat?["usb"] as? Bool != nil, true, "bat.usb"), expect(d["sec"] as? Bool != nil, true, "sec"),
+                     expect(stats?["appr"] as? Int, 1, "appr"), expect(stats?["deny"] as? Int, 1, "deny"))
+    },
     Check(name: "R2 name, owner and unpair are acked with ok and n") {
         let b = Buddy(name: "Claude-yapa", now: 0)
         var why: String?
