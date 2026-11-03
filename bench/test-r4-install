@@ -54,4 +54,9 @@ grep -q '"tcp:127.0.0.1:20241"' "$etc/services.json" || fail "services.json does
 # A rerun without the token keeps the tunnel.
 run
 [ -f "$ld/com.sryo.yapa.cloudflared.plist" ] && [ -f "$etc/tunnel.token" ] || fail "rerun without a token dropped the tunnel"
+# A token file that isn't there stops the install before anything changes, and says how to get one.
+: > "$tmp/log"
+PATH="$tmp/bin:$PATH" YAPA_BUILD="$tmp/build" YAPA_TUNNEL_TOKEN_FILE="$tmp/nope" ./install root@phone > "$tmp/out" 2>&1 && fail "install went on without the token file"
+grep -q "Zero Trust" "$tmp/out" || fail "a missing token file must say where to get the token"
+[ -s "$tmp/log" ] && fail "a missing token file still touched the phone"
 exit 0

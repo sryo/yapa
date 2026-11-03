@@ -6,6 +6,11 @@
 set -e
 cd "$(dirname "$0")"
 host=${1:?usage: ./install root@<phone-ip>}
+if [ -n "$YAPA_TUNNEL_TOKEN_FILE" ] && [ ! -s "$YAPA_TUNNEL_TOKEN_FILE" ]; then
+  echo "install: no tunnel token in $YAPA_TUNNEL_TOKEN_FILE. In dash.cloudflare.com open Zero Trust → Networks → Tunnels," >&2
+  echo "create a Cloudflared tunnel, and save the text after --token in its install command to that file." >&2
+  exit 1
+fi
 if [ -z "$YAPA_BUILD" ]; then ./build-ios >/dev/null; YAPA_BUILD=build/ios; fi
 
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
