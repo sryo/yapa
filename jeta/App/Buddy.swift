@@ -34,9 +34,16 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.hooked = active
             if active { self.buddy.receive(self.hooks.desk.line(at: t), at: t).forEach(self.send) }
             self.view.crowd.update(self.hooks.desk.members(at: t), at: t)
+            self.view.show(replies: self.hooks.desk.replies())
             self.update()
         }
         view.onDecide = { [weak self] in self?.decide($0) ?? false }
+        view.onAnswer = { [weak self] answers in
+            guard let self, let id = self.hooks.desk.asked()?.id, self.hooks.answer(id, answers) else { return false }
+            AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            self.log("answered \(id) \(Self.ms())")
+            return true
+        }
         view.canDecide = { [weak self] in self?.buddy.prompt(at: CACurrentMediaTime()) != nil }
         // A tap on a session's face brings its prompt forward, so the next tap answers that session's hook.
         view.onFocus = { [weak self] id in
@@ -74,7 +81,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             log(id.map { "prompt \($0) \(Self.ms())" } ?? "waiting, answer at the desktop")
         }
         promptID = id; wasWaiting = waiting
-        view.ask(buddy.prompt(at: t))
+        if hooks.desk.active { view.ask(hooks.desk.asked()) } else { view.ask(buddy.prompt(at: t)) }
     }
 
     private func notice(_ event: Data) {

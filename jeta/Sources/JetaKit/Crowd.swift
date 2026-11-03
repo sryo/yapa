@@ -33,6 +33,9 @@ public final class Crowd {
     /// Half the screen's size, in fractions of its short side (16:9 landscape is 0.89 by 0.5).
     public var screen = SIMD2<Double>(0.89, 0.5)
     public private(set) var overflow = 0
+    /// The session whose text is open: its face waits beside the text, in the top left, and the others step away
+    /// until it closes, so it's clear who's talking.
+    public var solo: String?
 
     private var faces: [String: Face] = [:], places: [String: [Spring]] = [:]
     private var members: [SessionInfo] = [], hidden: [String: Int] = [:], focused: String?, standing: String?, leaving: String?
@@ -132,6 +135,8 @@ public final class Crowd {
 
 
     private var visible: [SessionInfo] { members.filter { hidden[$0.id] == nil } }
+    /// The sessions not swiped away, with their hook event counts.
+    public var sessions: [SessionInfo] { visible }
 
     /// The faces on screen, in the order their sessions started: past `most`, quiet ones are the ones left out.
     private var shown: [SessionInfo] {
@@ -174,6 +179,11 @@ public final class Crowd {
         let on = Set(shown.map(\.id)), leaving = Set(places.keys).subtracting(on)
         let row = on.union(leaving).subtracting([f].compactMap { $0 }).sorted { (order[$0] ?? 0, $0) < (order[$1] ?? 0, $1) }
         var out: [String: SIMD3<Double>] = [:]
+        if let s = solo, on.contains(s) {
+            for id in on.union(leaving) { out[id] = SIMD3(places[id]?[0].x ?? 0, places[id]?[1].x ?? 0, 0) }
+            out[s] = SIMD3(-(screen.x - 0.17), -(screen.y - 0.15), 0.5)
+            return out
+        }
         if let f { out[f] = SIMD3(drift.x, drift.y - 0.1, 0.7) }
         let spacing = 2 * screen.x * 0.9 / Double(max(1, row.count))
         let scale = min(f == nil ? 0.6 : 0.32, spacing / (2 * Crowd.reach * 1.2))

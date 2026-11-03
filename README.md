@@ -11,13 +11,13 @@ git clone https://github.com/sryo/yapa && cd yapa
 ```
 
 ## Use
-Open the jeta app on the phone, and on the Mac:
+Open the miga app on the phone, and on the Mac:
 
 ```bash
 jeta/hooks on
 ```
 
-From then on every Claude Code session on the Mac, in the terminal or the desktop app, reports to the phone over Wi-Fi. `jeta/hooks off` undoes it and leaves your settings as they were. Without the hooks, the Claude desktop app can drive the phone over Bluetooth instead: turn on Help → Troubleshooting → Enable Developer Mode, then Developer → Open Hardware Buddy → Connect, and pick the phone. Either way, the face on the phone shows what your agents are doing. When one asks for permission, the phone buzzes: tap Allow or Deny, or answer in the terminal as usual; whichever you do first counts. Hold the face to talk, and let go: your words appear in the Claude app (or the terminal in front) and send themselves two seconds later, unless you tap to stop them. English and Spanish both work. Talking also needs che on the Mac; run this once with the phone's address (macOS then asks to let che control the computer):
+From then on every Claude Code session on the Mac, in the terminal or the desktop app, reports to the phone over Wi-Fi. `jeta/hooks off` undoes it and leaves your settings as they were. Without the hooks, the Claude desktop app can drive the phone over Bluetooth instead: turn on Help → Troubleshooting → Enable Developer Mode, then Developer → Open Hardware Buddy → Connect, and pick the phone. Either way, the ants on the phone, one per session, show what your agents are doing. When one asks for permission, the phone buzzes: tap Allow or Deny, or answer in the terminal as usual; whichever you do first counts. Hold the screen to talk, and let go: your words appear in the Claude app (or the terminal in front) and send themselves two seconds later, unless you tap to stop them. English and Spanish both work. Talking also needs che on the Mac; run this once with the phone's address (macOS then asks to let che control the computer):
 
 ```bash
 CHE_FROM=<phone-ip> mac/install

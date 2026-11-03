@@ -1,0 +1,21 @@
+#!/bin/sh
+# Measures goal 2's ants, one per session, on this Mac: from 200 seeded 2-minute runs of sessions coming, going,
+# changing mood and sending hook events, frames where a planted foot slides and where an ant jumps, per 1,000 runs;
+# from 40 sessions left alone for 3 minutes, pt an ant walks in its last minute (calm) and the longest it stays within
+# 1 pt of one spot (burn-in); and µs of CPU per frame for the whole colony. Prints the path of a K1 run file.
+cd "$(dirname "$0")/.." || exit 1
+out=$(swift run -q -c release --package-path jeta antbench) || exit 1
+line() { echo "$out" | sed -n "$1p" | tr -d '[]'; }
+us=$(line 5 | tr ',' '\n' | awk 'NF { v = $1 + 0; if (min == "" || v < min) min = v } END { printf "%.3f", min }')
+runs="${FIUM_HOME:-$HOME/.fium}/runs/yapa"; mkdir -p "$runs"
+file=$runs/ants-$(date +%s).json
+cat > "$file" <<JSON
+{"commit": "$(git rev-parse HEAD)", "dirty": $([ -n "$(git status --porcelain)" ] && echo true || echo false),
+ "metrics": {"ants_foot_slides_per_1000": {"dir": "lower", "kind": "quality", "samples": [$(line 1)]},
+  "ants_jumps_per_1000": {"dir": "lower", "kind": "quality", "samples": [$(line 2)]},
+  "ants_idle_pt_per_min": {"dir": "lower", "kind": "count", "samples": [$(line 3)]},
+  "ants_still_longest_s": {"dir": "lower", "kind": "quality", "samples": [$(line 4)]},
+  "ants_frame_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$us]}},
+ "limits": {"ants_still_longest_s": 10}}
+JSON
+echo "$file"

@@ -1,13 +1,13 @@
 #!/bin/sh
 # The project's names: yata watches the phone's services (plain ASCII, no accent, in every file and command),
-# jeta is the face app with JetaKit inside, che is the Mac side of push-to-talk. Old names must not linger.
+# jeta is the pad app with JetaKit inside, shown on the phone as miga (its ants are crumbs, not faces), che is the Mac side of push-to-talk. Old names must not linger.
 cd "$(dirname "$0")/.." || exit 1
 fail() { echo "names: $1"; exit 1; }
 [ -d cmd/yata ] || fail "the watcher daemon lives in cmd/yata"
 [ -f launchd/com.sryo.yapa.yata.plist ] || fail "launchd/com.sryo.yapa.yata.plist is yata's launchd job"
 [ "$(plutil -extract Label raw launchd/com.sryo.yapa.yata.plist)" = com.sryo.yapa.yata ] || fail "yata's launchd label"
 [ -f jeta/Package.swift ] && grep -q '"JetaKit"' jeta/Package.swift || fail "jeta/ holds the app and its JetaKit library"
-[ "$(plutil -extract CFBundleDisplayName raw jeta/App/Info.plist)" = jeta ] || fail "the app shows as jeta on the phone"
+[ "$(plutil -extract CFBundleDisplayName raw jeta/App/Info.plist)" = miga ] || fail "the app shows as miga on the phone"
 [ -d mac/Sources/che ] || fail "push-to-talk's Mac agent is built as che"
 [ -f mac/com.sryo.yapa.che.plist ] || fail "mac/com.sryo.yapa.che.plist is che's launch agent"
 [ "$(plutil -extract Label raw mac/com.sryo.yapa.che.plist)" = com.sryo.yapa.che ] || fail "che's launch agent label"
@@ -19,3 +19,4 @@ $left"
 while read -r c; do f=${c%% *}; [ -e "$f" ] || [ "$f" = go ] || [ "$f" = swift ] || fail "bench/checks runs $f, which doesn't exist"; done < bench/checks
 # Benches are named for the project they measure: jeta-*, che, yata; size is the whole repo.
 for old in face chord notice pad ptt health; do [ -e "bench/$old" ] && fail "bench/$old is named for the project now (see AGENTS.md)"; done
+exit 0

@@ -328,6 +328,7 @@ public final class Face {
             }
             let peeking = peekUntil > 0 && now < peekUntil
             if peekUntil > 0 && now >= peekUntil + 1.5 { peekUntil = -1; peekedAt = now }
+            // A face in the crowd is only its ant's mood now, never drawn, so it holds still like a sleeping one.
             if !lively || mood == .sleep {
                 nextBlink = max(nextBlink, now + 4); nextDart = max(nextDart, now + 4)
                 if mood == .sleep { gazeTo = .zero }

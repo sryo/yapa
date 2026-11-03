@@ -185,4 +185,23 @@ final class DeskTests: XCTestCase {
         let old = Desk(); old.load(saved, at: 5, wall: 1_000 + 7300)
         XCTAssertFalse(old.active)
     }
+
+    func testR10_QuestionsAreAnsweredOnThePad() {
+        let d = Desk()
+        let q: [String: Any] = ["question": "Which?", "header": "Pick", "multiSelect": true,
+                                "options": [["label": "a"], ["label": "b"]]]
+        let hold = d.take(["hook_event_name": "PermissionRequest", "session_id": "s", "cwd": "/x/yapa",
+                           "tool_name": "AskUserQuestion", "tool_input": ["questions": [q]]], at: 1).hold!
+        let a = d.asked()!
+        XCTAssertEqual(a.session, "yapa")
+        XCTAssertEqual(a.questions, [Asked.Question(question: "Which?", header: "Pick", options: ["a", "b"], multi: true)])
+        let body = try! JSONSerialization.jsonObject(with: d.answer(hold, ["Which?": "a, b"])!.body) as! [String: Any]
+        let dec = (body["hookSpecificOutput"] as! [String: Any])["decision"] as! [String: Any]
+        XCTAssertEqual(dec["behavior"] as? String, "allow")
+        XCTAssertEqual((dec["updatedInput"] as! [String: Any])["answers"] as? [String: String], ["Which?": "a, b"])
+        XCTAssertNil(d.asked())
+        _ = d.take(["hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+                    "tool_input": ["command": "git push origin main", "description": "Push"]], at: 2)
+        XCTAssertEqual(d.asked()?.text, "Bash: git push origin main (Push)")
+    }
 }
