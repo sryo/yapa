@@ -36,7 +36,7 @@ jeta: clear server
 ## Rules
 
 - Send each line as a message of its own, under 1 KB, and on its own line. The app drops messages over 4 KB, so never bury a line in a long reply.
-- Write the dot as `·`, exactly one per line, with spaces around it. Session names are one short lowercase word, the same every time; states are a word or two (needs you, working, done, stuck).
+- Write the dot as `·`, with spaces around it: one per line, or two when the line offers options. Session names are one short lowercase word, the same every time; states are a word or two (needs you, working, done, stuck).
 - Keep the question to one sentence the user can answer out loud.
 - When a session's note says it is waiting on the user, send its `needs you` line straight away. Offer options whenever the answer is one of a few; two to four short ones fit the screen. When the user answers, pass their words to that session (SendMessage), then send its `clear` line.
 - If the phone doesn't show a line (the app can strip text from messages), send the same line from a shell as `echo 'jeta: …'`: tool calls still reach the phone.
