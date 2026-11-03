@@ -217,7 +217,7 @@ public final class Face {
         // side goes round the head (narrower and smaller) and the other comes nearer (a little bigger).
         let yw = yaw.x, (yc, ys) = (cos(yw), sin(yw))
         let eyes = [(p.left, -1.0), (p.right, 1.0)].map { e, side -> Stroke in
-            let near = 1 - 0.18 * ys * side
+            let near = 1 - 0.5 * ys * side
             // A blink flattens the eye into a short thin line; max() and min() keep it continuous. The eye only
             // widens once its height has nearly gone, so going between pill and arc it never leans diagonally.
             // Squash shortens and fattens it, stretch does the opposite.
@@ -266,8 +266,8 @@ public final class Face {
             for i in pose.indices { pose[i].step(to: target[i], k: 220, damping: 0.45, dt: dt) }
             gaze[0].step(to: gazeTo.x, k: 120, damping: 0.85, dt: dt)
             gaze[1].step(to: gazeTo.y, k: 120, damping: 0.85, dt: dt)
-            pos[0].step(to: posTo.x, k: 30, damping: 0.75, dt: dt)
-            pos[1].step(to: posTo.y, k: 30, damping: 0.75, dt: dt)
+            pos[0].step(to: posTo.x, k: 65, damping: 0.75, dt: dt)
+            pos[1].step(to: posTo.y, k: 65, damping: 0.75, dt: dt)
             // Stopping, after a move or a glance, flattens the eyes along the way they were going and widens
             // them across, like a ball hitting a wall; the spring then stretches them back along the same line.
             let v = SIMD2(pos[0].v + gaze[0].v * 0.05, pos[1].v + gaze[1].v * 0.035), speed = simd_length(v)
@@ -285,7 +285,7 @@ public final class Face {
             if mood == .curious && now >= nextTilt { tiltSide = -tiltSide; nextTilt = now + rng.next(in: 2.5...4) }
             // Only curious tilts the head (like a dog); moving turns it instead.
             tilt.step(to: mood == .curious ? 0.2 * tiltSide : 0, k: 60, damping: 0.5, dt: dt)
-            yaw.step(to: max(-0.6, min(0.6, pos[0].v * 0.45)), k: 160, damping: 0.85, dt: dt)
+            yaw.step(to: max(-0.35, min(0.35, pos[0].v * 0.5)), k: 310, damping: 0.85, dt: dt)
             blink.step(to: now - blinkAt < 0.09 ? 1 : 0, k: 1400, damping: 0.9, dt: dt)
             sleepy.step(to: mood == .sleep ? 1 : 0, k: 20, damping: 1, dt: dt)
             squash.step(to: 0, k: 260, damping: 0.35, dt: dt)
