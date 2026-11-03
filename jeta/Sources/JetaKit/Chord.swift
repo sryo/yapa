@@ -51,7 +51,7 @@ public struct Chord {
     private var count = 0, countSince = 0.0, landing = true
     private var locked: (control: Control?, fingers: Int)?
     private var originY = 0.0, lastCentre = SIMD2<Double>.zero, unit = 0
-    private var armed: Decision?
+    private var armed: Decision?, lockedAt = 0.0
 
     public init() {}
 
@@ -66,7 +66,9 @@ public struct Chord {
             countSince = t
             // A finger coming or going moves the centre; that jump isn't a drag.
             if locked != nil { originY += centre.y - lastCentre.y }
-            // A finger landing after the chord locked means another chord was meant: this one stops acting.
+            // A finger landing just after the chord locked, before anything moved, was part of it: count again.
+            if locked != nil && landing && unit == 0 && armed == nil && t - lockedAt < 0.15 { locked = nil }
+            // A finger landing later means another chord was meant: this one stops acting.
             if locked != nil && landing {
                 locked?.control = nil
                 if armed != nil { armed = nil; return [.armed(nil)] }
@@ -77,6 +79,7 @@ public struct Chord {
             let wide = touches.values.contains { simd_length($0 - centre) > Self.wideRadius }
             let control: Control? = n > 2 ? nil : wide ? .spread : prompt ? .decide : .scrub
             self.locked = (control, n)
+            lockedAt = t
             originY = centre.y
             return [.began(control, fingers: n)]
         }
