@@ -4,7 +4,7 @@ import Foundation
 // Replays 1,000 seeded streams of Hardware Buddy turn events, as the Claude app forwards them from every session,
 // through NoticeBoard. Each stream mixes the manager's notices (in text, or in an echo when the app strips text,
 // written with the small slips a model makes) with other sessions' chatter, user turns and talk about the format.
-// Prints, as JSON arrays: notices missed, misread and invented per 1,000 streams, and µs per event.
+// Prints, as JSON arrays: notices missed, misread and invented per 1,000 streams, and µs per event for each 100.
 var rng = Seeded(7)
 let sessions = ["server", "che", "bluetooth", "push-to-talk", "jeta", "docs"]
 let questions = ["Which hostname for the tunnel?", "Merge the branch now?", "Keep the old build?",
@@ -29,8 +29,9 @@ func written(_ s: String, _ q: String) -> String {
     }
 }
 
-var missed = 0, misread = 0, invented = 0, events = 0, ns: UInt64 = 0
-for _ in 0..<1000 {
+var missed = 0, misread = 0, invented = 0, events = 0, ns: UInt64 = 0, batches: [Double] = []
+for k in 0..<1000 {
+    if k % 100 == 0 && events > 0 { batches.append(Double(ns) / Double(events) / 1000); ns = 0; events = 0 }
     var board = NoticeBoard(), want: [String: String] = [:], stream: [[String: Any]] = []
     for _ in 0..<Int.random(in: 6...14, using: &rng) {
         let s = pick(sessions), q = pick(questions)
@@ -63,7 +64,8 @@ for _ in 0..<1000 {
 print("[\(missed)]")
 print("[\(misread)]")
 print("[\(invented)]")
-print("[\(String(format: "%.3f", Double(ns) / Double(events) / 1000))]")
+batches.append(Double(ns) / Double(events) / 1000)
+print("[" + batches.map { String(format: "%.3f", $0) }.joined(separator: ", ") + "]")
 
 /// A seeded generator (splitmix64), so every run replays the same streams.
 struct Seeded: RandomNumberGenerator {
