@@ -224,6 +224,20 @@ final class TextMotionTests: XCTestCase {
         }
     }
 
+    // T7: options too long to sit side by side, popped as when chosen, go one per row, each whole and on screen.
+    func testT7_LongOptionsGoOnePerRow() {
+        let s = screen("jeta: server needs you · Which way? · keep the old build | rebuild everything from scratch | skip")
+        let o = s.place(width: w, height: h).filter { $0.style == .option || $0.style == .suggestion }
+        XCTAssertEqual(o.count, 3)
+        XCTAssertEqual(Set(o.map(\.y)).count, 3, "options share a row")
+        for l in o {
+            XCTAssertLessThanOrEqual(Double(l.text.count) * l.size * 0.52 * 1.15, l.width, "\(l.text) doesn't fit popped")
+            XCTAssertLessThanOrEqual(l.y + l.height, h, "\(l.text) runs off the bottom")
+        }
+        let short = question.place(width: w, height: h).filter { $0.style == .option || $0.style == .suggestion }
+        XCTAssertEqual(Set(short.map(\.y)).count <= 2 && short[0].x != short[1].x, true, "short options stay side by side")
+    }
+
     // T8: Talk's notes (listening, sending, what che typed) take the hint's place; they rise from the bottom edge
     // and sink back below it, since the face isn't what's saying them.
     func testT8_NotesRiseFromTheBottom() {

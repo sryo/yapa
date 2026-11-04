@@ -201,7 +201,7 @@ extension Screen {
     }
 
     /// Where each line goes on a `width`×`height` point screen. A question sits under the face, centred, its
-    /// options side by side (the suggested one first, bigger and bolder); the detail and the session list take
+    /// options side by side (the suggested one first, bigger and bolder), or one per row when they wouldn't fit; the detail and the session list take
     /// the right of the screen while the face waits in the corner.
     public func place(width w: Double, height h: Double) -> [Placed] {
         let open = mode == .detail || mode == .roster || mode == .reply
@@ -209,11 +209,16 @@ extension Screen {
         let lines = self.lines(width: Screen.columns(width: w, height: h, open: open))
         let isOption = { (l: Line) in l.style == .option || l.style == .suggestion }
         let options = lines.filter(isOption).count
-        let optionWidth = options == 0 ? 0 : min(w * 0.22, (w - (open ? left : w * 0.12) * 2) / Double(options) - 10)
-        var optionX = open ? left : (w - (optionWidth + 10) * Double(options) + 10) / 2
+        let side = open ? left : w * 0.12
+        var optionWidth = options == 0 ? 0 : min(w * 0.22, (w - side * 2) / Double(options) - 10)
+        // Options that wouldn't fit side by side, popped when chosen (the suggested one bigger still), go one per row.
+        let rows = lines.contains { isOption($0) && Double($0.text.count) * size * ($0.style == .suggestion ? 1.35 : 1) * 0.52 * 1.15 > optionWidth }
+        if rows { optionWidth = w - side - (open ? w * 0.08 : side) }
+        var optionX = open || rows ? side : (w - (optionWidth + 10) * Double(options) + 10) / 2
         // A note alone, on the bare face, sits at the bottom. Lines keep clear of the edges by as far as the drift goes.
         let (mx, my) = (11.0, 9.0)
-        var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 - my : h * (options > 0 ? 0.6 : 0.66)
+        var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 - my
+            : rows ? max(h * 0.5, h - my - size * (2.5 + 1.8 * Double(lines.count))) : h * (options > 0 ? 0.6 : 0.66)
         var seen: [String: Int] = [:], out: [Placed] = []
         for (i, l) in lines.enumerated() {
             // A box ticked or not is the same option, so it stays where it is.
@@ -225,8 +230,8 @@ extension Screen {
                 let suggested = l.style == .suggestion, s = suggested ? size * 1.35 : size
                 let mid = y + size * 0.95
                 out.append(Placed(key: key, text: l.text, style: l.style, x: optionX, y: mid - s * 0.62, width: optionWidth,
-                                  height: s * 1.4, size: s, bold: suggested, opacity: suggested ? 1 : 0.6, left: open))
-                optionX += optionWidth + 10
+                                  height: s * 1.4, size: s, bold: suggested, opacity: suggested ? 1 : 0.6, left: open || rows))
+                if rows { y += s * 1.5 } else { optionX += optionWidth + 10 }
                 if i + 1 < lines.count, !isOption(lines[i + 1]) { y += size * 2.5 }
                 continue
             }
