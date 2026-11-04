@@ -6,7 +6,9 @@ import simd
 // mood every few seconds and send hook events now and then. Prints, as JSON arrays: frames where a planted foot
 // slides, per 1,000 runs; frames where an ant jumps (moves over 8 pt in one frame), per 1,000 runs; pt an ant walks
 // in a minute while its session does nothing (idle, or busy with no new events); the longest an ant stays within
-// 1 pt of one spot, in s (burn-in); and µs of CPU per frame for the whole colony, for each 50 runs.
+// 1 pt of one spot, in s (burn-in); µs of CPU per frame for the whole colony, for each 50 runs; and, from 20 runs of
+// four mostly idle sessions for 10 minutes (an event every 5 to 20 s, now and then one that needs you), the % of frames
+// where two ants touch (centres under 26 pt apart) and the farthest an ant gets from where it first stood, in pt (p90).
 struct Seeded: RandomNumberGenerator {
     var state: UInt64
     init(_ seed: UInt64) { state = seed }
@@ -81,9 +83,39 @@ for run in 0..<40 {
     walked.append(dist); stuck.append(longest)
 }
 
+// Apart and in place: four sessions, mostly idle.
+var frames4 = 0, touching = 0, strays: [Double] = []
+for seed in 0..<20 {
+    var r = Seeded(UInt64(500 + seed))
+    let colony = Colony(seed: UInt64(500 + seed), now: 0)
+    var s: [(id: String, mood: Mood, front: Bool, events: Int?)] = (0..<4).map { ("s\($0)", .idle, false, 0) }
+    colony.update(s, at: 0)
+    var start: [String: SIMD2<Double>] = [:], far: [String: Double] = [:], next = 5.0
+    for frame in 0..<(60 * 600) {
+        let t = Double(frame) / 60
+        if t >= next {
+            next = t + Double.random(in: 5...20, using: &r)
+            let i = Int.random(in: 0..<4, using: &r), roll = Double.random(in: 0...1, using: &r)
+            if roll < 0.15 { s[i].mood = s[i].mood == .attention ? .idle : .attention } else { s[i].mood = roll < 0.6 ? .busy : .idle; s[i].events! += 1 }
+            let needing = s.firstIndex { $0.mood == .attention }
+            for k in s.indices { s[k].front = k == needing }
+            colony.update(s, at: t)
+        }
+        let shapes = colony.shapes(at: t)
+        guard t >= 2 else { continue }
+        frames4 += 1
+        for a in shapes { let o = start[a.id] ?? a.centre; start[a.id] = o; far[a.id] = max(far[a.id] ?? 0, simd_length(a.centre - o)) }
+        if shapes.indices.contains(where: { i in shapes.indices.contains { j in j > i && simd_length(shapes[i].centre - shapes[j].centre) < 26 } }) { touching += 1 }
+    }
+    strays += far.values
+}
+strays.sort()
+
 func json(_ v: [Double]) -> String { "[" + v.map { String(format: "%.3f", $0) }.joined(separator: ",") + "]" }
 print(json([Double(slides) * 1000 / Double(runs)]))
 print(json([Double(jumps) * 1000 / Double(runs)]))
 print(json(walked))
 print(json(stuck))
 print(json(batches))
+print(json([100 * Double(touching) / Double(frames4)]))
+print(json([strays[strays.count * 9 / 10]]))
