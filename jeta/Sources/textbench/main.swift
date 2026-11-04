@@ -86,7 +86,7 @@ for run in 0..<1000 {
         for a in shown {
             if let b = prev.first(where: { $0.line.key == a.line.key }) {
                 let seen = (a.opacity > 0.05 && !off(a)) || (b.opacity > 0.05 && !off(b))
-                if (seen && hypot(a.cx - b.cx, a.cy - b.cy) > 40) || abs(a.opacity - b.opacity) > 0.35 { jumped = true }
+                if seen && (hypot(a.cx - b.cx, a.cy - b.cy) > 40 || abs(a.opacity - b.opacity) > 0.35) { jumped = true }
             } else if a.opacity > 0.05 && !off(a) { jumped = true }
         }
         for b in prev where b.opacity > 0.05 && !shown.contains(where: { $0.line.key == b.line.key })
