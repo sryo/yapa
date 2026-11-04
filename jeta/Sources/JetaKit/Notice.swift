@@ -35,6 +35,11 @@ public struct NoticeBoard {
 
     public init() {}
 
+    /// The user wrote to the Claude Code session that asked (they answered at the desktop): its questions go.
+    public mutating func answered(by session: String) {
+        pending.removeAll { $0.from == session }
+    }
+
     public mutating func take(_ event: Data) {
         if let e = (try? JSONSerialization.jsonObject(with: event)) as? [String: Any] { take(e) }
     }

@@ -83,6 +83,11 @@ final class FaceView: UIView {
         screen.ask(session: who, what.isEmpty ? p.tool : "\(p.tool): \(what)")
     }
 
+    func answered(by session: String) {
+        board.answered(by: session)
+        screen.update(board)
+    }
+
     @discardableResult func take(_ event: Data) -> [String] {
         let old = board.pending
         board.take(event)

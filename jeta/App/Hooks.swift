@@ -9,6 +9,8 @@ final class HookListener {
     var onChange: (() -> Void)?
     /// The manager's `jeta:` lines, as the turn events the notice board reads.
     var onTurn: ((Data) -> Void)?
+    /// A session got a prompt from the user, so whatever it asked was answered at the desktop.
+    var onPrompt: ((String) -> Void)?
     private var waiting: [String: NWConnection] = [:]
     private var listener: NWListener?
     private var timer: Timer?
@@ -92,6 +94,7 @@ final class HookListener {
         if r.path.hasSuffix("?hold=1") { e["jeta_hold"] = true }
         let got = desk.take(e, at: CACurrentMediaTime())
         if let turn = Desk.turn(e) { onTurn?(turn) }
+        if e["hook_event_name"] as? String == "UserPromptSubmit", let id = e["session_id"] as? String { onPrompt?(id) }
         save()
         settle(got.settled)
         if let id = got.hold { waiting[id] = c } else { send(c, Data()) }

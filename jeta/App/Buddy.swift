@@ -53,6 +53,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         // Every session's turn events go to the face's notice board; the time each notice lands is logged.
         buddy.onTurn = { [weak self] line in self?.notice(Data(line.utf8)) }
         hooks.onTurn = { [weak self] in self?.notice($0) }
+        hooks.onPrompt = { [weak self] in self?.view.answered(by: $0) }
         hooks.onLog = { [weak self] in self?.log($0) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.update() }
         // The sessions kept from before the app last quit come back as faces straight away.

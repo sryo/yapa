@@ -82,4 +82,14 @@ final class NoticeTests: XCTestCase {
         board.take(Data("{not json".utf8))
         XCTAssertEqual(board.pending, [Notice(session: "che", text: "Ready?")])
     }
+
+    // A question answered at the desktop (the asking session got a prompt) leaves the pad; others stay.
+    func testAnsweredAtTheDesktopLeaves() {
+        var b = NoticeBoard()
+        for (line, from) in [("jeta: server needs you · Which port? · 8443 | 8080", "m1"), ("jeta: che needs you · Keep it?", "m2")] {
+            b.take(["evt": "turn", "role": "assistant", "session_id": from, "content": [["type": "text", "text": line]]])
+        }
+        b.answered(by: "m1")
+        XCTAssertEqual(b.pending.map(\.session), ["che"])
+    }
 }
