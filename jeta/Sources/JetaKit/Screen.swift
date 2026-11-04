@@ -50,6 +50,9 @@ public struct Screen {
     private var replies: [Reply] = [], reading: String?, scroll = 0, newest = -Double.infinity
     /// How many lines of a reply show at once.
     static let readLines = 7
+    /// How long text stays up with nobody touching the pad before it goes back into its ant, and the pad rests.
+    static let unattended = 180.0
+    private var touched = 0.0, shownAt = 0.0, seen = "", folded = false
 
     public init() {}
 
@@ -59,6 +62,7 @@ public struct Screen {
     var current: Notice? { asking ?? (board.pending.isEmpty ? nil : board.pending[page % board.pending.count]) }
 
     public mutating func update(_ b: NoticeBoard) {
+        if b.pending.contains(where: { !board.pending.contains($0) }) { folded = false }
         board = b
         if page >= board.pending.count { page = 0 }
         settle()
@@ -69,6 +73,7 @@ public struct Screen {
         let n = Notice(session: session, text: what, options: ["Allow", "Deny"])
         guard asking != n else { return }
         asking = n
+        folded = false
         if mode == .face || mode == .roster { mode = .question }
     }
 
@@ -80,6 +85,7 @@ public struct Screen {
         let n = askedNotice
         guard asking != n else { return }
         asking = n
+        folded = false
         if mode == .face || mode == .roster || mode == .reply { mode = .question }
     }
 
@@ -123,10 +129,44 @@ public struct Screen {
     private mutating func settle() {
         let any = asking != nil || !board.pending.isEmpty
         switch mode {
-        case .face: if any { mode = .question }
+        case .face: if any && !folded { mode = .question }
         case .question, .detail: if !any { mode = .face }
         case .roster, .reply: break
         }
+    }
+
+    /// Where all the text is nudged to now, so no line sits on the same pixels for long (the SE's LCD keeps a ghost
+    /// of what stays put for hours): two very slow waves (15 and 11 minutes, 8 and 6 pt) and a 3 pt circle every 2
+    /// minutes, always faster than they are, so it creeps at 0.09 to 0.23 pt a second and never stops.
+    public var drift: SIMD2<Double> {
+        let w = 2 * Double.pi
+        return SIMD2(8 * sin(w * now / 900) + 3 * cos(w * now / 120), 6 * sin(w * now / 660) + 3 * sin(w * now / 120))
+    }
+
+    /// Nobody has touched the pad for a while, no text is up and nothing needs you: the backlight can dim.
+    public var resting: Bool { mode == .face && asking == nil && board.pending.isEmpty && now - touched >= Screen.unattended }
+
+    /// A finger on the pad: whatever is up stays up a while longer.
+    public mutating func attend() { touched = now }
+
+    /// A tap brings back a question folded away; true if there was one.
+    public mutating func unfold() -> Bool {
+        attend()
+        guard folded else { return false }
+        folded = false
+        settle()
+        return mode != .face
+    }
+
+    /// Every frame: text left up untouched goes back into its ant, and a question folds until a new one comes or a
+    /// tap brings it back. A permission request stays, since only its buttons answer it.
+    public mutating func idle() {
+        let key = "\(mode) \(current?.text ?? "") \(reading ?? "")"
+        if key != seen { seen = key; shownAt = now }
+        if mode != .face { folded = false }
+        guard mode != .face, asking == nil, now - max(touched, shownAt) >= Screen.unattended else { return }
+        folded = true
+        mode = .face
     }
 
     public mutating func tap() {

@@ -133,6 +133,7 @@ for (asks, set) in left {
         for k in 0..<(600 * 30) {
             let t = start + Double(k) / 30
             screen.now = t
+            screen.idle()
             motion.show(screen.place(width: w, height: h), from: mid, at: t)
             let seen = motion.frame(at: t).filter { $0.opacity > 0.05 && !off($0) }
             for s in seen {

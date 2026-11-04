@@ -211,8 +211,9 @@ extension Screen {
         let options = lines.filter(isOption).count
         let optionWidth = options == 0 ? 0 : min(w * 0.22, (w - (open ? left : w * 0.12) * 2) / Double(options) - 10)
         var optionX = open ? left : (w - (optionWidth + 10) * Double(options) + 10) / 2
-        // A note alone, on the bare face, sits at the bottom.
-        var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 : h * (options > 0 ? 0.6 : 0.66)
+        // A note alone, on the bare face, sits at the bottom. Lines keep clear of the edges by as far as the drift goes.
+        let (mx, my) = (11.0, 9.0)
+        var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 - my : h * (options > 0 ? 0.6 : 0.66)
         var seen: [String: Int] = [:], out: [Placed] = []
         for (i, l) in lines.enumerated() {
             // A box ticked or not is the same option, so it stays where it is.
@@ -230,11 +231,12 @@ extension Screen {
                 continue
             }
             let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
-            out.append(Placed(key: key, text: l.text, style: l.style, x: open ? left : 0, y: y, width: open ? w - left : w,
+            out.append(Placed(key: key, text: l.text, style: l.style, x: open ? left : mx, y: y, width: open ? w - left - mx : w - 2 * mx,
                               height: s * 1.4, size: s, bold: false, opacity: l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4,
                               left: open))
             y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
         }
-        return out
+        let d = drift
+        return out.map { var p = $0; p.x += d.x; p.y += d.y; return p }
     }
 }
