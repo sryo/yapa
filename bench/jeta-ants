@@ -2,7 +2,9 @@
 # Measures goal 2's ants, one per session, on this Mac: from 200 seeded 2-minute runs of sessions coming, going,
 # changing mood and sending hook events, frames where a planted foot slides and where an ant jumps, per 1,000 runs;
 # from 40 sessions left alone for 3 minutes, pt an ant walks in its last minute (calm) and the longest it stays within
-# 1 pt of one spot (burn-in); and µs of CPU per frame for the whole colony. Prints the path of a K1 run file.
+# 1 pt of one spot (burn-in); µs of CPU per frame for the whole colony; and from 20 runs of four mostly idle sessions
+# for 10 minutes, the % of frames where two ants touch and how far (p90, pt) an ant gets from where it first stood, besides coming forward when it needs you.
+# Prints the path of a K1 run file.
 cd "$(dirname "$0")/.." || exit 1
 out=$(swift run -q -c release --package-path jeta antbench) || exit 1
 line() { echo "$out" | sed -n "$1p" | tr -d '[]'; }
@@ -15,6 +17,8 @@ cat > "$file" <<JSON
   "ants_jumps_per_1000": {"dir": "lower", "kind": "quality", "samples": [$(line 2)]},
   "ants_idle_pt_per_min": {"dir": "lower", "kind": "count", "samples": [$(line 3)]},
   "ants_still_longest_s": {"dir": "lower", "kind": "quality", "samples": [$(line 4)]},
+  "ants_touching_pct": {"dir": "lower", "kind": "quality", "samples": [$(line 6)]},
+  "ants_stray_pt": {"dir": "lower", "kind": "quality", "samples": [$(line 7)]},
   "ants_frame_us": {"dir": "lower", "kind": "time", "noisy": true, "samples": [$us]}},
  "limits": {"ants_still_longest_s": 10}}
 JSON

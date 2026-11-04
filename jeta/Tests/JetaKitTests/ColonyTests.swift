@@ -78,7 +78,7 @@ final class ColonyTests: XCTestCase {
         c.update([("a", .idle, false, nil), ("b", .busy, false, 6)], at: 90)
         start = [c.position(of: "b")!]
         _ = c.shapes(at: 93)
-        XCTAssertGreaterThan(simd_length(c.position(of: "b")! - start[0]), 20, "a new hook event sends it on an errand")
+        XCTAssertGreaterThan(simd_length(c.position(of: "b")! - start[0]), 10, "a new hook event sends it on an errand")
     }
 
     // Only an ant that needs you grows; a finished one doesn't hop or spin.
@@ -125,5 +125,58 @@ final class ColonyTests: XCTestCase {
         _ = c.shapes(at: 8)
         XCTAssertLessThan(simd_length(c.position(of: "a")! - SIMD2(160, 254)), 6)
         XCTAssertLessThan(simd_length(c.position(of: "b")! - b0), 9, "asleep, it only drifts (under 1.5 pt a second)")
+    }
+
+    // Each session's ant has a spot of its own, spread over the screen, and a new one appears at its own spot, not
+    // on top of another.
+    func testEachAntHasItsOwnSpot() {
+        let c = Colony(seed: 3, now: 0)
+        var all: [(id: String, mood: Mood, front: Bool, events: Int?)] = (0..<4).map { ("s\($0)", .idle, false, nil) }
+        c.update(all, at: 0)
+        _ = c.shapes(at: 2)
+        func apart() -> Double {
+            let p = all.map { c.position(of: $0.id)! }
+            return p.indices.flatMap { i in p.indices.filter { $0 > i }.map { simd_length(p[i] - p[$0]) } }.min()!
+        }
+        XCTAssertGreaterThan(apart(), 100)
+        all.append(("s4", .idle, false, nil))
+        c.update(all, at: 2)
+        _ = c.shapes(at: 2.1)
+        XCTAssertGreaterThan(apart(), 60, "the new one isn't on another")
+        _ = c.shapes(at: 15)
+        XCTAssertGreaterThan(apart(), 80, "five spread out")
+    }
+
+    // Busy ants run their errands near their own spot and walk around each other, so they never touch and each stays
+    // where you know it.
+    func testBusyAntsStayApartAndInPlace() {
+        let c = Colony(seed: 4, now: 0)
+        var all: [(id: String, mood: Mood, front: Bool, events: Int?)] = (0..<4).map { ("s\($0)", .busy, false, 0) }
+        c.update(all, at: 0)
+        _ = c.shapes(at: 2)
+        let home = Dictionary(uniqueKeysWithValues: all.map { ($0.id, c.position(of: $0.id)!) })
+        for k in 1...120 {
+            all[k % 4].events! += 1
+            c.update(all, at: 2 + Double(k))
+            for f in 1...30 {
+                let p = c.shapes(at: 2 + Double(k) + Double(f) / 30).map(\.centre)
+                for i in p.indices { for j in p.indices where j > i { XCTAssertGreaterThan(simd_length(p[i] - p[j]), 26) } }
+            }
+        }
+        for a in all { XCTAssertLessThan(simd_length(c.position(of: a.id)! - home[a.id]!), 70, "\(a.id) stayed near its spot, which creeps against burn-in") }
+    }
+
+    // The ant that needs you comes forward; answered, it walks back to its own spot.
+    func testAnsweredItGoesBack() {
+        let c = Colony(seed: 5, now: 0)
+        c.update([("a", .idle, false, nil), ("b", .idle, false, nil)], at: 0)
+        _ = c.shapes(at: 2)
+        let home = c.position(of: "a")!
+        c.update([("a", .attention, true, nil), ("b", .idle, false, nil)], at: 2)
+        _ = c.shapes(at: 10)
+        XCTAssertLessThan(simd_length(c.position(of: "a")! - SIMD2(160, 254)), 10)
+        c.update([("a", .idle, false, nil), ("b", .idle, false, nil)], at: 10)
+        _ = c.shapes(at: 20)
+        XCTAssertLessThan(simd_length(c.position(of: "a")! - home), 30)
     }
 }
