@@ -4,8 +4,7 @@ import UIKit
 
 /// Advertises the pad as a Claude Hardware Buddy on the Nordic UART Service and lets the desktop drive the face,
 /// or Claude Code's hooks over Wi-Fi when a session reports through them (Bluetooth is ignored then).
-/// While a prompt waits, the screen shows it with Allow and Deny; a tap on one answers it, and so does a two-finger
-/// drag up or down.
+/// While a prompt waits, the screen shows it with Allow and Deny, and a tap on one answers it.
 final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     private static let service = CBUUID(string: "6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     // Encryption-only characteristics make the first access trigger iOS pairing with a passkey.
@@ -18,6 +17,8 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     // While a Claude Code session reports through the hooks they drive the face and Bluetooth is ignored.
     private let hooks = HookListener()
     private var hooked = false
+    /// When the Mac was last asked for the sessions' names, and whether it's being asked now.
+    private var namesAt = -100.0, asking = false, askedFor: Set<String> = [], namedCount = 0
     private var manager: CBPeripheralManager!
     private var timer: Timer?
     private var outbox: [Data] = [], mtu = 20, wasConnected = false, wasWaiting = false, shown: Mood?, promptID: String?
@@ -31,8 +32,12 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             guard let self else { return }
             let t = CACurrentMediaTime(), active = self.hooks.desk.active
             if active != self.hooked { self.log(active ? "hooks from the Mac" : "no hook sessions left") }
+            if UserDefaults.standard.stringArray(forKey: "folders") != self.hooks.desk.folders {
+                UserDefaults.standard.set(self.hooks.desk.folders, forKey: "folders")
+            }
             self.hooked = active
             if active { self.buddy.receive(self.hooks.desk.line(at: t), at: t).forEach(self.send) }
+            self.askNames(at: t)
             self.view.crowd.update(self.hooks.desk.members(at: t), at: t)
             self.view.show(replies: self.hooks.desk.replies())
             self.update()
@@ -44,7 +49,9 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.log("answered \(id) \(Self.ms())")
             return true
         }
-        view.canDecide = { [weak self] in self?.buddy.prompt(at: CACurrentMediaTime()) != nil }
+        // The folders sessions ran in outlive the app, for the dial's new session.
+        hooks.desk.folders = UserDefaults.standard.stringArray(forKey: "folders") ?? []
+        view.folders = { [weak self] in self?.hooks.desk.folders ?? [] }
         // A tap on a session's face brings its prompt forward, so the next tap answers that session's hook.
         view.onFocus = { [weak self] id in
             self?.hooks.desk.focus = id
@@ -83,6 +90,27 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         }
         promptID = id; wasWaiting = waiting
         if hooks.desk.active { view.ask(hooks.desk.asked()) } else { view.ask(buddy.prompt(at: t)) }
+    }
+
+    /// Asks che for the Claude app's names of the sessions, as soon as a new one reports and every 30 s,
+    /// since the app titles a session after its first turn and can rename it.
+    private func askNames(at t: Double) {
+        let desk = hooks.desk
+        guard !asking, let talk = view.talk, !desk.ids.isEmpty,
+              t - namesAt > (Set(desk.unnamed).subtracting(askedFor).isEmpty ? 30 : 3) else { return }
+        // Until Bonjour finds the Mac a request fails at once, so the new ones are asked for again until one answers.
+        let ids = desk.ids
+        asking = true; namesAt = t
+        talk.names(ids) { [weak self] names in
+            guard let self else { return }
+            self.asking = false
+            guard let names else { return }
+            self.askedFor = Set(ids)
+            if names.count != self.namedCount { self.log("the Mac named \(names.count) of \(ids.count) sessions") }
+            self.namedCount = names.count
+            for (id, n) in names { desk.name(id, n.name, parent: n.parent) }
+            self.view.crowd.update(desk.members(at: CACurrentMediaTime()), at: CACurrentMediaTime())
+        }
     }
 
     private func notice(_ event: Data) {

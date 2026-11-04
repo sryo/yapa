@@ -7,14 +7,14 @@ final class CrowdTests: XCTestCase {
 
 
     // R1: each session's face shows its state: working is busy, needs you is attention, finished is proud and then
-    // dozes, failed is dizzy, quiet is asleep.
+    // dozes, failed needs you too (it won't go on until you look), quiet is asleep.
     func testR1_MoodFollowsState() {
         let c = Crowd(seed: 1, now: 0)
         c.update([s("a", .working(reading: false)), s("b", .needs), s("c", .finished(at: 0)), s("d", .failed), s("e", .quiet)], at: 0)
         XCTAssertEqual(c.face("a")?.mood, .busy)
         XCTAssertEqual(c.face("b")?.mood, .attention)
         XCTAssertEqual(c.face("c")?.mood, .proud)
-        XCTAssertEqual(c.face("d")?.mood, .dizzy)
+        XCTAssertEqual(c.face("d")?.mood, .attention)
         XCTAssertEqual(c.face("e")?.mood, .sleep)
         c.update([s("c", .finished(at: 0))], at: 6)
         XCTAssertEqual(c.face("c")?.mood, .idle, "proud for 5 s, then idle")

@@ -16,6 +16,10 @@ public struct Settle: Equatable {
 public final class Desk {
     struct Session {
         var name: String, started: Double, running = false, reading = false, seen = 0.0, events = 0
+        /// The session that started it, and whether the Mac has named it yet (until then it goes by its folder).
+        var parent: String?, named = false
+        /// The tool it's on and with what, and when its turn began.
+        var doing = "", turn: Double?
         var finished: Double?, failed = false
         /// The text the session last stopped on, and when.
         var reply: String?, replied = 0.0
@@ -24,6 +28,8 @@ public final class Desk {
     var sessions: [String: Session] = [:], held: [Held] = [], msg = "", count = 0
     /// The session a tap brought forward: its prompt is the one shown and answered.
     public var focus: String?
+    /// The folders sessions ran in, the latest first: where the dial offers to start a new one.
+    public var folders: [String] = []
     // Ids carry this run's tag, so a pad that restarted never reuses one a hook still holds from before.
     let run = UUID().uuidString.prefix(4).lowercased()
 
@@ -34,6 +40,9 @@ public final class Desk {
     public func take(_ e: [String: Any], at t: Double) -> (hold: String?, settled: [Settle]) {
         guard let event = e["hook_event_name"] as? String, let id = e["session_id"] as? String else { return (nil, []) }
         let tool = e["tool_name"] as? String ?? "", input = e["tool_input"] as? [String: Any] ?? [:]
+        if let cwd = e["cwd"] as? String, cwd.hasPrefix("/"), folders.first != cwd {
+            folders = Array(([cwd] + folders.filter { $0 != cwd }).prefix(12))
+        }
         var s = sessions[id] ?? Session(name: ((e["cwd"] as? String ?? "") as NSString).lastPathComponent, started: t)
         s.seen = t
         s.events += 1
@@ -61,11 +70,16 @@ public final class Desk {
             sessions[id]?.finished = nil
             sessions[id]?.failed = false
             sessions[id]?.reading = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "LS"].contains(tool)
+            if event == "UserPromptSubmit" || sessions[id]?.turn == nil { sessions[id]?.turn = t }
+            if event == "UserPromptSubmit" { sessions[id]?.doing = "thinking" }
+            if event == "PreToolUse" { sessions[id]?.doing = Desk.doing(tool, input) }
             if event == "PreToolUse" { msg = "\(s.name): \(tool) \(detail(input))" }
         case "Stop", "StopFailure":
             sessions[id]?.running = false
             sessions[id]?.finished = event == "Stop" ? t : nil
             sessions[id]?.failed = event == "StopFailure"
+            sessions[id]?.turn = nil
+            sessions[id]?.doing = ""
             if let m = e["last_assistant_message"] as? String, !m.isEmpty { sessions[id]?.reply = m; sessions[id]?.replied = t }
         default:
             break
@@ -79,9 +93,29 @@ public final class Desk {
 
     /// The manager's `jeta:` lines, which over Bluetooth come in the Claude app's turn events, as a turn event the
     /// notice board reads: an `echo` in a Bash call (seen before it runs), or the text a session ended its turn on.
-    public static func turn(_ e: [String: Any]) -> Data? {
+    /// The question a session's turn ends on in the Claude app (its next-step box, with a button per answer) becomes
+    /// the same kind of line, under `name`, so the pad offers those answers and a pick is typed into the session.
+    public static func turn(_ e: [String: Any], name: String = "") -> Data? {
         let block: [String: Any]
         switch e["hook_event_name"] as? String {
+        case "PreToolUse" where (e["tool_name"] as? String ?? "").hasSuffix("__wrap_up"):
+            let input = e["tool_input"] as? [String: Any] ?? [:]
+            guard let ask = (input["ask"] as? String).map(clean), !ask.isEmpty, !name.isEmpty else { return nil }
+            // An app action's button shows the app's own label, which the call may leave out.
+            let options = (input["actions"] as? [[String: Any]] ?? []).compactMap { a in
+                (a["label"] as? String ?? (a["action"] as? String).map { $0.replacingOccurrences(of: "_", with: " ").capitalized })
+                    .map(clean)
+            }.filter { !$0.isEmpty }
+            // A line's session is one word, so the name's spaces are non-breaking ones; one answer isn't a choice.
+            let line = "jeta: \(name.replacingOccurrences(of: " ", with: "\u{00A0}")) needs you · \(ask)"
+                + (options.count >= 2 ? " · " + options.joined(separator: " | ") : "")
+            block = ["type": "text", "text": line]
+        // A failed turn needs you: it won't go on until you look, so it asks like a question, with the error.
+        case "StopFailure" where !name.isEmpty:
+            let why = [e["error"], e["error_message"], e["last_assistant_message"]].lazy.compactMap { $0 as? String }.first { !$0.isEmpty }
+            let line = "jeta: \(name.replacingOccurrences(of: " ", with: "\u{00A0}")) needs you · "
+                + clean("stopped on an error" + (why.map { ": " + String($0.prefix(200)) } ?? ""))
+            block = ["type": "text", "text": line]
         case "PreToolUse":
             guard let c = (e["tool_input"] as? [String: Any])?["command"] as? String, c.contains("jeta:") else { return nil }
             block = ["type": "tool_use", "input": ["command": c]]
@@ -95,6 +129,23 @@ public final class Desk {
         return try? JSONSerialization.data(withJSONObject: turn)
     }
 
+    /// A tool call in a few words: an MCP tool by its own name, then what it's on.
+    static func doing(_ tool: String, _ input: [String: Any]) -> String {
+        let name = tool.hasPrefix("mcp__") ? (tool.components(separatedBy: "__").last ?? tool).replacingOccurrences(of: "_", with: " ") : tool
+        var on = detail(input)
+        if on.hasPrefix("/"), !on.contains(" ") { on = (on as NSString).lastPathComponent }
+        return on.isEmpty ? name : name + " " + (on.count > 40 ? String(on.prefix(39)) + "…" : on)
+    }
+
+    /// What the pad calls a session.
+    public func name(of id: String) -> String { sessions[id]?.name ?? "" }
+
+    /// Text that can sit in one part of a `jeta:` line: no dots or bars, on one line.
+    static func clean(_ s: String) -> String {
+        s.replacingOccurrences(of: "·", with: ",").replacingOccurrences(of: "|", with: "/")
+            .components(separatedBy: .newlines).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
     /// The request a tap answers (the one forward, else the first), with what it would really do.
     public func asked() -> Asked? {
         guard let h = held.first(where: { $0.session == focus }) ?? held.first else { return nil }
@@ -105,6 +156,18 @@ public final class Desk {
                            multi: q["multiSelect"] as? Bool ?? false)
         }
         return Asked(id: h.id, session: name, tool: h.tool, text: "\(h.tool): \(full(input))", questions: questions)
+    }
+
+    /// The sessions the Mac hasn't named yet.
+    public var unnamed: [String] { sessions.filter { !$0.value.named }.map(\.key).sorted() }
+    public var ids: [String] { sessions.keys.sorted() }
+
+    /// Names a session as the Claude app does, with the session that started it; what's already up keeps its name.
+    public func name(_ id: String, _ name: String, parent: String?) {
+        guard sessions[id] != nil, !name.isEmpty else { return }
+        sessions[id]?.name = name
+        sessions[id]?.parent = parent == id ? nil : parent
+        sessions[id]?.named = true
     }
 
     /// Answers a held AskUserQuestion with the labels picked on the pad, as if they were picked in the terminal.
@@ -143,7 +206,8 @@ public final class Desk {
                 : s.failed ? .failed
                 : s.running ? .working(reading: s.reading)
                 : s.finished.map { .finished(at: $0) } ?? .quiet
-            return SessionInfo(id: id, name: s.name, state: state, events: s.events)
+            return SessionInfo(id: id, name: s.name, state: state, events: s.events, parent: s.parent,
+                               doing: s.running ? s.doing : "", since: s.running ? s.turn : nil)
         }
     }
 
@@ -159,6 +223,7 @@ public final class Desk {
         let list: [[String: Any]] = sessions.map { id, s in
             var o: [String: Any] = ["id": id, "name": s.name, "started": s.started - t, "seen": s.seen - t, "events": s.events, "failed": s.failed]
             if let f = s.finished { o["finished"] = f - t }
+            if s.named { o["named"] = true; o["parent"] = s.parent }
             if let r = s.reply { o["reply"] = r; o["replied"] = s.replied - t }
             return o
         }
@@ -177,6 +242,8 @@ public final class Desk {
             v.seen = now + seen
             v.events = s["events"] as? Int ?? 0
             v.failed = s["failed"] as? Bool ?? false
+            v.named = s["named"] as? Bool ?? false
+            v.parent = s["parent"] as? String
             v.finished = (s["finished"] as? Double).map { now + $0 }
             v.reply = s["reply"] as? String
             v.replied = now + (s["replied"] as? Double ?? 0)

@@ -204,4 +204,75 @@ final class DeskTests: XCTestCase {
                     "tool_input": ["command": "git push origin main", "description": "Push"]], at: 2)
         XCTAssertEqual(d.asked()?.text, "Bash: git push origin main (Push)")
     }
+
+    // R2: every folder a session ran in is kept, the latest first and each once, for the dial's new session.
+    func testR2_FoldersSessionsRanIn() {
+        let d = Desk()
+        _ = d.take(event("SessionStart", cwd: "/Users/me/yapa"), at: 1)
+        _ = d.take(event("SessionStart", session: "s2", cwd: "/Users/me/fium"), at: 2)
+        _ = d.take(event("PreToolUse", push), at: 3)
+        XCTAssertEqual(d.folders, ["/Users/me/yapa", "/Users/me/fium"])
+    }
+
+    // R2: a session goes by its folder until the Mac names it as the Claude app does, with the session that started
+    // it, and both outlive a restart.
+    func testR2_SessionsNamedByTheMac() {
+        let d = Desk()
+        _ = d.take(event("SessionStart"), at: 1)
+        _ = d.take(event("SessionStart", session: "s2"), at: 2)
+        XCTAssertEqual(d.members(at: 3).map(\.name), ["yapa", "yapa"])
+        XCTAssertEqual(d.unnamed, ["s1", "s2"])
+        d.name("s2", "jailbreak", parent: "s1")
+        d.name("s9", "gone", parent: nil)
+        XCTAssertEqual(d.unnamed, ["s1"])
+        XCTAssertEqual(d.members(at: 3).last, SessionInfo(id: "s2", name: "jailbreak", state: .quiet, events: 1, parent: "s1"))
+        _ = d.take(event("PermissionRequest", push, session: "s2"), at: 4)
+        XCTAssertEqual(d.asked()?.session, "jailbreak")
+        let e = Desk()
+        e.load(d.save(at: 5, wall: 100), at: 0, wall: 101)
+        XCTAssertEqual(e.members(at: 1).last?.parent, "s1")
+        XCTAssertEqual(e.unnamed, ["s1"])
+    }
+
+    // R10: the question a session's turn ends on in the Claude app shows on the pad with its answers, under the
+    // session's name, and picking one is typed into that session.
+    func testR10_NextStepQuestionsReachThePad() {
+        var board = NoticeBoard()
+        let wrap = event("PreToolUse", ["tool_name": "mcp__ccd_turn__wrap_up", "tool_input": [
+            "recap": "Built it.", "ask": "Commit the dial · and names?",
+            "actions": [["label": "Yes, commit"], ["action": "create_pr"], ["label": "Not | yet"]]]])
+        board.take(Desk.turn(wrap, name: "Old iPhone SE")!)
+        XCTAssertEqual(board.pending.first?.text, "Commit the dial , and names?")
+        XCTAssertEqual(board.pending.first?.options, ["Yes, commit", "Create Pr", "Not / yet"])
+        XCTAssertEqual(board.pending.first?.from, "s1")
+        XCTAssertEqual(board.pending.first?.session, "Old\u{00A0}iPhone\u{00A0}SE")
+        board.answered(by: "s1")
+        XCTAssertTrue(board.pending.isEmpty)
+        XCTAssertNil(Desk.turn(event("PreToolUse", ["tool_name": "mcp__ccd_turn__wrap_up", "tool_input": ["recap": "Done."]]), name: "x"))
+    }
+
+    // R2: a working session says what it's on and since when its turn began; once it stops, neither.
+    func testR2_WhatEachSessionIsDoing() {
+        let d = Desk()
+        _ = d.take(event("UserPromptSubmit"), at: 10)
+        XCTAssertEqual(d.members(at: 11).first?.doing, "thinking")
+        _ = d.take(event("PreToolUse", ["tool_name": "Read", "tool_input": ["file_path": "/Users/me/yapa/ya"]]), at: 12)
+        _ = d.take(event("PreToolUse", ["tool_name": "mcp__ccd_turn__wrap_up", "tool_input": [:]], session: "s2"), at: 13)
+        XCTAssertEqual(d.members(at: 14).map(\.doing), ["Read ya", "wrap up"])
+        XCTAssertEqual(d.members(at: 14).map(\.since), [10, 13])
+        _ = d.take(event("Stop"), at: 20)
+        XCTAssertEqual(d.members(at: 21).first?.doing, "")
+        XCTAssertNil(d.members(at: 21).first?.since)
+    }
+
+    // R10: a failed turn needs you like a question does, with the error as its text, until the session goes on.
+    func testR10_AFailedTurnNeedsYou() {
+        var board = NoticeBoard()
+        board.take(Desk.turn(event("StopFailure", ["error": "rate_limit"]), name: "che")!)
+        XCTAssertEqual(board.pending.first?.text, "stopped on an error: rate_limit")
+        XCTAssertEqual(board.pending.first?.session, "che")
+        board.answered(by: "s1")
+        XCTAssertTrue(board.pending.isEmpty)
+        XCTAssertNotNil(Desk.turn(event("StopFailure"), name: "che"), "with no error given, it still asks")
+    }
 }

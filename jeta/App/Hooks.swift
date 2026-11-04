@@ -93,7 +93,7 @@ final class HookListener {
         }
         if r.path.hasSuffix("?hold=1") { e["jeta_hold"] = true }
         let got = desk.take(e, at: CACurrentMediaTime())
-        if let turn = Desk.turn(e) { onTurn?(turn) }
+        if let turn = Desk.turn(e, name: desk.name(of: e["session_id"] as? String ?? "")) { onTurn?(turn) }
         if e["hook_event_name"] as? String == "UserPromptSubmit", let id = e["session_id"] as? String { onPrompt?(id) }
         save()
         settle(got.settled)

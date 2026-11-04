@@ -7,21 +7,23 @@ final class FaceView: UIView {
     let face = Face(seed: UInt64(Date().timeIntervalSince1970), now: CACurrentMediaTime())
     private var link: CADisplayLink?
     /// The manager's notices, and what the screen shows of them.
-    private var board = NoticeBoard(), screen = Screen()
+    private var board = NoticeBoard()
+    private(set) var screen = Screen()
     /// The text's springs, a layer for each line they show, and where each line rests (to hit-test options).
     private let motion = TextMotion()
-    private var texts: [String: CATextLayer] = [:], placed: [Placed] = []
+    private var texts: [String: CATextLayer] = [:]
+    private(set) var placed: [Placed] = []
     /// The way the last swipe went (-1 left, 1 right), and the mode the text was last shown for.
     private var spoke: String?, swipeWay = 0.0, pageWay = 0.0, was = Screen.Mode.face
     /// An option picked: the line for the manager, and the session it goes to.
     var onChoose: ((String, String?) -> Void)?
     /// Answers the request showing with the labels picked for each of its questions; false if it's gone.
     var onAnswer: (([String: String]) -> Bool)?
-    /// A chord's decision (true for once), and whether a prompt is up for one to answer.
-    var onDecide: ((Bool) -> Bool)?, canDecide: (() -> Bool)?
+    /// A tap on Allow or Deny answers the prompt up (true for once); false when none can be answered.
+    var onDecide: ((Bool) -> Bool)?
     /// A tap brought a session that needs you forward: its prompt is the one the next tap answers.
     var onFocus: ((String) -> Void)?
-    private var talk: Talk?
+    var talk: Talk?
     /// One face per Claude Code session, when two or more report through the hooks; with one, the face above.
     let crowd = Crowd(seed: UInt64(Date().timeIntervalSince1970) &+ 1, now: CACurrentMediaTime())
     private var names: [String: CATextLayer] = [:]
@@ -104,6 +106,8 @@ final class FaceView: UIView {
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         // A tap right after talking stops the pending Enter.
         if talk?.tapped() == true { return }
+        // A tap puts the dial away.
+        if dial.isOpen { dial.close(); return }
         // A question folded away while nobody was looking comes back first.
         if screen.unfold() { return }
         // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
@@ -113,6 +117,7 @@ final class FaceView: UIView {
             switch screen.pick(i) {
             case .decide(let allow):
                 guard onDecide?(allow) == true else { return }
+                colony.answered(crowd.single ? "face" : crowd.front ?? "", allowed: allow)
             case .answer(let answers):
                 guard onAnswer?(answers) == true else { return }
             case .more:
@@ -201,14 +206,26 @@ final class FaceView: UIView {
 
     // Two or more fingers are a chord: with a prompt up, two close fingers answer it; without, they page through
     // the questions. Two wide fingers pick an option.
-    private var chord = Chord(), pointed: Int?
+    private(set) var chord = Chord()
+    /// What two fingers turn through: a new session, the server, the tunnel and disk.
+    var dial = Dial()
+    /// The folders sessions ran in, for a new one; and what yata last said about the phone's parts.
+    var folders: (() -> [String])?
+    var server: [String: Any]?, serverAt = 0.0
+    /// Marks under the two fingers turning the dial, which turn with them.
+    let grip = CAShapeLayer()
+    var gripShown = Spring(x: 0), gripAt = 0.0, gripLast: Chord.Reading?
+    /// The crumbs working ants drop, a minute each, under the ants.
+    fileprivate let crumbLayer = CAShapeLayer()
+    /// The ant held to talk, from when the hold began.
+    fileprivate var heldAnt: String?
     fileprivate var noteEnds: (at: Double, span: Double)?
     fileprivate let pie = CAShapeLayer(), dots = CAShapeLayer()
     fileprivate var dotAt = Spring(x: 0), dotsShown = Spring(x: 0), dotsAt = 0.0, dotCount = 0
     /// The backlight level from before the pad rested (nil while it's lit as the user set it), and how lit it is.
     fileprivate var userBrightness: CGFloat?, lit = Spring(x: 1)
     private var options: [Placed] { screen.asking == nil ? placed.filter { $0.style == .option || $0.style == .suggestion } : [] }
-    private var fingers: [Int: SIMD2<Double>] = [:]
+    private(set) var fingers: [Int: SIMD2<Double>] = [:]
 
     private func track(_ event: UIEvent?) {
         fingers = [:]
@@ -230,43 +247,19 @@ final class FaceView: UIView {
     override func touchesCancelled(_ t: Set<UITouch>, with e: UIEvent?) { track(e); motion.press(nil, at: CACurrentMediaTime()) }
 
     private func feedChord(at t: Double) {
-        chord.prompt = canDecide?() ?? false
-        let u = Double(min(bounds.width, bounds.height)), mid = SIMD2(Double(bounds.midX), Double(bounds.midY))
-        let centre = fingers.isEmpty ? nil : (fingers.values.reduce(.zero, +) / Double(fingers.count) - mid) / u
         for event in chord.update(fingers, at: t) {
             switch event {
-            // Every step is a click you hear and a snap of the eyes to the fingers: the SE has no Taptic Engine.
-            case .began(let c, _):
+            // Every step is a click you hear, since the SE has no Taptic Engine.
+            case .began(2):
                 AudioServicesPlaySystemSound(1104)
-                pointed = nil
-                if let centre { face.poke(at: centre, t: t) }
-            // Two close fingers with no prompt page through the questions, like a swipe; up is the next one.
-            case .step(.scrub, let n):
+                dial.begin(at: t)
+                askServer()
+            case .began: break
+            case .step(let n):
                 AudioServicesPlaySystemSound(1104)
-                swipeWay = n > 0 ? -1 : 1
-                screen.swipe(by: n)
-            // Two wide fingers point at a question's options, down the list as they go down; letting go picks the one
-            // pointed at. Only a drag points, so wide fingers resting send nothing.
-            case .step(.spread, let n):
-                guard !options.isEmpty else { break }
-                pointed = max(0, min(options.count - 1, (pointed ?? -1) - n))
-                let o = options[pointed!]
-                AudioServicesPlaySystemSound(1104)
-                poke(at: CGPoint(x: o.x + o.width / 2, y: o.y + o.height / 2))
-            case .step:
-                AudioServicesPlaySystemSound(1104)
-                if let centre { face.poke(at: centre, t: t) }
-            case .armed(.once): face.set(.proud, at: t)
-            case .armed(.deny): face.set(.focused, at: t)
-            case .armed(nil): face.set(.attention, at: t)
-            case .decided(let d):
-                if onDecide?(d == .once) == true { face.set(d == .once ? .celebrate : .idle, at: t) }
-            case .ended:
-                if let i = pointed, options.indices.contains(i), let line = screen.choose(i) {
-                    motion.choose(options[i].key, at: t)
-                    onChoose?(line, screen.asker)
-                }
-                pointed = nil
+                dial.turn(n, at: t)
+            case .released: letGo(at: t)
+            case .ended: break
             }
         }
     }
@@ -289,11 +282,18 @@ final class FaceView: UIView {
         // Text that closes goes back into the ant it came from, even as that ant rejoins the others.
         if let s = crowd.solo { spoke = s }
         colony.screen = SIMD2(Double(bounds.width), Double(bounds.height))
-        // While talking, every ant turns to the finger held down.
+        // While talking, the ant held steps out from under the finger and faces it; the others carry on. Which ant is
+        // held is decided when the hold begins, so it stays the same as it walks away from the finger.
         colony.listenAt = face.mood == .listening
             ? (talk?.heldAt).map { SIMD2(Double($0.x), Double($0.y)) } ?? SIMD2(Double(bounds.midX), Double(bounds.height) - 120) : nil
+        if colony.listenAt == nil { heldAnt = nil }
+        else if heldAnt == nil { heldAnt = crowd.single ? "face" : colony.listenAt.flatMap(colony.hit) ?? crowd.front }
+        colony.listener = heldAnt
         // The session whose text is open waits in the corner and the others walk off the screen until it closes.
-        colony.solo = crowd.single ? nil : crowd.solo
+        // The dial's words are nobody's, so every ant walks off while it's open.
+        colony.solo = dial.isOpen ? "dial" : crowd.single ? nil : crowd.solo
+        colony.families = Dictionary(crowd.sessions.compactMap { s in s.parent.map { (s.id, $0) } }) { a, _ in a }
+        colony.working = Dictionary(crowd.sessions.compactMap { s in s.since.map { (s.id, $0) } }) { a, _ in a }
         // With one session or none, a single ant plays the big face's mood; otherwise one per session not swiped away.
         colony.update(crowd.single ? [("face", face.mood, true, crowd.sessions.first?.events)]
                       : crowd.sessions.map { s in (s.id, crowd.face(s.id)?.mood ?? .idle, s.id == crowd.front, s.events) }, at: t)
@@ -302,9 +302,16 @@ final class FaceView: UIView {
         face.aside(screen.mode == .detail || screen.mode == .roster || screen.mode == .reply, at: t)
         face.lift(screen.mode == .question, at: t)
         screen.now = t
+        screen.sessions = crowd.sessions
         screen.idle()
-        rest(screen.resting && !colony.needsYou, dt: 1 / Double(max(1, l.preferredFramesPerSecond)))
-        placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
+        // The backlight dims only when nothing is happening: nobody touching, no session working or needing you.
+        let happening = colony.needsYou || crowd.sessions.contains { if case .working = $0.state { true } else { $0.state == .needs || $0.state == .failed } }
+        rest(screen.resting && !happening, dt: 1 / Double(max(1, l.preferredFramesPerSecond)))
+        // While the dial is open its words take the screen; the rest goes back into the ants until it closes.
+        dial.idle(at: t)
+        if dial.isOpen { dial.root = dialRoot(); if t - serverAt > 3 { askServer() } }
+        placed = dial.isOpen ? dial.place(width: Double(bounds.width), height: Double(bounds.height), turn: twist)
+            : screen.place(width: Double(bounds.width), height: Double(bounds.height))
         motion.screen = SIMD2(Double(bounds.width), Double(bounds.height))
         motion.show(placed, from: SIMD2(Double(point(anchor).x), Double(point(anchor).y)), swipe: swipeWay, page: pageWay,
                     wait: Screen.wait(from: was, to: screen.mode), at: t)
@@ -316,7 +323,9 @@ final class FaceView: UIView {
         CATransaction.setDisableActions(true)
         drawText(motion.frame(at: t))
         drawAnts(colony.shapes(at: t))
+        drawCrumbs(colony.crumbs(at: t))
         drawNames(slots)
+        drawGrip()
         CATransaction.commit()
     }
 }
@@ -325,7 +334,7 @@ extension FaceView {
     /// The face the text comes from: the one in front when several sessions show, else the single face.
     var speaker: Face { crowd.single ? face : crowd.front.flatMap(crowd.face) ?? face }
 
-    /// Each session's folder name under its ant in white while touched, and "+N" at the bottom for the ones folded away.
+    /// Each session's name under its ant while touched, with what it's doing while it works, and "N more sessions" at the bottom for the ones folded away.
     func drawNames(_ slots: [Slot]) {
         let ids = Set(slots.map(\.id))
         for (id, n) in names where !ids.contains(id) { n.removeFromSuperlayer(); names[id] = nil }
@@ -341,17 +350,33 @@ extension FaceView {
                 names[s.id] = n
                 return n
             }()
-            name.string = s.name
-            name.bounds = CGRect(x: 0, y: 0, width: 120, height: 16)
-            name.position = CGPoint(x: at.x, y: at.y + 28)
+            // Under the name, what it's doing and for how long, while it works.
+            let info = crowd.sessions.first { $0.id == s.id }
+            name.string = info.map { i in i.since == nil ? s.name : s.name + "\n" + Screen.state(i, now: screen.now)
+                + (i.doing.isEmpty ? "" : " · " + i.doing) } ?? s.name
+            name.isWrapped = true
+            name.truncationMode = .end
+            name.bounds = CGRect(x: 0, y: 0, width: 200, height: 30)
+            name.position = CGPoint(x: min(max(at.x, 100), bounds.width - 100), y: at.y + 35)
             name.opacity = Float(s.named)
         }
-        more.string = crowd.overflow > 0 && !slots.isEmpty ? "+\(crowd.overflow)" : ""
-        more.bounds = CGRect(x: 0, y: 0, width: 40, height: 18)
+        more.string = crowd.overflow > 0 && !slots.isEmpty ? crowd.overflow == 1 ? "1 more session" : "\(crowd.overflow) more sessions" : ""
+        more.bounds = CGRect(x: 0, y: 0, width: 200, height: 18)
         more.position = CGPoint(x: bounds.midX + screen.drift.x, y: bounds.height - 24 + screen.drift.y)
     }
 
     /// Each ant as four layers: its body filled, then its thighs, shins and antennae stroked, each at its own width.
+    func drawCrumbs(_ crumbs: [[SIMD2<Double>]]) {
+        if crumbLayer.superlayer == nil {
+            crumbLayer.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
+            crumbLayer.zPosition = -1
+            layer.insertSublayer(crumbLayer, at: 0)
+        }
+        let path = CGMutablePath()
+        for c in crumbs where c.count > 2 { path.addLines(between: c.map { CGPoint(x: $0.x, y: $0.y) }); path.closeSubpath() }
+        crumbLayer.path = path
+    }
+
     func drawAnts(_ shapes: [AntShape]) {
         let ids = Set(shapes.map(\.id))
         for (id, ls) in antLayers where !ids.contains(id) { ls.forEach { $0.removeFromSuperlayer() }; antLayers[id] = nil }

@@ -7,6 +7,8 @@ public struct Placed: Equatable {
     public var key: String, text: String, style: Screen.Style
     public var x: Double, y: Double, width: Double, height: Double
     public var size: Double, bold: Bool, opacity: Double, left: Bool
+    /// How big it rests, against its font size, so a line growing or shrinking springs instead of jumping.
+    public var scale = 1.0
 }
 
 /// A line as drawn this frame: where its frame's centre is now, how see-through, how stretched, and how blurred
@@ -136,11 +138,11 @@ public final class TextMotion {
                 if !i.said { i.said = true; if i.leads { said = true } }
                 switch i.exit {
                 case .none:
-                    let overshoot = simd_distance(i.at, i.home) > 2 && i.s.x < 0.9
+                    let overshoot = simd_distance(i.at, i.home) > 2 && i.s.x < 0.9 * i.line.scale
                     let (k, d) = overshoot ? (140.0, 0.55) : (120.0, 0.75)
                     i.cx.step(to: i.home.x, k: k, damping: d, dt: dt)
                     i.cy.step(to: i.home.y, k: k, damping: d, dt: dt)
-                    i.s.step(to: 1, k: k, damping: d, dt: dt)
+                    i.s.step(to: i.line.scale, k: k, damping: d, dt: dt)
                 case .face:
                     i.cx.step(to: anchor.x, k: 150, damping: 1, dt: dt)
                     i.cy.step(to: anchor.y, k: 150, damping: 1, dt: dt)
@@ -201,47 +203,77 @@ extension Screen {
     }
 
     /// Where each line goes on a `width`×`height` point screen. A question sits under the face, centred, its
-    /// options side by side (the suggested one first, bigger and bolder), or one per row when they wouldn't fit; the detail and the session list take
-    /// the right of the screen while the face waits in the corner.
+    /// options side by side (the suggested one first, bigger and bolder), or in as many columns as fit when they
+    /// wouldn't; the detail and the session list take the right of the screen while the face waits in the corner.
+    /// Everything stays on the screen: the block moves up as far as the face allows, and past that the type shrinks.
     public func place(width w: Double, height h: Double) -> [Placed] {
         let open = mode == .detail || mode == .roster || mode == .reply
-        let size = min(w, h) * 0.055, left = open ? w * 0.3 : w * 0.12
         let lines = self.lines(width: Screen.columns(width: w, height: h, open: open))
-        let isOption = { (l: Line) in l.style == .option || l.style == .suggestion }
-        let options = lines.filter(isOption).count
-        let side = open ? left : w * 0.12
-        var optionWidth = options == 0 ? 0 : min(w * 0.22, (w - side * 2) / Double(options) - 10)
-        // Options that wouldn't fit side by side, popped when chosen (the suggested one bigger still), go one per row.
-        let rows = lines.contains { isOption($0) && Double($0.text.count) * size * ($0.style == .suggestion ? 1.35 : 1) * 0.52 * 1.15 > optionWidth }
-        if rows { optionWidth = w - side - (open ? w * 0.08 : side) }
-        var optionX = open || rows ? side : (w - (optionWidth + 10) * Double(options) + 10) / 2
-        // A note alone, on the bare face, sits at the bottom. Lines keep clear of the edges by as far as the drift goes.
-        let (mx, my) = (11.0, 9.0)
-        var y = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 - my
-            : rows ? max(h * 0.5, h - my - size * (2.5 + 1.8 * Double(lines.count))) : h * (options > 0 ? 0.6 : 0.66)
-        var seen: [String: Int] = [:], out: [Placed] = []
-        for (i, l) in lines.enumerated() {
-            // A box ticked or not is the same option, so it stays where it is.
-            let words = isOption(l) && (l.text.hasPrefix("○ ") || l.text.hasPrefix("✓ ")) ? String(l.text.dropFirst(2)) : l.text
-            let id = (isOption(l) ? "option" : l.style == .hint && !note.isEmpty ? "note" : "\(l.style)") + ":" + words
-            let key = id + (seen[id].map { "#\($0)" } ?? "")
-            seen[id, default: 0] += 1
-            if isOption(l) {
-                let suggested = l.style == .suggestion, s = suggested ? size * 1.35 : size
-                let mid = y + size * 0.95
-                out.append(Placed(key: key, text: l.text, style: l.style, x: optionX, y: mid - s * 0.62, width: optionWidth,
-                                  height: s * 1.4, size: s, bold: suggested, opacity: suggested ? 1 : 0.6, left: open || rows))
-                if rows { y += s * 1.5 } else { optionX += optionWidth + 10 }
-                if i + 1 < lines.count, !isOption(lines[i + 1]) { y += size * 2.5 }
-                continue
-            }
-            let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
-            out.append(Placed(key: key, text: l.text, style: l.style, x: open ? left : mx, y: y, width: open ? w - left - mx : w - 2 * mx,
-                              height: s * 1.4, size: s, bold: false, opacity: l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4,
-                              left: open))
-            y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
+        var size = min(w, h) * 0.055, out: [Placed] = []
+        for _ in 0..<8 {
+            let (placed, fits) = place(lines, width: w, height: h, size: size, open: open)
+            out = placed
+            if fits { break }
+            size *= 0.92
         }
         let d = drift
         return out.map { var p = $0; p.x += d.x; p.y += d.y; return p }
+    }
+
+    private func place(_ lines: [Line], width w: Double, height h: Double, size: Double, open: Bool) -> ([Placed], Bool) {
+        let left = open ? w * 0.3 : w * 0.12
+        let isOption = { (l: Line) in l.style == .option || l.style == .suggestion }
+        let options = lines.filter(isOption)
+        let side = open ? left : w * 0.12, room = w - side - (open ? w * 0.08 : side)
+        // As many options to a row as fit, popped when chosen (the suggested one bigger still): all of them side by
+        // side when they fit, one per row only when even two don't.
+        let needs = { (l: Line) in Double(l.text.count) * size * (l.style == .suggestion ? 1.35 : 1) * 0.52 * 1.15 }
+        let perRow = options.isEmpty ? 1 : (1...options.count).reversed().first { k in
+            (open ? k == 1 : true) && options.allSatisfy { needs($0) <= (room - 10 * Double(k - 1)) / Double(k) }
+        } ?? 1
+        let sideBySide = !open && perRow == options.count
+        let optionWidth = options.isEmpty ? 0 : sideBySide ? min(max(w * 0.22, (room - 10 * Double(perRow - 1)) / Double(perRow) * 0.8),
+                                                                (room - 10 * Double(perRow - 1)) / Double(perRow))
+            : (room - 10 * Double(perRow - 1)) / Double(perRow)
+        let (mx, my) = (11.0, 9.0)
+        func lay(from top: Double) -> (placed: [Placed], bottom: Double) {
+            var y = top, seen: [String: Int] = [:], out: [Placed] = [], column = 0, rowHeight = 0.0
+            let rowStart = sideBySide ? (w - (optionWidth + 10) * Double(perRow) + 10) / 2 : side
+            for (i, l) in lines.enumerated() {
+                // A box ticked or not is the same option, so it stays where it is.
+                let words = isOption(l) && (l.text.hasPrefix("○ ") || l.text.hasPrefix("✓ ")) ? String(l.text.dropFirst(2)) : l.text
+                let id = (isOption(l) ? "option" : l.style == .hint && !note.isEmpty ? "note" : "\(l.style)") + ":" + words
+                let key = id + (seen[id].map { "#\($0)" } ?? "")
+                seen[id, default: 0] += 1
+                if isOption(l) {
+                    let suggested = l.style == .suggestion, s = suggested ? size * 1.35 : size
+                    let mid = y + size * 0.95
+                    out.append(Placed(key: key, text: l.text, style: l.style, x: rowStart + Double(column) * (optionWidth + 10),
+                                      y: mid - s * 0.62, width: optionWidth, height: s * 1.4, size: s, bold: suggested,
+                                      opacity: suggested ? 1 : 0.6, left: !sideBySide))
+                    rowHeight = max(rowHeight, s * 1.5)
+                    column += 1
+                    let last = i + 1 == lines.count || !isOption(lines[i + 1])
+                    if column == perRow || last { y += sideBySide ? 0 : rowHeight; column = 0; rowHeight = 0 }
+                    if last { y += size * 2.5 }
+                    continue
+                }
+                let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
+                out.append(Placed(key: key, text: l.text, style: l.style, x: open ? left : mx, y: y, width: open ? w - left - mx : w - 2 * mx,
+                                  height: s * 1.4, size: s, bold: false, opacity: l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4,
+                                  left: open))
+                y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
+            }
+            return (out, out.map { $0.y + $0.height }.max() ?? top)
+        }
+        let tall = lay(from: 0).bottom
+        // A note alone, on the bare face, sits at the bottom; a question under the face; the rest near the top. Lines
+        // keep clear of the edges by as far as the drift goes.
+        let wanted = open ? h * 0.14 : mode == .face ? h - Double(lines.count) * size * 1.3 - size * 0.4 - my
+            : h * (options.isEmpty ? 0.66 : 0.6)
+        let highest = open || mode == .face ? my : h * 0.3
+        let top = max(highest, min(wanted, h - my - tall))
+        let placed = lay(from: top)
+        return (placed.placed, placed.bottom <= h - my + 0.5)
     }
 }

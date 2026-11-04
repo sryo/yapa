@@ -1,0 +1,17 @@
+#!/bin/sh
+# R6: the pad's dial starts a new Claude Code session: POST /new?dry with a folder's path answers the Claude app link
+# che would open there (nothing opens), and a path that isn't a folder is refused.
+cd "$(dirname "$0")/.." || exit 1
+log=$(mktemp); dir=$(mktemp -d)
+swift build -q -c release --package-path mac || exit 1
+bin=$(swift build -c release --package-path mac --show-bin-path)
+CHE_PORT=18081 CHE_ENTER=0 CHE_FROM= "$bin/che" 2> "$log" &
+agent=$!
+trap 'kill $agent 2>/dev/null; wait $agent 2>/dev/null; rm -rf "$log" "$dir"' EXIT
+for _ in $(seq 100); do grep -q listening "$log" && break; sleep 0.2; done
+grep -q listening "$log" || { cat "$log"; exit 1; }
+out=$(curl -s --data-binary "$dir" http://127.0.0.1:18081/new?dry)
+echo "$out" | grep -q 'claude:\\/\\/code\\/new?folder=' || { echo "FAIL: /new answered $out"; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' --data-binary "$dir/missing" http://127.0.0.1:18081/new?dry)
+[ "$code" = 400 ] || { echo "FAIL: /new with no such folder answered $code, not 400"; exit 1; }
+echo "ok r6 new session"

@@ -63,4 +63,27 @@ ok install
 grep -q stray "$etc/services.json" "$etc/Caddyfile" && fail "services.json and the Caddyfile must be generated from the parts"
 grep -q '^http://:8080 {' "$etc/Caddyfile" || fail "the core template is missing from the Caddyfile"
 for n in yata caddy hello app; do grep -q "\"name\":\"$n\"" "$etc/services.json" || fail "services.json doesn't watch $n"; done
+
+# The pad turns parts on and off on the phone, through the setup ya leaves there: off takes the part's job, watch
+# and address away without the Mac, its binary stays so it can come back, and yata isn't restarted (it reads the
+# new list itself).
+run_setup() { d=$(mktemp -d); cp -R "$etc/parts" "$d/parts"; cp "$etc/Caddyfile.core" "$d/"
+  YAPA_JB="$jb" YATA_SELF=1 PATH="$tmp/bin:$PATH" sh "$etc/setup" "$d" "$1" "$(cat "$etc/domain")" >/dev/null; s=$?; rm -rf "$d"; return $s; }
+: > "$tmp/log"; : > "$etc/parts/hello/down"
+run_setup off || fail "the setup left on the phone didn't run"
+[ -e "$ld/com.sryo.yapa.hello.plist" ] && fail "turned off on the phone, hello kept its launchd job"
+grep -q '"hello"' "$etc/services.json" && fail "turned off on the phone, yata still watches hello"
+grep -q 'api.example.com' "$etc/Caddyfile" && fail "turned off on the phone, Caddy still serves hello"
+[ -f "$etc/parts/hello/hello" ] || fail "a part turned off on the phone lost its binary, so it can't come back"
+grep -q "yata.plist" "$tmp/log" && fail "the pad's setup restarted yata"
+rm "$etc/parts/hello/down"; run_setup on
+[ -e "$ld/com.sryo.yapa.hello.plist" ] || fail "turned on on the phone, hello didn't get its job back"
+
+# The Mac takes the phone's word: a part turned off there stays off through the next sync.
+: > "$etc/parts/app/down"; run_setup off
+ok install
+[ -f "$parts/app/down" ] || fail "the Mac didn't take app's off from the phone"
+[ -e "$ld/com.sryo.yapa.app.plist" ] && fail "a sync from the Mac turned app back on"
+ok on app
+[ -e "$ld/com.sryo.yapa.app.plist" ] || fail "./ya on app didn't win over the phone's off"
 exit 0

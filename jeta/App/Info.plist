@@ -64,5 +64,11 @@
 	</array>
 	<key>UIStatusBarHidden</key>
 	<true/>
+	<!-- The dial asks yata on the phone itself, over plain HTTP. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

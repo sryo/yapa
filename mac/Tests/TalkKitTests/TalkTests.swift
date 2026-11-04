@@ -115,4 +115,41 @@ final class TranscribeTests: XCTestCase {
         XCTAssertEqual(focusedSession(log: log), "local_b")
         XCTAssertNil(focusedSession(log: "nothing"))
     }
+
+    // R6: the pad's new session opens in the Claude app, in a folder that's there; anything else opens nothing.
+    func testR6_NewSessionLink() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("a b \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = try XCTUnwrap(newSession(in: dir.path))
+        XCTAssertTrue(url.absoluteString.hasPrefix("claude://code/new?folder=%2F"))
+        XCTAssertTrue(url.absoluteString.contains("a%20b%20"))
+        XCTAssertNil(newSession(in: "relative/path"))
+        XCTAssertNil(newSession(in: dir.path + "/missing"))
+        XCTAssertNil(newSession(in: "/etc/hosts"), "a file isn't a folder")
+    }
+}
+
+
+final class NamedTests: XCTestCase {
+    // R1: the pad names a session as the Claude app does: a side session by the short name it was started with,
+    // any other by its title cut to a few words, and knows the session that started or forked it.
+    func testR1_SessionsAreNamedWithTheirParent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("named-\(UUID().uuidString)/a/b")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent().deletingLastPathComponent()) }
+        func write(_ o: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: o).write(to: root.appendingPathComponent("\(o["sessionId"]!).json"))
+        }
+        try write(["sessionId": "local_m", "cliSessionId": "m0", "lastAssistantCliSessionId": "m1", "title": "Old iPhone SE project ideas"])
+        try write(["sessionId": "local_k", "cliSessionId": "k", "title": "Jailbreak the SE and deploy yapad",
+                   "spawnedFrom": ["sessionId": "local_m", "name": "jailbreak"]])
+        try write(["sessionId": "local_f", "cliSessionId": "f", "title": "Fork", "forkedFromSessionId": "local_k"])
+        try write(["sessionId": "local_x", "cliSessionId": "x", "title": "Not asked for"])
+        let n = named(["m1", "k", "f"], in: root.deletingLastPathComponent().deletingLastPathComponent())
+        XCTAssertEqual(n["m1"], Named(name: "Old iPhone SE project", title: "Old iPhone SE project ideas", parent: nil))
+        XCTAssertEqual(n["k"], Named(name: "jailbreak", title: "Jailbreak the SE and deploy yapad", parent: "m1"))
+        XCTAssertEqual(n["f"]?.parent, "k")
+        XCTAssertNil(n["x"])
+    }
 }

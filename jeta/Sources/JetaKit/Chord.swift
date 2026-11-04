@@ -1,105 +1,92 @@
+import Foundation
 import simd
 
-/// Reads chords on the pad: how many fingers come down picks the control, and dragging them up or down turns it.
+/// Reads the pad's dial: two fingers land and twisting them turns it.
 ///
-/// After Matthaeus Krenn's car UI: the control comes to the fingers wherever they land, so there is nothing to aim
-/// at. One finger never acts, so brushing the screen changes nothing. The count settles before anything locks
-/// (fingers never land at once), and how far apart the fingers are is read once at touch-down and then held.
-/// A finger landing after the chord locked voids it. Each control has its own step size, larger the more a step
-/// matters. A decision commits only when released 20% past its detent; coming back below the detent takes it back,
-/// and letting go short of it sends nothing.
+/// After Matthaeus Krenn's car UI, by way of Clak Remote's dials: the control comes to the fingers wherever they land,
+/// so there is nothing to aim at. It turns by the angle of the line between the two fingers, clockwise up, one step
+/// per `stepAngle`; moving the fingers apart, together or across the screen never changes it. One finger never acts,
+/// so brushing the screen changes nothing. The count settles before anything locks (fingers never land at once),
+/// three or more fingers lock as nothing, and a finger landing after the chord locked voids it. Letting go of a two-
+/// finger chord that wasn't voided is a release, which is when the dial acts.
 ///
-/// Pure geometry and time in points (y grows down), so every path replays in a test.
+/// Pure geometry and time in points (y grows down, so a growing angle is clockwise), so every path replays in a test.
 public struct Chord {
-    public enum Control: Equatable {
-        /// Two fingers close, a prompt up: drag up for once, down for deny.
-        case decide
-        /// Two fingers close, no prompt: step through recent lines.
-        case scrub
-        /// Two fingers wide apart.
-        case spread
-    }
-    public enum Decision: Equatable { case once, deny }
     public enum Event: Equatable {
-        /// A chord locked. Three or more fingers lock with no control yet.
-        case began(Control?, fingers: Int)
-        /// Whole steps since the last event, up positive.
-        case step(Control, Int)
-        /// The decision a release would send now, or nil.
-        case armed(Decision?)
-        case decided(Decision)
+        /// A chord locked; only two fingers turn anything.
+        case began(fingers: Int)
+        /// Whole steps since the last event, clockwise positive.
+        case step(Int)
+        /// Two fingers let go of a chord nothing voided.
+        case released
         case ended
     }
-
-    /// Whether a permission prompt is waiting; read when a chord locks.
-    public var prompt = false
+    /// Where the turn is: the fingers' centre and half their spread, and angles in radians, screen coordinates.
+    public struct Reading: Equatable {
+        public var centre: SIMD2<Double>, radius: Double
+        /// Where the turn began, and where it is now.
+        public var start: Double, angle: Double
+        /// Whole steps round from the start, clockwise positive.
+        public var steps: Int
+    }
 
     /// How long the count must hold before it's believed: fingers landing, and lifting.
     static let settleLanding = 0.08, settleLifting = 0.05
-    /// Fingers farther than this from their centre make a wide chord. Krenn's iPad used 120 pt; the SE is 320 wide.
-    static let wideRadius = 60.0
-    static func stepSize(_ c: Control) -> Double {
-        switch c {
-        case .decide: 100
-        case .scrub: 40
-        case .spread: 90
-        }
-    }
-    /// How far past the detent a decision arms.
-    static let commitPast = 1.2
+    /// Fingers closer together than this give an angle that swings wildly for a tiny movement, so it counts for nothing.
+    static let deadZone = 24.0
+    public static let stepAngle = Double.pi / 8
 
     private var count = 0, countSince = 0.0, landing = true
-    private var locked: (control: Control?, fingers: Int)?
-    private var originY = 0.0, lastCentre = SIMD2<Double>.zero, unit = 0
-    private var armed: Decision?, lockedAt = 0.0
+    private var locked: (turns: Bool, fingers: Int)?
+    private var angle: Double?, turned = 0.0, unit = 0, lockedAt = 0.0
+    public private(set) var reading: Reading?
 
     public init() {}
 
     public mutating func update(_ touches: [Int: SIMD2<Double>], at t: Double) -> [Event] {
         let n = touches.count
-        let centre = n == 0 ? lastCentre : touches.values.reduce(.zero, +) / Double(n)
-        defer { lastCentre = centre }
         if n == 0 { return release() }
         if n != count {
             landing = n > count
             count = n
             countSince = t
-            // A finger coming or going moves the centre; that jump isn't a drag.
-            if locked != nil { originY += centre.y - lastCentre.y }
-            // A finger landing just after the chord locked, before anything moved, was part of it: count again.
-            if locked != nil && landing && unit == 0 && armed == nil && t - lockedAt < 0.15 { locked = nil }
+            // A finger coming or going changes which two are read: pick up from wherever they are now.
+            angle = nil
+            // A finger landing just after the chord locked, before anything turned, was part of it: count again.
+            if locked != nil && landing && unit == 0 && t - lockedAt < 0.15 { locked = nil; reading = nil }
             // A finger landing later means another chord was meant: this one stops acting.
-            if locked != nil && landing {
-                locked?.control = nil
-                if armed != nil { armed = nil; return [.armed(nil)] }
-            }
+            if locked != nil && landing { locked?.turns = false; reading = nil }
         }
         guard let locked else {
             guard n >= 2, t - countSince >= (landing ? Self.settleLanding : Self.settleLifting) else { return [] }
-            let wide = touches.values.contains { simd_length($0 - centre) > Self.wideRadius }
-            let control: Control? = n > 2 ? nil : wide ? .spread : prompt ? .decide : .scrub
-            self.locked = (control, n)
+            self.locked = (n == 2, n)
             lockedAt = t
-            originY = centre.y
-            return [.began(control, fingers: n)]
+            return [.began(fingers: n)]
         }
-        guard let control = locked.control else { return [] }
-        let size = Self.stepSize(control), up = originY - centre.y
-        var events: [Event] = []
-        var now = Int((up / size).rounded(.towardZero))
-        if control == .decide {
-            now = max(-1, min(1, now))
-            let arm: Decision? = up >= size * Self.commitPast ? .once : up <= -size * Self.commitPast ? .deny
-                : armed == .once && up >= size ? .once : armed == .deny && up <= -size ? .deny : nil
-            if arm != armed { armed = arm; events.append(.armed(arm)) }
+        guard locked.turns, n == 2 else { return [] }
+        // The two fingers in the order they're keyed, so the line between them never flips.
+        var it = touches.makeIterator()
+        guard let f = it.next(), let g = it.next() else { return [] }
+        let (p, q) = f.key < g.key ? (f.value, g.value) : (g.value, f.value), d = q - p
+        guard simd_length(d) >= Self.deadZone else { angle = nil; return [] }
+        let now = atan2(d.y, d.x)
+        if let angle {
+            var change = now - angle
+            if change > .pi { change -= 2 * .pi }
+            if change <= -.pi { change += 2 * .pi }
+            turned += change
         }
-        if now != unit { events.insert(.step(control, now - unit), at: 0); unit = now }
-        return events
+        angle = now
+        let whole = Int((turned / Self.stepAngle + (turned < 0 ? -1e-9 : 1e-9)).rounded(.towardZero))
+        reading = Reading(centre: (p + q) / 2, radius: simd_length(d) / 2, start: now - turned, angle: now, steps: whole)
+        guard whole != unit else { return [] }
+        defer { unit = whole }
+        return [.step(whole - unit)]
     }
 
     private mutating func release() -> [Event] {
-        defer { let p = prompt; self = Chord(); prompt = p }
-        guard locked != nil else { return [] }
-        return (armed.map { [.decided($0)] } ?? []) + [.ended]
+        defer { self = Chord() }
+        guard let locked else { return [] }
+        return (locked.turns ? [.released] : []) + [.ended]
     }
 }

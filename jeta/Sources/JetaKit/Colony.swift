@@ -25,11 +25,21 @@ public struct AntShape {
 public final class Colony {
     /// Screen size in points.
     public var screen = SIMD2<Double>(320, 568)
-    /// Where the finger is while talking; every ant turns to it.
-    public var listenAt: SIMD2<Double>?
+    /// Where the finger is while talking, and the session whose ant it holds: only that ant reacts, stepping out from
+    /// under the fingertip to face it.
+    public var listenAt: SIMD2<Double>?, listener: String?
     /// The session whose text is open: its ant waits in the top left corner, beside the text, and the others walk off
     /// the nearest edge until it closes, then come back to where they were, so it's clear who's talking.
     public var solo: String?
+    /// Each session started by another, and the one that started it: its ant's spot is beside that one's.
+    public var families: [String: String] = [:]
+    /// When each working session's turn began. Its ant drops a crumb by its spot each minute of the turn (one every
+    /// five after the first ten), so how long it's been at it shows without words, and picks them up when it stops.
+    public var working: [String: Double] = [:]
+    struct Crumb { var at: SIMD2<Double>, shape: [SIMD2<Double>], born: Double }
+    /// How far a pile sits from its ant's spot.
+    static let pileAt = 25.0
+    private var piles: [String: (crumbs: [Crumb], gone: Double?)] = [:], crumbRng: SplitMix
 
     static let step = 1.0 / 120
     private var ants: [String: Ant] = [:], order: [String] = []
@@ -38,6 +48,7 @@ public final class Colony {
     public init(seed: UInt64, now: Double) {
         self.now = now
         rng = SplitMix(seed)
+        crumbRng = SplitMix(seed ^ 0x6372756d62) // its own, so crumbs never change how the ants move
     }
 
     /// The sessions to show and their moods; `front` is the one standing forward for a prompt, and `events` counts its
@@ -45,23 +56,115 @@ public final class Colony {
     public func update(_ sessions: [(id: String, mood: Mood, front: Bool, events: Int?)], at t: Double) {
         advance(to: t)
         let ids = Set(sessions.map(\.id))
-        for (id, a) in ants where !ids.contains(id) && a.act != .leave { a.set(.leave, at: t, rng: &rng) }
-        let homes = Colony.homes(sessions.count, screen)
-        for (s, home) in zip(sessions, homes) {
+        for id in order where !ids.contains(id) { if let a = ants[id], a.act != .leave { a.set(.leave, at: t, rng: &rng) } }
+        let homes = Colony.homes(sessions.map(\.id), families: families, screen)
+        for s in sessions {
+            let home = homes[s.id] ?? screen / 2
             let a = ants[s.id] ?? {
-                let a = Ant(at: home, heading: rng.next(in: 0...(2 * .pi)), rng: &rng)
-                a.size.x = 0
+                // A new session's ant appears at its spot, unless another is still standing there (the spots moved
+                // to make room): then it walks in from the nearest edge.
+                let taken = ants.values.contains { $0.act != .leave && simd_length(SIMD2($0.x, $0.y) - home) < 45 }
+                let edges = [SIMD2(-30, home.y), SIMD2(screen.x + 30, home.y), SIMD2(home.x, -30), SIMD2(home.x, screen.y + 30)]
+                let from = taken ? edges.min { simd_length($0 - home) < simd_length($1 - home) }! : home
+                let a = Ant(at: from, heading: rng.next(in: 0...(2 * .pi)), rng: &rng)
+                if !taken { a.size.x = 0 }
                 ants[s.id] = a; order.append(s.id)
                 return a
             }()
             a.home = home
-            if let e = s.events, e != a.events { if a.events != nil { a.worked = t }; a.events = e }
-            let act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listenAt != nil) : s.id == solo ? .aside : .wait
-            if a.act != act || a.front != s.front { a.front = s.front; a.set(act, at: t, rng: &rng) }
+            let listening = listenAt != nil && s.id == listener
+            let act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listening) : s.id == solo ? .aside : .wait
+            if a.act != act || a.front != s.front {
+                let was = a.act
+                a.front = s.front
+                a.set(act, at: t, rng: &rng)
+                // Let go of, it nods; leaving for the text, the ones nearest an edge go first, and coming back the
+                // ones nearest their spots do.
+                if was == .listen { a.nodAt = t; a.homing = true }
+                if act == .wait { a.departAt = t + 0.3 * Double(rank(id: s.id) { $0.edgeDistance(screen) }) }
+                if was == .wait { a.returnAt = t + 0.3 * Double(rank(id: s.id) { simd_length($0.spot - SIMD2($0.x, $0.y)) }) }
+            }
+        }
+        // While one needs you, the others hold still.
+        let calling = ants.values.contains { $0.act == .needs && $0.front }
+        for a in ants.values { a.hushed = calling && !(a.act == .needs && a.front) }
+        drop(at: t)
+    }
+
+    /// Where an ant comes among the others still here, by `key`, smallest first.
+    private func rank(id: String, by key: (Ant) -> Double) -> Int {
+        guard let me = ants[id] else { return 0 }
+        return ants.filter { $0.key != id && $0.value.act != .leave && key($0.value) < key(me) }.count
+    }
+
+    /// A tap answered the request of the session whose ant is forward: allowed, it squashes and hurries home; denied,
+    /// it droops and walks home slowly.
+    public func answered(_ id: String, allowed: Bool) { ants[id]?.answered = allowed }
+
+    /// How many crumbs a turn this long has dropped.
+    static func crumbs(after d: Double) -> Int {
+        let m = Int(max(0, d) / 60)
+        return m <= 10 ? m : min(20, 10 + (m - 10) / 5)
+    }
+
+    private func drop(at t: Double) {
+        piles = piles.filter { ants[$0.key] != nil }
+        for id in order {
+            guard let a = ants[id] else { continue }
+            guard let from = working[id], a.act != .leave else {
+                if piles[id] != nil, piles[id]?.gone == nil { piles[id]?.gone = t }
+                if let g = piles[id]?.gone, t - g > 1 { piles[id] = nil }
+                continue
+            }
+            var pile = piles[id] ?? ([], nil)
+            if pile.gone != nil { pile = ([], nil) }
+            while pile.crumbs.count < Colony.crumbs(after: t - from) {
+                // One tight pile right beside its spot (it walks round the pile, never over it), on whichever side is
+                // clearest of the other ants and the edges, toward the middle when that's as clear; each crumb packed
+                // against the last on a sunflower spiral, so none falls on another.
+                let first = pile.crumbs.first?.at ?? {
+                    let others = ants.filter { $0.key != id && $0.value.act != .leave }.map(\.value.spot)
+                    let toMiddle = a.spot.x <= screen.x / 2 ? 0.0 : Double.pi
+                    return (0..<8).map { k -> SIMD2<Double> in
+                        let ang = toMiddle + Double(k) * .pi / 4
+                        return SIMD2(cos(ang), sin(ang)) * Colony.pileAt
+                    }.max { p, q in
+                        func clear(_ o: SIMD2<Double>) -> Double {
+                            let at = a.spot + o, edge = min(at.x, screen.x - at.x, at.y, screen.y - at.y) * 2
+                            return min(edge, others.map { simd_length($0 - at) }.min() ?? .infinity)
+                        }
+                        return clear(p) < clear(q) - 1
+                    }!
+                }()
+                let k = Double(pile.crumbs.count), off = first + SIMD2(cos(k * 2.4), sin(k * 2.4)) * 3.1 * k.squareRoot()
+                let r = crumbRng.next(in: 1.7...2.6), n = Int(crumbRng.next(in: 4...6.99)), turn = crumbRng.next(in: 0...6.3)
+                let shape = (0..<n).map { i -> SIMD2<Double> in
+                    let ang = turn + Double(i) / Double(n) * 2 * .pi
+                    return SIMD2(cos(ang), sin(ang)) * r * crumbRng.next(in: 0.7...1.15)
+                }
+                pile.crumbs.append(Crumb(at: off, shape: shape, born: t))
+            }
+            piles[id] = pile
+        }
+    }
+
+    /// Every crumb to draw, as a small filled outline, by its ant's spot (which creeps, so they creep too). Hidden
+    /// while text or the dial is up; each grows in as it drops and shrinks away as its ant picks them up.
+    public func crumbs(at t: Double) -> [[SIMD2<Double>]] {
+        guard solo == nil else { return [] }
+        return piles.flatMap { id, pile -> [[SIMD2<Double>]] in
+            guard let a = ants[id] else { return [] }
+            let out = pile.gone.map { max(0, 1 - (t - $0)) } ?? 1
+            return pile.crumbs.map { c in
+                let s = min(1, max(0, (t - c.born) / 0.4)) * out
+                return c.shape.map { a.spot + c.at + $0 * s }
+            }
         }
     }
 
     public func position(of id: String) -> SIMD2<Double>? { ants[id].map { SIMD2($0.x, $0.y) } }
+    /// The spot an ant keeps to, creeping with it.
+    public func spot(of id: String) -> SIMD2<Double>? { ants[id]?.spot }
 
     /// The ant nearest a point, within reach of a finger.
     public func hit(_ p: SIMD2<Double>) -> String? {
@@ -71,7 +174,7 @@ public final class Colony {
 
     /// Whether anything is moving enough to need 60 fps; ants standing about need only 30.
     public var isActive: Bool {
-        ants.values.contains { $0.v > 0.5 || $0.feet.contains { $0.s < 1 } || [.needs, .done, .failed, .listen].contains($0.act) }
+        ants.values.contains { $0.v > 0.5 || $0.feet.contains { $0.s < 1 } || [.needs, .done, .listen].contains($0.act) }
     }
 
     /// Whether an ant is trying to catch your eye, so the screen stays bright.
@@ -82,35 +185,87 @@ public final class Colony {
         return order.compactMap { id in ants[id].map { $0.shape(id: id, t: now) } }.sorted { $0.0 < $1.0 }.map(\.1)
     }
 
-    /// Each session's own spot, in the order they started: one in the middle, more in two columns of rows, so ants
-    /// are far apart and each stays where you know it.
+    /// Each session's own spot, in the order they started: one in the middle, more on a grid shaped like the screen,
+    /// so ants are far apart and each stays where you know it.
     static func homes(_ n: Int, _ screen: SIMD2<Double>) -> [SIMD2<Double>] {
         guard n > 1 else { return n == 1 ? [screen / 2] : [] }
-        let rows = (n + 1) / 2, top = 110.0, h = (screen.y - 2 * top) / Double(rows)
+        let g = grid(n, screen), area = area(screen)
         return (0..<n).map { k in
-            let alone = k == n - 1 && n % 2 == 1
-            return SIMD2(alone ? screen.x / 2 : screen.x * (k % 2 == 0 ? 0.25 : 0.75), top + h * (Double(k / 2) + 0.5))
+            // A last row that isn't full is centred.
+            let row = k / g.columns, inRow = row == g.rows - 1 ? n - row * g.columns : g.columns
+            let col = Double(k % g.columns) + Double(g.columns - inRow) / 2
+            return SIMD2(area.x + g.cell.x * (col + 0.5), area.y + g.cell.y * (Double(row) + 0.5))
         }
     }
 
+    /// The part of the screen spots go in: clear of the top and bottom, with more room there on a tall screen for the
+    /// text. Its top left corner and size.
+    static func area(_ screen: SIMD2<Double>) -> SIMD4<Double> {
+        // Across, the cells reach the edges (a spot sits mid-cell, well clear of them).
+        let my = max(50, screen.y * 0.19)
+        return SIMD4(0, my, screen.x, screen.y - 2 * my)
+    }
+
+    /// Columns and rows for `n` spots, shaped like the screen, so on the landscape pad four sessions sit three and
+    /// one rather than in two cramped columns; and each spot's share of the area.
+    static func grid(_ n: Int, _ screen: SIMD2<Double>) -> (columns: Int, rows: Int, cell: SIMD2<Double>) {
+        let a = area(screen)
+        let columns = max(1, min(n, Int((Double(n) * a.z / a.w).squareRoot().rounded(.up))))
+        let rows = (n + columns - 1) / columns
+        return (columns, rows, SIMD2(a.z / Double(columns), a.w / Double(rows)))
+    }
+
+    /// The spots by family: each session that no other here started gets one of `homes(_:_:)`, and the ones it started
+    /// (and theirs) stand round it, below first, on a ring as wide as its share of the screen allows.
+    static func homes(_ ids: [String], families: [String: String], _ screen: SIMD2<Double>) -> [String: SIMD2<Double>] {
+        let here = Set(ids)
+        func root(_ id: String) -> String {
+            var r = id, seen: Set = [id]
+            while let p = families[r], here.contains(p), seen.insert(p).inserted { r = p }
+            return r
+        }
+        let roots = ids.filter { root($0) == $0 }, spots = homes(roots.count, screen)
+        let cell = roots.count == 1 ? SIMD2(screen.x, screen.y - 220) : grid(roots.count, screen).cell
+        let ring = max(60, min(90, 0.42 * min(cell.x, cell.y)))
+        var out: [String: SIMD2<Double>] = [:]
+        for (r, spot) in zip(roots, spots) {
+            out[r] = spot
+            let kin = ids.filter { $0 != r && root($0) == r }
+            for (k, id) in kin.enumerated() {
+                // Six to a ring, the first from straight below, spreading either side; more go on a wider ring.
+                let j = k / 6, on = min(6, kin.count - 6 * j), i = Double(k % 6) - Double(on - 1) / 2
+                let a = Double.pi / 2 + i * 2 * .pi / Double(max(on, 5)), d = ring * (1 + 0.7 * Double(j))
+                let p = spot + SIMD2(cos(a), sin(a)) * d
+                out[id] = SIMD2(min(max(p.x, 40), screen.x - 40), min(max(p.y, 70), screen.y - 70))
+            }
+        }
+        return out
+    }
+
     static func act(for mood: Mood, front: Bool, listening: Bool) -> Ant.Act {
+        // Four situations: it needs you (a failed turn too), it's busy, it's your turn (done, then resting), or it's gone.
         if listening || mood == .listening { return .listen }
         switch mood {
-        case .sleep: return .sleep
         case .busy, .focused: return .work
-        case .attention, .impatient: return .needs
+        case .attention, .impatient, .dizzy: return .needs
         case .celebrate, .proud, .heart: return .done
-        case .dizzy: return .failed
-        case .idle, .bored, .curious, .listening: return .wander
+        case .idle, .bored, .curious, .listening, .sleep: return .rest
         }
     }
 
     private func advance(to t: Double) {
+        // In the order they came, since each draws from the one generator: a dictionary's order changes every run.
+        let inOrder = order.compactMap { ants[$0] }
+        var spots: [SIMD2<Double>] = [], heaps: [SIMD2<Double>] = []
+        spots.reserveCapacity(inOrder.count); heaps.reserveCapacity(piles.count)
         while now < t {
             let dt = min(Colony.step, t - now)
             now += dt
-            let spots = ants.values.filter { $0.act != .leave }.map { SIMD2($0.x, $0.y) }
-            for a in ants.values { a.update(dt, t: now, screen: screen, listenAt: listenAt, others: spots, rng: &rng) }
+            // Ants walk around each other, and closer round the crumb piles, never over them.
+            spots.removeAll(keepingCapacity: true); heaps.removeAll(keepingCapacity: true)
+            for a in inOrder where a.act != .leave { spots.append(SIMD2(a.x, a.y)) }
+            for (id, p) in piles where p.gone == nil { if let c = p.crumbs.first, let a = ants[id] { heaps.append(a.spot + c.at) } }
+            for a in inOrder { a.update(dt, t: now, screen: screen, listenAt: listenAt, others: spots, piles: heaps, rng: &rng) }
         }
         for (id, a) in ants where a.act == .leave && (a.x < -40 || a.x > screen.x + 40 || a.y < -40 || a.y > screen.y + 40) {
             ants[id] = nil; order.removeAll { $0 == id }
@@ -126,7 +281,7 @@ struct Bounce {
 }
 
 final class Ant {
-    enum Act { case wander, work, needs, done, failed, sleep, listen, leave, aside, wait }
+    enum Act { case rest, work, needs, done, listen, leave, aside, wait }
 
     /// The body is ~15 units nose to tail, drawn at `scale` points a unit: ~22 pt; one that needs you grows 2.2 times.
     static let scale = 1.45
@@ -140,12 +295,21 @@ final class Ant {
     struct Foot { var i: Int, side: Double, tripod: Int, at: SIMD2<Double>, from: SIMD2<Double>, to: SIMD2<Double>, s = 1.0 }
 
     var x: Double, y: Double, h: Double, v = 0.0, spin = 0.0, tail: SIMD2<Double>
-    var act = Act.wander, front = false, since = 0.0, until = 0.0, flags = 0
+    var act = Act.rest, front = false, since = 0.0, until = 0.0, flags = 0
     var goal: SIMD2<Double>?, faceTo: SIMD2<Double>?, mill: (c: SIMD2<Double>, r: Double)?
-    var still = false, nervous = true, cruise = 44.0
+    var still = true, nervous = true, cruise = 44.0
     var twitchAt = 0.0, turn = 0.0, pauseTo = 0.0, tap = 0.0, wave = 0.0, phase: Double
-    /// The session's hook event count, and when it last went up.
-    var events: Int?, worked = -1e9, nextStroll = 0.0
+    /// Busy: where it's walking toward this frame, the course it wanders along and how fast that turns, and how far
+    /// from its spot it may roam.
+    var aim: SIMD2<Double>?, wander = 0.0, wanderV = 0.0, leash = 28.0
+    /// Its own walking tempo when busy, so no two ants move alike.
+    var tempo = 1.0
+    /// How fast it walks compared with the others, so ants walking together don't step in time.
+    var pace = 1.0
+    /// Needing you: when it next pulses. Another needs you, so it holds still. How the request it made was answered.
+    var pulseAt = 0.0, hushed = false, answered: Bool?
+    /// Leaving for the text and coming back after, each in turn; how fast it walks home; when it last nodded.
+    var departAt = 0.0, returnAt = 0.0, homeCruise = 50.0, nodAt = -10.0
     /// Its session's own spot, which it strolls and runs errands around, and whether it's walking back there.
     var home: SIMD2<Double>, homing = false, crept = SIMD2<Double>(0, 0)
     var spot: SIMD2<Double> { home + crept }
@@ -163,6 +327,8 @@ final class Ant {
         home = p
         tail = p - SIMD2(cos(heading), sin(heading)) * 6.6 * Ant.scale
         phase = rng.next(in: 0...6)
+        tempo = rng.next(in: 0.75...1.35)
+        pace = rng.next(in: 0.85...1.15); leash = rng.next(in: 24...32)
         drift = SIMD3(rng.next(in: 0...(2 * .pi)), rng.next(in: 0...(2 * .pi)), rng.next(in: 0...(2 * .pi)))
         for side in [-1.0, 1.0] {
             for i in 0..<3 {
@@ -174,21 +340,32 @@ final class Ant {
 
     /// Starts acting out `a`, from a calm pose.
     func set(_ a: Act, at t: Double, rng: inout SplitMix) {
+        let was = act
         act = a; since = t; flags = 0; until = 0
-        goal = nil; faceTo = nil; mill = nil; still = false; nervous = true; cruise = 44; tap = 0; wave = 0
-        size.target = 1; rear.target = 0; antennae.target = 0; curl.target = 0
+        goal = nil; faceTo = nil; mill = nil; aim = nil; still = false; nervous = false; cruise = 44; tap = 0; wave = 0
+        // Held to talk, it keeps the size its situation gave it.
+        if a != .listen { size.target = 1 }
+        rear.target = 0; antennae.target = 0; curl.target = 0
         switch a {
-        case .work: nervous = false; cruise = 50; antennae.target = 0.3
-        case .needs: nervous = false; cruise = 90
-        case .done: nervous = false; still = true; antennae.target = 0.7
-        case .failed: nervous = false; still = true; antennae.target = -1; size.target = 0.92
-        case .sleep, .listen: nervous = false
-        case .leave: nervous = false; cruise = 50
-        case .aside: nervous = false; cruise = 80
-        case .wait: nervous = false; cruise = 50
-        case .wander: nervous = false; still = true; nextStroll = t + rng.next(in: 20...60)
+        case .work: antennae.target = 0.3; wander = h; wanderV = 0
+        // A short freeze and a pop, then it runs to the middle.
+        case .needs: still = true; until = t + 0.25; size.v += 3.5; cruise = 90; pulseAt = t + 3
+        case .done: still = true; antennae.target = 0.7
+        case .rest: still = true
+        case .leave: cruise = 50
+        case .aside: cruise = 80
+        case .wait: cruise = 85; still = true
+        case .listen: break
+        }
+        // Answered: allowed, a squash and a quick trip home; denied, it droops and walks home slowly.
+        if was == .needs, a != .needs, let ok = answered {
+            answered = nil
+            if ok { size.v -= 5; homeCruise = 110 } else { antennae.target = -1; homeCruise = 22 }
         }
     }
+
+    /// How far it is from the nearest edge of the screen.
+    func edgeDistance(_ screen: SIMD2<Double>) -> Double { min(x, screen.x - x, y, screen.y - y) }
 
     /// The burn-in drift: like the face's, very slow sine waves (about 15 and 11 minutes for where, 12 for which way),
     /// plus a 3 pt circle every 30 s that is always faster than they are, so an ant standing still creeps at 0.35 to
@@ -204,7 +381,7 @@ final class Ant {
         return SIMD2(x + c * lx - s * ly, y + s * lx + c * ly)
     }
 
-    func update(_ dt: Double, t: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, others: [SIMD2<Double>] = [],
+    func update(_ dt: Double, t: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, others: [SIMD2<Double>] = [], piles: [SIMD2<Double>] = [],
                 rng: inout SplitMix) {
         think(t: t, dt: dt, screen: screen, listenAt: listenAt, rng: &rng)
         // Standing still, it creeps along the drift (and turns, unless it's facing something); its feet stretch and,
@@ -223,7 +400,7 @@ final class Ant {
             x += step.x; y += step.y
             if faceTo == nil { h += d.z * 0.6 }
         }
-        var want = goal
+        var want = goal ?? aim
         if let m = mill {
             let a = atan2(y - m.c.y, x - m.c.x) + 0.6
             want = m.c + SIMD2(cos(a), sin(a)) * m.r
@@ -234,22 +411,24 @@ final class Ant {
             twitchAt = t + 0.1 + rng.next(in: 0...0.28)
             if nervous && mill == nil && rng.next(in: 0...1) < (want != nil ? 0.05 : 0.14) { pauseTo = t + 0.15 + rng.next(in: 0...0.45) }
         }
-        var speed = still || t < pauseTo ? 0 : cruise
+        var speed = still || t < pauseTo ? 0 : cruise * pace
         if let w = want {
             let d = simd_length(w - SIMD2(x, y))
             // It walks around other ants rather than over them, turning away (and a little to its right, so two
             // meeting head on pass each other) once one is within 45 pt.
             var dir = (w - SIMD2(x, y)) / max(d, 1e-6)
-            for o in others {
+            func avoid(_ o: SIMD2<Double>, within near: Double) {
                 let off = SIMD2(x, y) - o, l = simd_length(off)
-                if l > 0.5 && l < 45 { let away = off / l; dir += (away + SIMD2(-away.y, away.x) * 0.5) * (45 - l) / 45 * 1.6 }
+                if l > 0.5 && l < near { let away = off / l; dir += (away + SIMD2(-away.y, away.x) * 0.5) * (near - l) / near * 1.6 }
             }
+            for o in others { avoid(o, within: 45) }
+            for o in piles { avoid(o, within: 22) }
             h += max(-9, min(9, wrap(atan2(dir.y, dir.x) - h) * 6)) * dt
-            if mill == nil { speed *= d < 3 ? 0 : max(0.3, min(1, d / 30)) }
+            if mill == nil && aim == nil { speed *= d < 3 ? 0 : max(0.3, min(1, d / 30)) }
         } else if let f = faceTo {
             h += max(-7, min(7, wrap(atan2(f.y - y, f.x - x) - h) * 7)) * dt
         }
-        if speed > 0 { h += turn * dt * 2.5 } else if nervous && faceTo == nil && want == nil { h += turn * dt * 1.2 }
+        if speed > 0 && aim == nil { h += turn * dt * 2.5 } else if nervous && faceTo == nil && want == nil { h += turn * dt * 1.2 }
         let m = 36.0
         if act != .leave && act != .wait && !homing && (x < m || x > screen.x - m || y < m || y > screen.y - m) {
             h += max(-1, min(1, wrap(atan2(screen.y / 2 - y, screen.x / 2 - x) - h))) * 5 * dt
@@ -299,45 +478,54 @@ final class Ant {
         let el = t - since
         // Settled acts happen at its own spot (a second one that needs you waves from there): away from it (back from
         // the middle, from off screen, or drifted off), it walks back first.
-        let settled = [.wander, .work, .done, .failed, .sleep].contains(act) || (act == .needs && !front)
+        let settled = [.rest, .work, .done].contains(act) || (act == .needs && !front)
         if settled && (homing || simd_length(spot - SIMD2(x, y)) > 45) {
+            // Back from off screen, each waits its turn.
+            guard t >= returnAt else { goal = nil; still = true; return }
             guard simd_length(spot - SIMD2(x, y)) < 5 else {
-                homing = true; goal = spot; mill = nil; still = false; nervous = false; cruise = 50; curl.target = 0
+                homing = true; goal = spot; mill = nil; still = false; nervous = false; cruise = homeCruise; curl.target = 0
                 return
             }
-            homing = false
+            homing = false; homeCruise = 50
             set(act, at: t, rng: &rng)
         }
         switch act {
-        case .wander:
-            // Nothing going on, so it mostly stands; now and then it takes a short stroll.
-            if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
-                goal = nil; still = true; nervous = false; nextStroll = t + rng.next(in: 30...90)
-            } else if goal == nil && t > nextStroll {
-                goal = near(15...40, screen, &rng); still = false; nervous = true; cruise = 26
-            }
+        case .rest:
+            // Your turn: it stands where it is (creeping against burn-in), done with its crumbs.
+            break
         case .work:
-            // It moves as much as its session does: each hook event sends it on a short errand, and each errand
-            // ends in reading, antennae drumming the ground. With no new events it just stands, antennae still.
-            // Without event counts (Bluetooth), an errand every 6 to 10 s.
-            let errand = events == nil ? t > nextStroll : worked > since && worked > nextStroll
-            if until > 0 {
-                if t > until { until = 0; tap = events == nil || t - worked < 20 ? 0.25 : 0 }
-            } else if let g = goal {
-                if simd_length(g - SIMD2(x, y)) < 6 { goal = nil; still = true; tap = 1; until = t + 0.9 + rng.next(in: 0...1.2) }
-            } else if errand || flags == 0 {
-                flags = 1; nextStroll = events == nil ? t + rng.next(in: 6...10) : t
-                goal = near(20...50, screen, &rng); still = false; tap = 0
-            } else {
-                still = true
-                if events != nil && t - worked > 20 { tap = 0 }
-            }
+            // Busy, thinking or running tools alike, it walks slowly about its spot and never stops: Reynolds' wander
+            // on a leash. Where it heads drifts smoothly (a slowly wandering angle, no twitches), and the farther it gets
+            // from its spot the harder it's pulled back, so it keeps to a patch about `leash` across without a set
+            // path, and no pixel stays under it for long. Slower after five minutes. While another needs you it holds
+            // still.
+            if hushed { aim = nil; still = true; break }
+            still = false
+            // The course it means to walk wanders on the screen, not relative to where it faces (which turned with it
+            // and spun it in place): it turns at a rate that drifts at random, damped, and never tighter than a 15 pt
+            // circle, so it changes its mind slowly.
+            cruise = (el > 300 ? 9 : 14) * tempo
+            let tightest = cruise * pace / 15
+            wanderV += (-1.2 * wanderV + rng.next(in: -1...1) * 2.4) * dt
+            wanderV = max(-tightest, min(tightest, wanderV))
+            wander += wanderV * dt
+            let ahead = SIMD2(cos(wander), sin(wander))
+            let off = spot - SIMD2(x, y), d = simd_length(off)
+            let pull = max(0, min(1, (d - 0.5 * leash) / (0.5 * leash)))
+            let dir = simd_normalize(ahead + (d > 0.1 ? off / d : .zero) * pull * pull * 2.5)
+            // The leash bends the course too, so the two never pull apart.
+            wander += remainder(atan2(dir.y, dir.x) - wander, 2 * .pi) * min(1, dt * 2)
+            aim = SIMD2(x, y) + dir * 12
         case .needs:
-            // The one forward runs to the middle, grows, rears and waves; another that needs you waves where it is.
+            // A short freeze first. Then the one forward runs to the middle, grows, rears and waves; another that needs
+            // you waves where it is. Each pulses, its whole body, every 3 s for a minute and then every 15 s until
+            // answered; a second one at half that rate.
+            if t < until { break }
+            if t > pulseAt { size.v += 3; pulseAt = t + (el < 60 ? 3 : 15) * (front ? 1 : 2) }
             if !front {
                 still = true; faceTo = SIMD2(x, y + 100); size.target = 1.3; rear.target = 0.5; wave = 1; antennae.target = 1
             } else if flags == 0 {
-                goal = SIMD2(screen.x / 2, screen.y / 2 - 30)
+                still = false; goal = SIMD2(screen.x / 2, screen.y / 2 - 30)
                 if simd_length(goal! - SIMD2(x, y)) < 4 {
                     flags = 1; goal = nil; still = true; faceTo = SIMD2(x, y + 100)
                     size.target = 2.2; rear.target = 1; wave = 1; antennae.target = 1
@@ -346,18 +534,22 @@ final class Ant {
         case .done:
             // Only an ant that needs you tries to catch your eye; a finished one just lifts its antennae for a moment.
             if el > 2.5 && flags == 0 { flags = 1; antennae.target = 0 }
-        case .failed:
-            // Failed, it stands with antennae drooped, a little lower; no fuss, it doesn't need you yet.
-            break
-        case .sleep:
-            // Curls into a C where it is, legs gathered in, breathing; now and then it twitches.
-            if el > 1 && !still { still = true; antennae.target = -1; curl.target = 1 }
-            if still {
-                size.target = 1 + 0.04 * sin(t * 1.3)
-                if rng.next(in: 0...1) < dt * 0.15 { size.v += 1.5 }
-            }
         case .listen:
-            still = true; faceTo = listenAt ?? SIMD2(screen.x / 2, screen.y - 120); antennae.target = 1; tap = 0.35
+            // Held to talk, it steps about 40 pt out from under the fingertip, to the side with the most room, and
+            // faces the finger while you talk.
+            let f = listenAt ?? SIMD2(screen.x / 2, screen.y - 120)
+            if flags == 0 {
+                flags = 1
+                let room = { (p: SIMD2<Double>) in min(p.x, screen.x - p.x, p.y, screen.y - p.y) }
+                let away = simd_length(SIMD2(x, y) - f) > 1 ? simd_normalize(SIMD2(x, y) - f) : SIMD2(1, 0)
+                // Straight away from the finger unless another way has clearly more room.
+                let ways = [away, SIMD2(1, 0), SIMD2(-1, 0), SIMD2(0, 1), SIMD2(0, -1)].map { f + $0 * 40 }
+                let score = ways.enumerated().map { room($1) + ($0 == 0 ? 8 : 0) }
+                let to = ways[score.indices.max { score[$0] < score[$1] }!]
+                if simd_length(SIMD2(x, y) - f) < 36 { goal = to; still = false; cruise = 70 }
+            }
+            if let g = goal, simd_length(g - SIMD2(x, y)) < 4 { goal = nil }
+            if goal == nil { still = true; faceTo = f; antennae.target = 1; tap = 0.35 }
         case .aside:
             // Reading: the one talking goes to the corner by the text and faces in.
             if flags == 0 {
@@ -366,8 +558,9 @@ final class Ant {
                 goal = nil; still = true; faceTo = SIMD2(screen.x / 2, screen.y / 2)
             }
         case .wait:
-            // The others walk off the nearest edge and wait just past it.
-            if flags == 0 {
+            // The others walk off the nearest edge, one after another, and wait just past it.
+            if flags == 0 && t >= departAt {
+                still = false
                 flags = 1; goal = offEdge(screen)
             } else if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
                 goal = nil; still = true
@@ -438,7 +631,9 @@ final class Ant {
         // Walking, the head bobs with each step: a nod forward and a slight swing to the side of the tripod pushing.
         let walking = min(1, v / 20), sway = sin(gait) * 0.14 * walking
         let neckAt = SIMD2(3.0 + r, 0.0), neck = { (p: SIMD2<Double>) in rotated(p, about: neckAt, by: -cu * 0.7 + sway) }
-        let lift = 1 + 0.18 * r, hx = 5.1 + 1.6 * r + tap * 0.4 * sin(t * 30) + abs(cos(gait)) * 0.35 * walking
+        // Let go of after talking, it nods: the head dips back once.
+        let nod = t - nodAt < 0.5 ? sin((t - nodAt) / 0.5 * .pi) * 1.4 : 0
+        let lift = 1 + 0.18 * r, hx = 5.1 + 1.6 * r + tap * 0.4 * sin(t * 30) + abs(cos(gait)) * 0.35 * walking - nod
         let fills = [oval(-4.7, 0, 4.2, 2.6 * (1 + 0.03 * sin(t * 2 + phase)), waist), oval(0, 0, 0.8, 0.7, waist),
                      oval(0.8 + r, 0, 2.2 * lift, 1.4 * lift, { $0 }), oval(hx, 0, 2.3 * lift, 2.2 * lift, neck)]
         // Antennae, elbowed: up or drooped, drumming, the big wave; curled up, folded back and shorter.

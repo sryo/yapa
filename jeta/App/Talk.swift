@@ -80,6 +80,23 @@ final class Talk: NSObject {
         deliver("/say", Data(text.utf8), to: session)
     }
 
+    /// Starts a Claude Code session on the Mac in `folder`, in the Claude app; `done` says how it went, in a few words.
+    func newSession(in folder: String, done: @escaping (String) -> Void) {
+        post("/new", Data(folder.utf8)) { json in
+            done(json == nil ? "the Mac didn't answer: is che running?" : json?["url"] != nil ? "opening in the Claude app" : "the Mac has no such folder")
+        }
+    }
+
+    /// The Claude app's names for the sessions `ids`, each with the session that started it; nil when the Mac didn't
+    /// answer.
+    func names(_ ids: [String], done: @escaping ([String: (name: String, parent: String?)]?) -> Void) {
+        let list = ids.joined(separator: ",").addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-", ","])) ?? ""
+        post("/sessions?ids=" + list, Data(), method: "GET") { json in
+            guard let all = json?["sessions"] as? [String: [String: String]] else { return done(nil) }
+            done(all.compactMapValues { o in o["name"].map { ($0, o["parent"]) } })
+        }
+    }
+
     private func deliver(_ path: String, _ body: Data, to session: String?) {
         show("Sending…")
         let query = session.flatMap { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-"])) }
@@ -103,8 +120,8 @@ final class Talk: NSObject {
         }
     }
 
-    /// One HTTP/1.1 POST over a raw connection, since URLSession can't dial a Bonjour service; nil on failure.
-    private func post(_ path: String, _ body: Data, done: @escaping ([String: Any]?) -> Void) {
+    /// One HTTP/1.1 request over a raw connection, since URLSession can't dial a Bonjour service; nil on failure.
+    private func post(_ path: String, _ body: Data, method: String = "POST", done: @escaping ([String: Any]?) -> Void) {
         guard let mac else { return done(nil) }
         let c = NWConnection(to: mac, using: .tcp)
         var got = Data(), finished = false
@@ -124,7 +141,7 @@ final class Talk: NSObject {
             }
         }
         c.start(queue: .main)
-        let head = "POST \(path) HTTP/1.1\r\nHost: yapa\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        let head = "\(method) \(path) HTTP/1.1\r\nHost: yapa\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in })
         read()
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finish(nil) }

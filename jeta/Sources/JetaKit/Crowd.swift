@@ -10,8 +10,13 @@ public struct SessionInfo: Equatable {
     public var id, name: String, state: SessionState
     /// Counts the session's hook events, so a face swiped away comes back on the next one.
     public var events: Int
-    public init(id: String, name: String, state: SessionState, events: Int) {
-        self.id = id; self.name = name; self.state = state; self.events = events
+    /// The session that started this one, whose ant it stays near.
+    public var parent: String?
+    /// What it's doing (its tool and on what), and when its turn began, while it works.
+    public var doing = "", since: Double?
+    public init(id: String, name: String, state: SessionState, events: Int, parent: String? = nil, doing: String = "", since: Double? = nil) {
+        self.id = id; self.name = name; self.state = state; self.events = events; self.parent = parent
+        self.doing = doing; self.since = since
     }
 }
 
@@ -66,7 +71,8 @@ public final class Crowd {
     }
 
     private func pickFront() {
-        let needing = Set(shown.filter { $0.state == .needs }.map(\.id)), was = standing
+        // A failed turn won't go on until you look at it, so it needs you like a question does.
+        let needing = Set(shown.filter { $0.state == .needs || $0.state == .failed }.map(\.id)), was = standing
         if let f = focused, needing.contains(f) { standing = f }
         else if let s = standing, needing.contains(s) { return }
         else { standing = shown.first { needing.contains($0.id) }?.id }
@@ -155,7 +161,7 @@ public final class Crowd {
             case .working: mood = .busy
             case .needs: mood = .attention
             case .finished(let at): mood = t - at < 5 ? .proud : t - at < 95 ? .idle : .sleep
-            case .failed: mood = .dizzy
+            case .failed: mood = .attention
             case .quiet: mood = .sleep
             }
             faces[m.id]?.set(mood, at: t)

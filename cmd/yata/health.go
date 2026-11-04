@@ -47,14 +47,38 @@ func NewMonitor(svcs []Service, now func() time.Time) *Monitor {
 	return m
 }
 
+// Set replaces the services watched, keeping what's known of the ones that stay.
+func (m *Monitor) Set(svcs []Service) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old := map[string]State{}
+	for _, s := range m.states {
+		old[s.Name] = s
+	}
+	m.svcs, m.states = svcs, make([]State, len(svcs))
+	for i, s := range svcs {
+		if st, ok := old[s.Name]; ok {
+			m.states[i] = st
+		} else {
+			m.states[i] = State{Name: s.Name, Since: m.now().Unix()}
+		}
+	}
+}
+
 func (m *Monitor) Poll() {
-	up := make([]bool, len(m.svcs))
-	for i, s := range m.svcs {
+	m.mu.Lock()
+	svcs := m.svcs
+	m.mu.Unlock()
+	up := make([]bool, len(svcs))
+	for i, s := range svcs {
 		up[i] = check(s.Check)
 	}
 	t := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.states) != len(up) {
+		return // the list changed while checking; the next poll catches up
+	}
 	all := true
 	for i := range m.states {
 		if !m.polled || m.states[i].Up != up[i] {

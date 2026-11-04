@@ -46,6 +46,8 @@ public struct Screen {
     public var note = ""
     /// The clock replies are stamped with, so an open one can say how long ago it came in.
     public var now = 0.0
+    /// The sessions the hooks report, for the session list: what each is doing and for how long.
+    public var sessions: [SessionInfo] = []
     private var board = NoticeBoard(), page = 0
     private var replies: [Reply] = [], reading: String?, scroll = 0, newest = -Double.infinity
     /// How many lines of a reply show at once.
@@ -206,14 +208,21 @@ public struct Screen {
     /// The session the open text is about (its id from the hooks), if it's known.
     public var subject: String? { mode == .reply ? reading : mode == .question || mode == .detail ? current?.from : nil }
 
-    /// What each session last said. A new one opens to read, unless something else is up.
+    /// What each session last said. Text comes out of an ant only when its session needs you, so a reply opens by
+    /// itself only when it ends on a question to you; any other waits for a tap on its ant.
     public mutating func update(replies r: [Reply]) {
         replies = r
         if let n = r.first, n.at > newest {
-            if newest > -.infinity, mode == .face { reading = n.id; scroll = 0; mode = .reply }
+            if newest > -.infinity, mode == .face, Screen.asks(n.text) { reading = n.id; scroll = 0; mode = .reply }
             newest = n.at
         }
         if mode == .reply, !r.contains(where: { $0.id == reading }) { mode = .face }
+    }
+
+    /// Whether a reply ends on a question: its last sentence, past any `jeta:` lines, ends in a question mark.
+    static func asks(_ text: String) -> Bool {
+        let last = plain(text).last?.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "*_`)")))
+        return last?.hasSuffix("?") == true
     }
 
     /// Opens a session's last reply (its face was tapped); false when it has none.
@@ -232,6 +241,23 @@ public struct Screen {
         scroll = max(0, min(scroll + n * (Screen.readLines - 1), max(0, count)))
     }
     /// How long ago, coarse: it changes at most once a minute.
+    /// How a session is, for the list: in whole minutes, so a line changes at most once a minute.
+    static func state(_ s: SessionInfo, now: Double) -> String {
+        switch s.state {
+        case .needs: return "needs you"
+        case .working: return s.since.map { now - $0 < 60 ? "just started" : "working \(Screen.took(now - $0))" } ?? "working"
+        case .finished(let at): return "done " + ago(now - at)
+        case .failed: return "stopped on an error"
+        case .quiet: return "quiet"
+        }
+    }
+
+    /// A length of time in minutes, or hours and minutes.
+    static func took(_ s: Double) -> String {
+        let m = Int(s / 60)
+        return m < 60 ? "\(m) min" : m % 60 == 0 ? "\(m / 60) h" : "\(m / 60) h \(m % 60) min"
+    }
+
     static func ago(_ s: Double) -> String {
         switch s {
         case ..<60: return "just now"
@@ -321,7 +347,10 @@ public struct Screen {
             if asking == nil, board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
             return out
         case .roster:
-            let rows = board.roster.prefix(5).flatMap { wrap("\($0.session) · \($0.state)", .body, max: 1) }
+            let rows = sessions.isEmpty ? board.roster.prefix(5).flatMap { wrap("\($0.session) · \($0.state)", .body, max: 1) }
+                : sessions.prefix(5).flatMap { s in
+                    wrap("\(s.name) · \(Screen.state(s, now: now))", .body, max: 1) + (s.doing.isEmpty ? [] : wrap(s.doing, .hint, max: 1))
+                }
             return (rows.isEmpty ? wrap("no sessions yet", .body) : rows) + wrap("tap: close · hold: ask the manager", .hint)
         case .reply:
             guard let r = shownReply, let w = window(width: width) else { return [] }

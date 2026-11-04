@@ -75,6 +75,18 @@ on_phone() {
   return $rc
 }
 
+# The pad can turn parts on and off on the phone, so the phone's down files win over the Mac's before each sync.
+# A phone that can't be reached is left to on_phone to report.
+pull_down() {
+  key=; [ -f "$HOME/.ssh/yapa_ed25519" ] && key="-i $HOME/.ssh/yapa_ed25519"
+  states=$(ssh -o ConnectTimeout=5 -o BatchMode=yes $key "$host" \
+    'cd "${YAPA_JB:-/var/jb}/etc/yapa/parts" 2>/dev/null && for d in */; do [ -f "$d/part" ] || continue; [ -f "$d/down" ] && echo "off ${d%/}" || echo "on ${d%/}"; done' 2>/dev/null) || return 0
+  echo "$states" | while read -r s n; do
+    [ -f "$stage/parts/$n/part" ] || continue
+    if [ "$s" = off ]; then : > "$stage/parts/$n/down"; else rm -f "$stage/parts/$n/down"; fi
+  done
+}
+
 cmd=$1; [ $# -gt 0 ] && shift
 case $cmd in *@*) set -- "$cmd" "$@"; cmd=install ;; esac
 case $cmd in
@@ -148,6 +160,7 @@ add)
   ;;
 on|off)
   name=$1; [ -n "$name" ] || usage
+  phone_host; pull_down
   f=$stage/parts/$name/part
   [ -f "$f" ] || die "There's no part called $name. ./ya parts lists them; ./ya add makes one."
   if [ "$cmd" = off ]; then : > "${f%part}down"
@@ -163,6 +176,7 @@ on|off)
   ;;
 *) usage ;;
 esac
+case $cmd in on|off) ;; *) pull_down ;; esac
 check_parts
 cp phone/Caddyfile "$stage/Caddyfile.core"
 
@@ -195,9 +209,12 @@ for d in parts/*/; do
   [ -f "$d/part" ] || continue
   n=${d%/}; n=${n##*/}; r=$(get run "$d/part")
   [ -f "$d/down" ] || on="$on $n"
+  # A part turned off keeps the binary it ran, which would otherwise go with its job.
+  if [ -n "$r" ] && [ -f "$d/down" ] && [ ! -f "$d/$r" ] && [ -f "$bin/$r" ]; then cp "$bin/$r" "$d/$r"; fi
   [ -n "$r" ] && [ -f "$d/$r" ] || continue
   if [ ! -f "$d/down" ] && ! cmp -s "$d/$r" "$bin/$r"; then put "$d/$r" "$r"; echo "$n" >> changed; fi
-  rm -f "$d/$r"
+  # A part that's off keeps its binary with it, so the pad can turn it on without the Mac.
+  [ -f "$d/down" ] || rm -f "$d/$r"
 done
 rm -rf "$P.new" "$P.old"; cp -R parts "$P.new"; [ ! -d "$P" ] || mv "$P" "$P.old"; mv "$P.new" "$P"; rm -rf "$P.old"
 
@@ -262,7 +279,8 @@ if [ "$cmd" = install ]; then for d in $core; do put "core/$d" "$d"; done; fi
   done
   echo ']'
 } > "$s.new"
-if cmp -s "$s.new" "$s"; then rm -f "$s.new"; else mv -f "$s.new" "$s"; [ "$cmd" = install ] || restart yata; fi
+# yata, when it's yata running this for the pad, reads the new list itself.
+if cmp -s "$s.new" "$s"; then rm -f "$s.new"; else mv -f "$s.new" "$s"; [ "$cmd" = install ] || [ -n "$YATA_SELF" ] || restart yata; fi
 
 # The Caddyfile: the core template, a path under the main site for each site part with no address, and a block
 # for each part with one.
@@ -285,6 +303,9 @@ if cmp -s "$s.new" "$s"; then rm -f "$s.new"; else mv -f "$s.new" "$s"; [ "$cmd"
 } > "$etc/Caddyfile.new"
 if cmp -s "$etc/Caddyfile.new" "$etc/Caddyfile"; then rm -f "$etc/Caddyfile.new"
 else mv -f "$etc/Caddyfile.new" "$etc/Caddyfile"; [ "$cmd" = install ] || restart caddy; fi
+
+# What it takes to run this again on the phone alone, which yata does when the pad turns a part on or off.
+if [ -z "$YATA_SELF" ]; then cp setup "$etc/setup"; cp Caddyfile.core "$etc/Caddyfile.core"; echo "$domain" > "$etc/domain"; fi
 
 if [ "$cmd" = install ]; then
   for d in $core; do cp "core/com.sryo.yapa.$d.plist" "$ld/"; own "$ld/com.sryo.yapa.$d.plist"; done

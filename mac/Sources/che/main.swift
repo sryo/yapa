@@ -117,8 +117,27 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
 
 func handle(_ c: NWConnection, _ r: Request) {
     switch (r.method, r.path) {
+    // The pad's names for the sessions its hooks report: GET /sessions?ids=a,b.
+    case ("GET", let p) where p.hasPrefix("/sessions"):
+        let ids = Set((query(p)["ids"] ?? "").split(separator: ",").map(String.init))
+        let list = named(ids, in: sessions).mapValues { n in
+            ["name": n.name, "title": n.title].merging(n.parent.map { ["parent": $0] } ?? [:]) { a, _ in a }
+        }
+        reply(c, "200 OK", ["sessions": list])
     case ("POST", "/cancel"):
         reply(c, "200 OK", ["cancelled": enter.cancel()])
+    // The pad's dial starts a session in a folder: the Claude app opens it behind whatever is in front.
+    case ("POST", let p) where p.hasPrefix("/new"):
+        guard let folder = said(r.body), let url = newSession(in: folder) else {
+            return reply(c, "400 Bad Request", ["error": "POST /new with the path of a folder on this Mac"])
+        }
+        if query(p)["dry"] == nil {
+            let open = NSWorkspace.OpenConfiguration()
+            open.activates = false
+            NSWorkspace.shared.open(url, configuration: open)
+        }
+        log("new session in \(folder)")
+        reply(c, "200 OK", ["folder": folder, "url": url.absoluteString])
     case ("POST", let p) where p.hasPrefix("/say"):
         guard let text = said(r.body) else { return reply(c, "400 Bad Request", ["error": "POST /say with UTF-8 text"]) }
         Task { @MainActor in await answer(c, text, lang: "text", ms: 0, path: p) }
@@ -139,7 +158,7 @@ func handle(_ c: NWConnection, _ r: Request) {
             }
         }
     default:
-        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, /say with UTF-8 text, or /cancel"])
+        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, /say with UTF-8 text, /new or /cancel, or GET /sessions?ids="])
     }
 }
 

@@ -233,4 +233,68 @@ final class ScreenTests: XCTestCase {
         s.update(board("jeta: server needs you · Which hostname?"))
         XCTAssertFalse(s.resting, "a question wakes it")
     }
+
+    // The session list says how each session is and, while one works, for how long and on what, in whole minutes.
+    func testSessionListSaysWhatEachIsDoing() {
+        var s = Screen()
+        s.now = 1000
+        s.sessions = [SessionInfo(id: "a", name: "jailbreak", state: .working(reading: false), events: 3, doing: "Bash ./ya", since: 1000 - 250),
+                      SessionInfo(id: "b", name: "che", state: .finished(at: 400), events: 2),
+                      SessionInfo(id: "c", name: "fresh", state: .working(reading: true), events: 1, doing: "thinking", since: 990)]
+        s.swipeDown()
+        XCTAssertEqual(s.mode, .roster)
+        let text = s.lines(width: 40).map(\.text)
+        XCTAssertEqual(Array(text.prefix(5)), ["jailbreak · working 4 min", "Bash ./ya", "che · done 10 min ago", "fresh · just started", "thinking"])
+        XCTAssertEqual(Screen.took(3 * 3600 + 120), "3 h 2 min")
+    }
+
+    // A question and every one of its options fit on the SE's 568×320 landscape screen, however long the session's name and
+    // the options, side by side or one per row; and nothing goes over the face's half when it needn't.
+    func testQuestionsFitTheScreen() {
+        let (W, H) = (568.0, 320.0) // the pad runs landscape
+        for (name, options) in [("Old\u{00A0}iPhone\u{00A0}SE\u{00A0}project", ["Yes, build it", "Prototype first"]),
+                                ("jailbreak", ["Yes", "No"]),
+                                ("pad-hardware-buddy-bluet", ["Done, install", "Not now", "Show me the diff first"])] {
+            var s = Screen()
+            s.update(board("jeta: \(name) needs you · Should I build carrying, the heap below and putting crumbs away? · " + options.joined(separator: " | ")))
+            XCTAssertEqual(s.mode, .question)
+            let placed = s.place(width: W, height: H)
+            XCTAssertEqual(placed.filter { $0.style == .option || $0.style == .suggestion }.count, options.count)
+            for p in placed { XCTAssertLessThanOrEqual(p.y + p.height, H, "\(name): \(p.text) is off the bottom") }
+        }
+    }
+
+    // A question asked on the pad (AskUserQuestion) fits too, with all its options and At the Mac.
+    func testAskedQuestionsFitTheScreen() {
+        let (W, H) = (568.0, 320.0)
+        var s = Screen()
+        let long = String(repeating: "and then some more words to read ", count: 12)
+        for text in ["", long] {
+            s.ask(Asked(id: text.isEmpty ? "1" : "2", session: "Old\u{00A0}iPhone\u{00A0}SE\u{00A0}project", tool: "AskUserQuestion", text: text, questions: [Asked.Question(
+                question: "What should happen with the crumbs, then? " + text, header: "Crumbs",
+                options: ["Remove crumbs", "Keep, unchanged", "Just the carrying"], multi: false)]))
+            for open in [false, true] {
+                if open { s.tap() }
+                let placed = s.place(width: W, height: H)
+                XCTAssertEqual(placed.filter { $0.style == .option || $0.style == .suggestion }.count, 4, "\(s.mode)")
+                for p in placed { XCTAssertLessThanOrEqual(p.y + p.height, H, "\(s.mode): \(p.text) is off the bottom") }
+                if open { s.tap() }
+            }
+        }
+    }
+
+    // Text comes out of an ant only when its session needs you: a new reply waits for a tap on its ant, unless it
+    // ends on a question to you.
+    func testRepliesWaitForATapUnlessTheyAsk() {
+        var s = Screen()
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Old.", at: 1)])
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Done? No.\n\nAll tests pass.", at: 5)])
+        XCTAssertEqual(s.mode, .face)
+        XCTAssertTrue(s.read(session: "a"))
+        XCTAssertEqual(s.mode, .reply)
+        s.tap()
+        XCTAssertEqual(s.mode, .face)
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Built it.\n\nShould I **commit**?", at: 9)])
+        XCTAssertEqual(s.mode, .reply, "it asks, so it opens")
+    }
 }
