@@ -163,7 +163,7 @@ final class ColonyTests: XCTestCase {
                 for i in p.indices { for j in p.indices where j > i { XCTAssertGreaterThan(simd_length(p[i] - p[j]), 26) } }
             }
         }
-        for a in all { XCTAssertLessThan(simd_length(c.position(of: a.id)! - home[a.id]!), 60, "\(a.id) stayed near its spot") }
+        for a in all { XCTAssertLessThan(simd_length(c.position(of: a.id)! - home[a.id]!), 70, "\(a.id) stayed near its spot, which creeps against burn-in") }
     }
 
     // The ant that needs you comes forward; answered, it walks back to its own spot.

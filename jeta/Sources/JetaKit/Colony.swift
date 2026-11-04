@@ -144,7 +144,8 @@ final class Ant {
     /// The session's hook event count, and when it last went up.
     var events: Int?, worked = -1e9, nextStroll = 0.0
     /// Its session's own spot, which it strolls and runs errands around, and whether it's walking back there.
-    var home: SIMD2<Double>, homing = false
+    var home: SIMD2<Double>, homing = false, crept = SIMD2<Double>(0, 0)
+    var spot: SIMD2<Double> { home + crept }
     /// Phases of the burn-in drift.
     var drift: SIMD3<Double>, bounce = SIMD2<Double>(1, 1)
     /// Half a turn per stride walked: what the head bobs to.
@@ -205,15 +206,18 @@ final class Ant {
         think(t: t, dt: dt, screen: screen, listenAt: listenAt, rng: &rng)
         // Standing still, it creeps along the drift (and turns, unless it's facing something); its feet stretch and,
         // now and then, take a small step to settle.
+        // At an edge the drift turns back rather than stopping there.
+        let d = drifted(t) - drifted(t - dt), reach = act == .needs ? 15.0 : 25.0, e = 30.0
+        if (x < e && d.x * bounce.x < 0) || (x > screen.x - e && d.x * bounce.x > 0) { bounce.x = -bounce.x }
+        if (y < e && d.y * bounce.y < 0) || (y > screen.y - e && d.y * bounce.y > 0) { bounce.y = -bounce.y }
+        // A small circle, faster than the waves ever get, keeps it creeping even when they turn or cancel.
+        let w = 2 * Double.pi / 30
+        let step = SIMD2(d.x * bounce.x, d.y * bounce.y) * reach
+            + 3.1 * SIMD2(cos(w * t + drift.z) - cos(w * (t - dt) + drift.z), sin(w * t + drift.z) - sin(w * (t - dt) + drift.z))
+        // Its spot drifts too, so creeping never takes it far enough from there to walk back.
+        crept += step
         if still && goal == nil && mill == nil {
-            // At an edge the drift turns back rather than stopping there.
-            let d = drifted(t) - drifted(t - dt), reach = act == .needs ? 15.0 : 25.0, m = 30.0
-            if (x < m && d.x * bounce.x < 0) || (x > screen.x - m && d.x * bounce.x > 0) { bounce.x = -bounce.x }
-            if (y < m && d.y * bounce.y < 0) || (y > screen.y - m && d.y * bounce.y > 0) { bounce.y = -bounce.y }
-            x += d.x * bounce.x * reach; y += d.y * bounce.y * reach
-            // A small circle, faster than the waves ever get, keeps it creeping even when they turn or cancel.
-            let w = 2 * Double.pi / 30
-            x += 3.1 * (cos(w * t + drift.z) - cos(w * (t - dt) + drift.z)); y += 3.1 * (sin(w * t + drift.z) - sin(w * (t - dt) + drift.z))
+            x += step.x; y += step.y
             if faceTo == nil { h += d.z * 0.6 }
         }
         var want = goal
@@ -293,9 +297,9 @@ final class Ant {
         // Settled acts happen at its own spot (a second one that needs you waves from there): away from it (back from
         // the middle, from off screen, or drifted off), it walks back first.
         let settled = [.wander, .work, .done, .failed, .sleep].contains(act) || (act == .needs && !front)
-        if settled && (homing || simd_length(home - SIMD2(x, y)) > 45) {
-            guard simd_length(home - SIMD2(x, y)) < 5 else {
-                homing = true; goal = home; mill = nil; still = false; nervous = false; cruise = 50; curl.target = 0
+        if settled && (homing || simd_length(spot - SIMD2(x, y)) > 45) {
+            guard simd_length(spot - SIMD2(x, y)) < 5 else {
+                homing = true; goal = spot; mill = nil; still = false; nervous = false; cruise = 50; curl.target = 0
                 return
             }
             homing = false
@@ -381,8 +385,8 @@ final class Ant {
     private func near(_ r: ClosedRange<Double>, _ screen: SIMD2<Double>, _ rng: inout SplitMix) -> SIMD2<Double> {
         let a = rng.next(in: 0...(2 * .pi)), d = rng.next(in: r)
         var p = SIMD2(x + cos(a) * d, y + sin(a) * d)
-        let off = p - home, l = simd_length(off)
-        if l > 30 { p = home + off / l * 30 }
+        let off = p - spot, l = simd_length(off)
+        if l > 30 { p = spot + off / l * 30 }
         return SIMD2(max(50, min(screen.x - 50, p.x)), max(70, min(screen.y - 70, p.y)))
     }
 
