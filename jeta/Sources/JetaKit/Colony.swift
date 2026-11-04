@@ -46,14 +46,15 @@ public final class Colony {
         advance(to: t)
         let ids = Set(sessions.map(\.id))
         for (id, a) in ants where !ids.contains(id) && a.act != .leave { a.set(.leave, at: t, rng: &rng) }
-        for s in sessions {
+        let homes = Colony.homes(sessions.count, screen)
+        for (s, home) in zip(sessions, homes) {
             let a = ants[s.id] ?? {
-                let a = Ant(at: SIMD2(rng.next(in: 60...(screen.x - 60)), rng.next(in: 90...(screen.y - 90))),
-                            heading: rng.next(in: 0...(2 * .pi)), rng: &rng)
+                let a = Ant(at: home, heading: rng.next(in: 0...(2 * .pi)), rng: &rng)
                 a.size.x = 0
                 ants[s.id] = a; order.append(s.id)
                 return a
             }()
+            a.home = home
             if let e = s.events, e != a.events { if a.events != nil { a.worked = t }; a.events = e }
             let act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listenAt != nil) : s.id == solo ? .aside : .wait
             if a.act != act || a.front != s.front { a.front = s.front; a.set(act, at: t, rng: &rng) }
@@ -78,6 +79,17 @@ public final class Colony {
         return order.compactMap { id in ants[id].map { $0.shape(id: id, t: now) } }.sorted { $0.0 < $1.0 }.map(\.1)
     }
 
+    /// Each session's own spot, in the order they started: one in the middle, more in two columns of rows, so ants
+    /// are far apart and each stays where you know it.
+    static func homes(_ n: Int, _ screen: SIMD2<Double>) -> [SIMD2<Double>] {
+        guard n > 1 else { return n == 1 ? [screen / 2] : [] }
+        let rows = (n + 1) / 2, top = 110.0, h = (screen.y - 2 * top) / Double(rows)
+        return (0..<n).map { k in
+            let alone = k == n - 1 && n % 2 == 1
+            return SIMD2(alone ? screen.x / 2 : screen.x * (k % 2 == 0 ? 0.25 : 0.75), top + h * (Double(k / 2) + 0.5))
+        }
+    }
+
     static func act(for mood: Mood, front: Bool, listening: Bool) -> Ant.Act {
         if listening || mood == .listening { return .listen }
         switch mood {
@@ -94,7 +106,8 @@ public final class Colony {
         while now < t {
             let dt = min(Colony.step, t - now)
             now += dt
-            for a in ants.values { a.update(dt, t: now, screen: screen, listenAt: listenAt, rng: &rng) }
+            let spots = ants.values.filter { $0.act != .leave }.map { SIMD2($0.x, $0.y) }
+            for a in ants.values { a.update(dt, t: now, screen: screen, listenAt: listenAt, others: spots, rng: &rng) }
         }
         for (id, a) in ants where a.act == .leave && (a.x < -40 || a.x > screen.x + 40 || a.y < -40 || a.y > screen.y + 40) {
             ants[id] = nil; order.removeAll { $0 == id }
@@ -130,8 +143,8 @@ final class Ant {
     var twitchAt = 0.0, turn = 0.0, pauseTo = 0.0, tap = 0.0, wave = 0.0, phase: Double
     /// The session's hook event count, and when it last went up.
     var events: Int?, worked = -1e9, nextStroll = 0.0
-    /// Where it stood before walking off for someone else's text, and that spot while it walks back.
-    var home: SIMD2<Double>?, comeBack: SIMD2<Double>?
+    /// Its session's own spot, which it strolls and runs errands around, and whether it's walking back there.
+    var home: SIMD2<Double>, homing = false
     /// Phases of the burn-in drift.
     var drift: SIMD3<Double>, bounce = SIMD2<Double>(1, 1)
     /// Half a turn per stride walked: what the head bobs to.
@@ -143,6 +156,7 @@ final class Ant {
 
     init(at p: SIMD2<Double>, heading: Double, rng: inout SplitMix) {
         (x, y, h) = (p.x, p.y, heading)
+        home = p
         tail = p - SIMD2(cos(heading), sin(heading)) * 6.6 * Ant.scale
         phase = rng.next(in: 0...6)
         drift = SIMD3(rng.next(in: 0...(2 * .pi)), rng.next(in: 0...(2 * .pi)), rng.next(in: 0...(2 * .pi)))
@@ -156,9 +170,6 @@ final class Ant {
 
     /// Starts acting out `a`, from a calm pose.
     func set(_ a: Act, at t: Double, rng: inout SplitMix) {
-        let back = act == .wait && a != .wait
-        if a == .wait && act != .wait { home = SIMD2(x, y) }
-        comeBack = back ? home : nil
         act = a; since = t; flags = 0; until = 0
         goal = nil; faceTo = nil; mill = nil; still = false; nervous = true; cruise = 44; tap = 0; wave = 0
         size.target = 1; rear.target = 0; antennae.target = 0; curl.target = 0
@@ -189,7 +200,8 @@ final class Ant {
         return SIMD2(x + c * lx - s * ly, y + s * lx + c * ly)
     }
 
-    func update(_ dt: Double, t: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, rng: inout SplitMix) {
+    func update(_ dt: Double, t: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, others: [SIMD2<Double>] = [],
+                rng: inout SplitMix) {
         think(t: t, dt: dt, screen: screen, listenAt: listenAt, rng: &rng)
         // Standing still, it creeps along the drift (and turns, unless it's facing something); its feet stretch and,
         // now and then, take a small step to settle.
@@ -218,14 +230,21 @@ final class Ant {
         var speed = still || t < pauseTo ? 0 : cruise
         if let w = want {
             let d = simd_length(w - SIMD2(x, y))
-            h += max(-9, min(9, wrap(atan2(w.y - y, w.x - x) - h) * 6)) * dt
+            // It walks around other ants rather than over them, turning away (and a little to its right, so two
+            // meeting head on pass each other) once one is within 45 pt.
+            var dir = (w - SIMD2(x, y)) / max(d, 1e-6)
+            for o in others {
+                let off = SIMD2(x, y) - o, l = simd_length(off)
+                if l > 0.5 && l < 45 { let away = off / l; dir += (away + SIMD2(-away.y, away.x) * 0.5) * (45 - l) / 45 * 1.6 }
+            }
+            h += max(-9, min(9, wrap(atan2(dir.y, dir.x) - h) * 6)) * dt
             if mill == nil { speed *= d < 3 ? 0 : max(0.3, min(1, d / 30)) }
         } else if let f = faceTo {
             h += max(-7, min(7, wrap(atan2(f.y - y, f.x - x) - h) * 7)) * dt
         }
         if speed > 0 { h += turn * dt * 2.5 } else if nervous && faceTo == nil && want == nil { h += turn * dt * 1.2 }
         let m = 36.0
-        if act != .leave && act != .wait && comeBack == nil && (x < m || x > screen.x - m || y < m || y > screen.y - m) {
+        if act != .leave && act != .wait && !homing && (x < m || x > screen.x - m || y < m || y > screen.y - m) {
             h += max(-1, min(1, wrap(atan2(screen.y / 2 - y, screen.x / 2 - x) - h))) * 5 * dt
         }
         h += spin * dt; spin *= exp(-dt * 9)
@@ -271,8 +290,15 @@ final class Ant {
 
     private func think(t: Double, dt: Double, screen: SIMD2<Double>, listenAt: SIMD2<Double>?, rng: inout SplitMix) {
         let el = t - since
-        if let b = comeBack {
-            guard simd_length(b - SIMD2(x, y)) < 4 else { goal = b; still = false; nervous = false; cruise = 50; return }
+        // Settled acts happen at its own spot (a second one that needs you waves from there): away from it (back from
+        // the middle, from off screen, or drifted off), it walks back first.
+        let settled = [.wander, .work, .done, .failed, .sleep].contains(act) || (act == .needs && !front)
+        if settled && (homing || simd_length(home - SIMD2(x, y)) > 45) {
+            guard simd_length(home - SIMD2(x, y)) < 5 else {
+                homing = true; goal = home; mill = nil; still = false; nervous = false; cruise = 50; curl.target = 0
+                return
+            }
+            homing = false
             set(act, at: t, rng: &rng)
         }
         switch act {
@@ -294,7 +320,7 @@ final class Ant {
                 if simd_length(g - SIMD2(x, y)) < 6 { goal = nil; still = true; tap = 1; until = t + 0.9 + rng.next(in: 0...1.2) }
             } else if errand || flags == 0 {
                 flags = 1; nextStroll = events == nil ? t + rng.next(in: 6...10) : t
-                goal = near(30...90, screen, &rng); still = false; tap = 0
+                goal = near(20...50, screen, &rng); still = false; tap = 0
             } else {
                 still = true
                 if events != nil && t - worked > 20 { tap = 0 }
@@ -351,10 +377,13 @@ final class Ant {
         return edges.min { $0.0 < $1.0 }!.1
     }
 
-    /// A spot a short way off, kept on screen.
+    /// A spot a short way off, within 30 pt of its own spot and on screen.
     private func near(_ r: ClosedRange<Double>, _ screen: SIMD2<Double>, _ rng: inout SplitMix) -> SIMD2<Double> {
         let a = rng.next(in: 0...(2 * .pi)), d = rng.next(in: r)
-        return SIMD2(max(50, min(screen.x - 50, x + cos(a) * d)), max(70, min(screen.y - 70, y + sin(a) * d)))
+        var p = SIMD2(x + cos(a) * d, y + sin(a) * d)
+        let off = p - home, l = simd_length(off)
+        if l > 30 { p = home + off / l * 30 }
+        return SIMD2(max(50, min(screen.x - 50, p.x)), max(70, min(screen.y - 70, p.y)))
     }
 
     /// The drawing, and its size so bigger ants draw on top.
