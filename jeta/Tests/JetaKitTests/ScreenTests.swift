@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import JetaKit
 
 final class ScreenTests: XCTestCase {
@@ -156,5 +157,80 @@ final class ScreenTests: XCTestCase {
             s.now = now
             XCTAssertEqual(s.lines(width: 40).first?.text, "yapa · \(ago)")
         }
+    }
+
+    // All text drifts together, slowly enough to read through (under 0.25 pt/s, never more than 15 pt off) and never
+    // stopping, so no line sits on the same pixels for long.
+    func testTextDriftsSoNoLineSitsStill() {
+        var s = Screen()
+        s.update(board("jeta: server needs you · Use port 8080 or 8443? · 8443 | 8080"))
+        s.now = 0
+        let still = s.place(width: 568, height: 320).map { SIMD2($0.x, $0.y) - s.drift }
+        for t in stride(from: 0.0, through: 7200, by: 7) {
+            s.now = t
+            let d = s.drift
+            XCTAssertLessThanOrEqual(simd_length(d), 15)
+            for (a, b) in zip(s.place(width: 568, height: 320).map { SIMD2($0.x, $0.y) - d }, still) {
+                XCTAssertLessThan(simd_distance(a, b), 1e-9, "every line moves with the drift")
+            }
+            s.now = t + 15
+            XCTAssertGreaterThan(simd_distance(s.drift, d), 1, "at \(t) s the text sat still for 15 s")
+            s.now = t + 1
+            XCTAssertLessThan(simd_distance(s.drift, d), 0.25)
+        }
+    }
+
+    // Text left up three minutes with nobody touching the pad goes back into its ant: a reply, the session list or a
+    // question's detail closes, and a question folds until a new one comes or a tap brings it back. A permission
+    // request stays, since only its buttons answer it.
+    func testUntouchedTextFoldsAway() {
+        var s = Screen()
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Done.", at: 0)])
+        s.read(session: "a")
+        s.now = 10; s.idle()
+        s.now = 150; s.idle()
+        XCTAssertEqual(s.mode, .reply)
+        s.now = 191; s.idle()
+        XCTAssertEqual(s.mode, .face)
+
+        let b = board("jeta: server needs you · Which hostname?")
+        s.update(b); s.tap(); s.idle()
+        XCTAssertEqual(s.mode, .detail)
+        s.now = 300; s.idle()
+        XCTAssertEqual(s.mode, .detail)
+        s.attend(); s.now = 470; s.idle()
+        XCTAssertEqual(s.mode, .detail)
+        s.now = 500; s.idle()
+        XCTAssertEqual(s.mode, .face)
+        s.update(b)
+        XCTAssertEqual(s.mode, .face, "the same question stays folded")
+        XCTAssertTrue(s.unfold())
+        XCTAssertEqual(s.mode, .question)
+        XCTAssertFalse(s.unfold())
+        s.idle()
+        s.now = 700; s.idle()
+        XCTAssertEqual(s.mode, .face)
+        s.update(board("jeta: server needs you · Which hostname?", "jeta: che needs you · Merge it?"))
+        XCTAssertEqual(s.mode, .question, "a new question comes up")
+
+        s.ask(session: "che", "Bash: ls")
+        s.now = 2000; s.idle()
+        XCTAssertEqual(s.mode, .question, "a permission request stays")
+        XCTAssertFalse(s.resting)
+    }
+
+    // The pad rests (the backlight dims) once nobody has touched it for three minutes and nothing needs you.
+    func testRestsOnlyWhenNothingNeedsYou() {
+        var s = Screen()
+        s.now = 100; s.idle()
+        XCTAssertFalse(s.resting)
+        s.now = 290; s.idle()
+        XCTAssertTrue(s.resting)
+        s.attend()
+        XCTAssertFalse(s.resting)
+        s.now = 480; s.idle()
+        XCTAssertTrue(s.resting)
+        s.update(board("jeta: server needs you · Which hostname?"))
+        XCTAssertFalse(s.resting, "a question wakes it")
     }
 }

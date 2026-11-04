@@ -74,6 +74,9 @@ public final class Colony {
         ants.values.contains { $0.v > 0.5 || $0.feet.contains { $0.s < 1 } || [.needs, .done, .failed, .listen].contains($0.act) }
     }
 
+    /// Whether an ant is trying to catch your eye, so the screen stays bright.
+    public var needsYou: Bool { ants.values.contains { $0.act == .needs } }
+
     public func shapes(at t: Double) -> [AntShape] {
         advance(to: t)
         return order.compactMap { id in ants[id].map { $0.shape(id: id, t: now) } }.sorted { $0.0 < $1.0 }.map(\.1)

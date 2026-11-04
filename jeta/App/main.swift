@@ -99,6 +99,8 @@ final class FaceView: UIView {
     @objc private func tapped(_ g: UITapGestureRecognizer) {
         // A tap right after talking stops the pending Enter.
         if talk?.tapped() == true { return }
+        // A question folded away while nobody was looking comes back first.
+        if screen.unfold() { return }
         // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
         let p = g.location(in: self)
         // A permission request is answered only by its buttons: Allow or Deny, never a tap anywhere else.
@@ -198,6 +200,8 @@ final class FaceView: UIView {
     fileprivate var noteEnds: (at: Double, span: Double)?
     fileprivate let pie = CAShapeLayer(), dots = CAShapeLayer()
     fileprivate var dotAt = Spring(x: 0), dotsShown = Spring(x: 0), dotsAt = 0.0, dotCount = 0
+    /// The backlight level from before the pad rested (nil while it's lit as the user set it), and how lit it is.
+    fileprivate var userBrightness: CGFloat?, lit = Spring(x: 1)
     private var options: [Placed] { screen.asking == nil ? placed.filter { $0.style == .option || $0.style == .suggestion } : [] }
     private var fingers: [Int: SIMD2<Double>] = [:]
 
@@ -211,6 +215,7 @@ final class FaceView: UIView {
     }
     // One finger down on an option squashes it until it lifts.
     override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
+        screen.attend()
         track(e)
         let down = e?.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled } ?? []
         motion.press(down.count == 1 ? down.first.flatMap { option(at: $0.location(in: self)) }?.1.key : nil, at: CACurrentMediaTime())
@@ -292,6 +297,8 @@ final class FaceView: UIView {
         face.aside(screen.mode == .detail || screen.mode == .roster || screen.mode == .reply, at: t)
         face.lift(screen.mode == .question, at: t)
         screen.now = t
+        screen.idle()
+        rest(screen.resting && !colony.needsYou, dt: 1 / Double(max(1, l.preferredFramesPerSecond)))
         placed = screen.place(width: Double(bounds.width), height: Double(bounds.height))
         motion.screen = SIMD2(Double(bounds.width), Double(bounds.height))
         motion.show(placed, from: SIMD2(Double(point(anchor).x), Double(point(anchor).y)), swipe: swipeWay, page: pageWay,
@@ -336,7 +343,7 @@ extension FaceView {
         }
         more.string = crowd.overflow > 0 && !slots.isEmpty ? "+\(crowd.overflow)" : ""
         more.bounds = CGRect(x: 0, y: 0, width: 40, height: 18)
-        more.position = CGPoint(x: bounds.midX, y: bounds.height - 24)
+        more.position = CGPoint(x: bounds.midX + screen.drift.x, y: bounds.height - 24 + screen.drift.y)
     }
 
     /// Each ant as four layers: its body filled, then its thighs, shins and antennae stroked, each at its own width.
@@ -418,7 +425,8 @@ extension FaceView {
         if let p { dotAt.step(to: Double(p.page), k: 160, damping: 0.8, dt: dt); dotCount = p.of }
         dots.opacity = Float(max(0, min(1, dotsShown.x)))
         guard dotCount > 1, dotsShown.x > 0.01 else { return }
-        let gap = 11.0, x = Double(bounds.width) * 0.3 - 18, top = Double(bounds.height) * 0.5 - gap * Double(dotCount - 1) / 2
+        let gap = 11.0, x = Double(bounds.width) * 0.3 - 18 + screen.drift.x
+        let top = Double(bounds.height) * 0.5 - gap * Double(dotCount - 1) / 2 + screen.drift.y
         let path = CGMutablePath()
         for i in 0..<dotCount {
             let near = max(0, 1 - abs(Double(i) - dotAt.x)), r = 2 + 1.5 * near
@@ -426,6 +434,24 @@ extension FaceView {
         }
         dots.path = path
         dots.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
+    }
+
+    /// Resting (nobody near, nothing needing you), the backlight fades down over a few seconds; anything that needs
+    /// you or a touch brings it straight back to the level it was at.
+    func rest(_ resting: Bool, dt: Double) {
+        if resting && userBrightness == nil { userBrightness = UIScreen.main.brightness }
+        guard let full = userBrightness else { return }
+        lit.step(to: resting ? 0 : 1, k: resting ? 3 : 80, damping: 1, dt: dt)
+        let dim = min(full, 0.08), level = dim + (full - dim) * CGFloat(max(0, min(1, lit.x)))
+        if !resting && lit.x > 0.99 { UIScreen.main.brightness = full; userBrightness = nil; lit = Spring(x: 1); return }
+        if abs(UIScreen.main.brightness - level) > 0.004 { UIScreen.main.brightness = level }
+    }
+
+    /// Leaving the app, the backlight goes back to where it was.
+    func wake() {
+        if let full = userBrightness { UIScreen.main.brightness = full }
+        userBrightness = nil
+        lit = Spring(x: 1)
     }
 
     private func drawCountdown(_ shown: [Shown]) {
@@ -473,6 +499,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     var buddy: BuddyLink?
+    func sceneWillResignActive(_: UIScene) { (window?.rootViewController?.view as? FaceView)?.wake() }
     func scene(_ scene: UIScene, willConnectTo _: UISceneSession, options _: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
         window = UIWindow(windowScene: scene)

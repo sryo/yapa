@@ -7,7 +7,10 @@ import simd
 // steps aside as the app moves it. Prints, as JSON arrays: frames where a line jumps (moves over 40 pt or changes
 // opacity by over 0.35, or appears or vanishes while visible anywhere but at the face or off the screen) per 1,000
 // runs; frames where a line resting in its place covers the face per 1,000 runs (lines on their way out of or into
-// the face don't count); ms for a change to settle (p50); and µs of CPU per frame of text for each 100 runs.
+// the face don't count); ms for a change to settle (p50); and µs of CPU per frame of text for each 100 runs. Then
+// leaves each screen (a question, its detail, the session list, a reply, a permission request) up for 10 minutes with
+// nobody touching the pad, at 30 fps from three start times, and prints the longest s a visible line stays within 1 pt
+// of one spot (burn-in), and the longest s any text but a permission request stays up untouched.
 var rng = Seeded(5)
 let w = 568.0, h = 320.0, u = min(w, h), mid = SIMD2(w / 2, h / 2)
 let sessions = ["server", "che", "bluetooth", "docs"]
@@ -83,7 +86,7 @@ for run in 0..<1000 {
         for a in shown {
             if let b = prev.first(where: { $0.line.key == a.line.key }) {
                 let seen = (a.opacity > 0.05 && !off(a)) || (b.opacity > 0.05 && !off(b))
-                if (seen && hypot(a.cx - b.cx, a.cy - b.cy) > 40) || abs(a.opacity - b.opacity) > 0.35 { jumped = true }
+                if seen && (hypot(a.cx - b.cx, a.cy - b.cy) > 40 || abs(a.opacity - b.opacity) > 0.35) { jumped = true }
             } else if a.opacity > 0.05 && !off(a) { jumped = true }
         }
         for b in prev where b.opacity > 0.05 && !shown.contains(where: { $0.line.key == b.line.key })
@@ -108,10 +111,47 @@ for run in 0..<1000 {
 }
 batches.append(Double(ns) / Double(frames) / 1000)
 settles.sort()
+
+var stillLongest = 0.0, upLongest = 0.0
+let left: [(asks: Bool, set: (inout Screen) -> Void)] = [
+    (false, { $0.update(board("jeta: server needs you · Use port 8080 or 8443? · 8443 | 8080")) }),
+    (false, { $0.update(board("jeta: che needs you · \(questions[4])")); $0.tap() }),
+    (false, { $0.update(board("jeta: list · server needs you; che done; docs working")); $0.swipeDown() }),
+    (false, { s in
+        s.update(replies: [Reply(id: "a", session: "che", text: (0..<12).map { "Line \($0) of what che said." }.joined(separator: "\n"), at: s.now)])
+        s.read(session: "a")
+    }),
+    (true, { $0.ask(session: "che", "Bash: swift build -c release") }),
+]
+for (asks, set) in left {
+    for start in [3.0, 1337.0, 4111.0] {
+        let motion = TextMotion()
+        motion.screen = SIMD2(w, h)
+        var screen = Screen(), rest: [String: (at: SIMD2<Double>, since: Double)] = [:], upSince: Double? = nil
+        screen.now = start
+        set(&screen)
+        for k in 0..<(600 * 30) {
+            let t = start + Double(k) / 30
+            screen.now = t
+            screen.idle()
+            motion.show(screen.place(width: w, height: h), from: mid, at: t)
+            let seen = motion.frame(at: t).filter { $0.opacity > 0.05 && !off($0) }
+            for s in seen {
+                let p = SIMD2(s.cx, s.cy)
+                if let r = rest[s.line.key], simd_distance(r.at, p) <= 1 { stillLongest = max(stillLongest, t - r.since) }
+                else { rest[s.line.key] = (p, t) }
+            }
+            if seen.isEmpty || asks { upSince = nil } else { upSince = upSince ?? t; upLongest = max(upLongest, t - upSince!) }
+        }
+    }
+}
+func board(_ line: String) -> NoticeBoard { var b = NoticeBoard(); b.take(turn(line)); return b }
 print("[\(jumps)]")
 print("[\(covered)]")
 print("[\(String(format: "%.0f", settles.isEmpty ? 0 : settles[settles.count / 2]))]")
 print("[" + batches.map { String(format: "%.3f", $0) }.joined(separator: ", ") + "]")
+print("[\(String(format: "%.0f", stillLongest))]")
+print("[\(String(format: "%.0f", upLongest))]")
 
 /// A seeded generator (splitmix64), so every run replays the same screens.
 struct Seeded: RandomNumberGenerator {
