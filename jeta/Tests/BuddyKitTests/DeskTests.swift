@@ -89,6 +89,11 @@ final class DeskTests: XCTestCase {
         let e = d.take(event("PermissionRequest", push), at: 10).hold!
         XCTAssertEqual(d.expire(at: 611).map(\.id), [e], "past the hook's own 10 min timeout")
         XCTAssertNil(d.heartbeat(at: 611)["prompt"])
+
+        let g = d.take(event("PermissionRequest", push), at: 620).hold!
+        d.gaveUp(g)
+        XCTAssertNil(d.asked(), "a request whose hook gave up leaves the pad")
+        XCTAssertNil(d.decide(["cmd": "permission", "id": g, "decision": "once"]), "nothing left to approve")
     }
 
     // R3: an app that restarted never reuses an id: the Buddy core hides a prompt whose id it already answered.

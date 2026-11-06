@@ -101,8 +101,21 @@ final class HookListener {
         if e["hook_event_name"] as? String == "UserPromptSubmit", let id = e["session_id"] as? String { onPrompt?(id) }
         save()
         settle(got.settled)
-        if let id = got.hold { waiting[id] = c } else { send(c, Data()) }
+        if let id = got.hold { waiting[id] = c; watch(c, holding: id) } else { send(c, Data()) }
         onChange?()
+    }
+
+    /// A held hook sends nothing more, so anything that arrives on it is its end: the hook gave up, and its request goes.
+    private func watch(_ c: NWConnection, holding id: String) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] _, _, done, error in
+            guard let self, self.waiting[id] === c else { return }
+            guard done || error != nil else { return self.watch(c, holding: id) }
+            self.waiting[id] = nil
+            c.cancel()
+            self.desk.gaveUp(id)
+            self.onLog?("hook for \(id) gave up")
+            self.onChange?()
+        }
     }
 
     /// Lets go of held hooks: with a decision, or with nothing so the terminal's own dialog decides.

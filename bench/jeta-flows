@@ -6,7 +6,7 @@ only if all of that happened. The pad runs with `-drive` (App/Drive.swift), whic
 this Mac and says what's on the screen; che and yata are stand-ins here, so nothing is typed into a real session.
 Prints the path of a K1 run file; `-v` also says what each flow did.
 """
-import json, os, subprocess, sys, threading, time, urllib.request
+import json, math, os, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -307,6 +307,29 @@ def read_lone_reply():
     need(until(bare, 3), "a tap didn't close the reply")
 
 
+def hook_gave_up():
+    hook("UserPromptSubmit", "a", "alpha")
+    t = threading.Thread(target=lambda: hook("PermissionRequest", "a", "alpha", wait=3, tool_name="Bash",
+                                             tool_input={"command": "git push"}), daemon=True)
+    t.start()
+    need(until(lambda s: s["asking"] and option(s, "Deny")), "the request never showed its buttons")
+    t.join(6)
+    need(until(lambda s: not s["asking"], 3), "the hook gave up, but its request stayed up")
+
+
+def lone_ant_works():
+    hook("UserPromptSubmit", "a", "alpha")
+    for tool, inp in (("Bash", {"command": "until grep -q DONE out.txt; do sleep 5; done"}), ("Read", {"file_path": "/x/a.swift"})):
+        hook("PreToolUse", "a", "alpha", tool_name=tool, tool_input=inp)
+        time.sleep(2)
+        a = ant(state(), "a")
+        need(a and a["act"] == "work", f"the only ant, its session running {tool}, isn't at work: {a}")
+        time.sleep(2)
+        b = ant(state(), "a")
+        need(math.dist((a["x"], a["y"]), (b["x"], b["y"])) > 3, f"the only ant, its session running {tool}, stands still")
+        hook("PostToolUse", "a", "alpha", tool_name=tool, tool_input=inp)
+
+
 def session_list():
     hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
     drive("/swipe", way="down")
@@ -483,6 +506,8 @@ FLOWS = {
     "ants stay awake while something waits": awake_while_waiting,
     "reply read beside its ant": read_reply,
     "lone reply read beside its ant": read_lone_reply,
+    "lone ant walks while its session works": lone_ant_works,
+    "a request whose hook gave up leaves": hook_gave_up,
     "session list": session_list,
     "talk to a session, then stop the Enter": talk,
     "dial: new session in a folder": dial_new_session,

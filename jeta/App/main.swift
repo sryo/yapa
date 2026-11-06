@@ -362,8 +362,10 @@ final class FaceView: UIView {
         // A reply open on the pad is a finished turn you've now seen.
         if screen.mode == .reply, let id = screen.asker, crowd.sessions.contains(where: { $0.id == id && $0.unseen }) { onLooked?(id) }
         // With one session or none, a single ant plays the big face's mood; otherwise one per session not swiped away.
-        // The big face dozes off by itself, but not while a question waits.
-        let lone = face.mood == .sleep && !screen.waiting.isEmpty ? .idle : face.mood
+        // The big face dozes off by itself, but not while a question waits. While its session works, the ant shows what
+        // the hooks say it's doing (thinking or running a tool), as each ant of many does.
+        let mine = crowd.sessions.count == 1 ? crowd.face(crowd.sessions[0].id)?.mood : nil
+        let lone = mine == .busy || mine == .focused ? mine! : face.mood == .sleep && !screen.waiting.isEmpty ? .idle : face.mood
         colony.update(crowd.single ? [("face", lone, true, crowd.sessions.first?.events)]
                       : crowd.sessions.map { s in (s.id, crowd.face(s.id)?.mood ?? .idle, s.id == crowd.front, s.events) }, at: t)
         let about = crowd.single ? "face" : slots.first(where: { $0.id == crowd.solo ?? spoke })?.id ?? crowd.front

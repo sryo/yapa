@@ -10,7 +10,7 @@ the code and its check.
 | A1 | One ant per session not swiped away; with one session or none, a single ant. | `testOneAntPerSession`, `testR2_OneSessionIsTheSingleFace` |
 | A2 | Each session has its own spot, in the order sessions started; a session another started stands round that one. | `testEachAntHasItsOwnSpot`, `testFamiliesStandTogether` |
 | A3 | Ants walk round each other and round crumb piles, never over them. | `testBusyAntsStayApartAndInPlace`, `bench/jeta-ants` |
-| A4 | Busy (thinking or running tools): it walks slowly about its spot in wide curves and never stops, never just turning in place, never in step with the others; thinking (no tool running), its antennae drum and its head shakes. | `testBusyAntsStayApartAndInPlace`, `testBusyAntsNeverSpin`, `testBusyAntsDontTurnInStep`, `testThinkingDrums`, `testR2_WhatEachSessionIsDoing` |
+| A4 | Busy (thinking or running tools): it walks slowly about its spot in wide curves and never stops, never just turning in place, never in step with the others; thinking (no tool running), its antennae drum and its head shakes. | `testBusyAntsStayApartAndInPlace`, `testBusyAntsNeverSpin`, `testBusyAntsDontTurnInStep`, `testThinkingDrums`, `testEveryWorkingMoodWalks`, `testR2_WhatEachSessionIsDoing`, flow "lone ant walks while its session works" |
 | A5 | Needs you (a permission, a question, a failed turn): it pops, comes forward and pulses; the others hold still; a second one pulses at its own spot. | `testNeedsPopsPulsesAndOthersHoldStill`, `testOnlyNeedsDrawsAttention`, `testNeedsComesForwardSleepStays` |
 | A6 | Allowed, it hurries home; denied, it walks home slowly. | `testAnsweredItGoesBack` |
 | A7 | Done: it turns once on the spot with its antennae up, then it stands. | `testR1_MoodFollowsState`, `testOnlyNeedsDrawsAttention` |
@@ -37,4 +37,4 @@ the code and its check.
 | T7 | Text left up three minutes untouched folds away; only a permission request stays. | `testUntouchedTextFoldsAway` |
 | T8 | All text creeps along a slow drift. | `testTextDriftsSoNoLineSitsStill`, `bench/jeta-text` |
 | T9 | Nobody near for three minutes and nothing happening: the backlight dims; anything that needs you brings it back. | `testRestsOnlyWhenNothingNeedsYou` |
-| T10 | Only a tap approves; no answer, a timeout or the phone off gives no decision. | `testR3_NeverApprovedWithoutATap` |
+| T10 | Only a tap approves; no answer, a timeout or the phone off gives no decision. A request whose hook gave up leaves the pad. | `testR3_NeverApprovedWithoutATap`, flow "a request whose hook gave up leaves" |

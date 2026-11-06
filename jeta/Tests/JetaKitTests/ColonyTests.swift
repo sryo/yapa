@@ -168,6 +168,11 @@ final class ColonyTests: XCTestCase {
         XCTAssertLessThan(simd_length(SIMD2(a.x, a.y) - SIMD2(160, 284)), 3)
     }
 
+    // A4: every mood of a session at work walks, reading and searching (the Buddy link's curious) as much as the rest.
+    func testEveryWorkingMoodWalks() {
+        for m in [Mood.busy, .focused, .curious] { XCTAssertEqual(Colony.act(for: m, front: false, listening: false), .work, "\(m)") }
+    }
+
     // Left alone long enough to sleep, it curls up, antennae folded; just finished, it stands uncurled.
     func testSleepCurlsUp() {
         var rng = SplitMix(5)

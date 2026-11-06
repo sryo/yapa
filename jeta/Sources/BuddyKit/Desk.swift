@@ -248,6 +248,10 @@ public final class Desk {
     /// Requests older than their hook's own 10 min timeout: that hook has given up, so the pad stops showing them.
     public func expire(at t: Double) -> [Settle] { release(held.filter { t - $0.since > 600 }) }
 
+    /// The hook waiting on request `id` gave up before its 10 min (its curl timed out, or it was killed): nothing can
+    /// answer it now, so it leaves the pad.
+    public func gaveUp(_ id: String) { _ = release(held.filter { $0.id == id }) }
+
     /// Each session and what it's doing, in the order they started. One state each, by precedence: it needs you, it
     /// failed, it's stale (working, but no news for 10 min), it's working (or stopped under 5 s ago, since another
     /// turn often follows), it's done, it's quiet (30 min with nothing new).

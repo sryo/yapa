@@ -280,10 +280,11 @@ public final class Colony {
         // asleep), or it's gone.
         if listening || mood == .listening { return .listen }
         switch mood {
-        case .busy, .focused: return .work
+        // Curious is the Buddy link's word for a session reading or searching: running a tool like any other.
+        case .busy, .focused, .curious: return .work
         case .attention, .impatient, .dizzy: return .needs
         case .celebrate, .proud, .heart: return .done
-        case .idle, .bored, .curious, .listening: return .rest
+        case .idle, .bored, .listening: return .rest
         case .sleep: return .sleep
         }
     }
