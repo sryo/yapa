@@ -478,8 +478,8 @@ final class Ant {
         tail = SIMD2(x, y) - back / bl * len
         size.step(dt); rear.step(dt); antennae.step(dt); curl.step(dt)
         // Tripod 1 is R1 L2 R3, tripod 0 is L1 R2 L3: the abdomen swings toward the side whose front and hind legs step.
-        let up = [0, 1].map { g in feet.contains { $0.tripod == g && $0.s < 1 } }
-        hips.target = up[1] == up[0] ? 0 : up[1] ? 1 : -1
+        let up0 = feet.contains { $0.tripod == 0 && $0.s < 1 }, up1 = feet.contains { $0.tripod == 1 && $0.s < 1 }
+        hips.target = up1 == up0 ? 0 : up1 ? 1 : -1
         hips.step(dt)
         stepFeet(dt)
     }
@@ -492,7 +492,7 @@ final class Ant {
             feet[n].at = feet[n].from + (feet[n].to - feet[n].from) * e
         }
         guard !feet.contains(where: { $0.s < 1 }) else { return }
-        let far = feet.map { simd_length($0.at - rest($0.i, $0.side, ahead: half)) }
+        func far(_ f: Foot) -> Double { simd_length(f.at - rest(f.i, f.side, ahead: half)) }
         // Land where the step spot will be when the foot comes down; pushing off one side turns the body to the other.
         func lift(_ n: Int) {
             feet[n].from = feet[n].at; feet[n].s = 0
@@ -502,10 +502,10 @@ final class Ant {
         if moving {
             // Walking, a tripod lifts its three feet together once any foot is a stride behind its step spot, and the
             // two tripods take turns.
-            guard far.contains(where: { $0 > Ant.stride * unit }) else { return }
+            guard feet.contains(where: { far($0) > Ant.stride * unit }) else { return }
             lastTripod = 1 - lastTripod
             for n in feet.indices where feet[n].tripod == lastTripod { lift(n) }
-        } else if let n = far.indices.first(where: { far[$0] > 2.2 * unit }) {
+        } else if let n = feet.indices.first(where: { far(feet[$0]) > 2.2 * unit }) {
             // Standing, a foot left out settles back under, one at a time.
             lift(n)
         }
@@ -515,7 +515,12 @@ final class Ant {
         let el = t - since
         // Settled acts happen at its own spot (a second one that needs you waves from there): away from it (back from
         // the middle, from off screen, or drifted off), it walks back first.
-        let settled = [.rest, .sleep, .work, .done].contains(act) || (act == .needs && !front)
+        let settled: Bool
+        switch act {
+        case .rest, .sleep, .work, .done: settled = true
+        case .needs: settled = !front
+        default: settled = false
+        }
         if settled && (homing || simd_length(spot - SIMD2(x, y)) > 45) {
             // Back from off screen, each waits its turn.
             guard t >= returnAt else { goal = nil; still = true; return }
@@ -634,13 +639,13 @@ final class Ant {
         func oval(_ cx: Double, _ cy: Double, _ rx: Double, _ ry: Double, _ map: (SIMD2<Double>) -> SIMD2<Double>) -> [SIMD2<Double>] {
             Ant.circle.map { u in world(map(SIMD2(cx + u.x * rx, cy + u.y * ry))) }
         }
-        var strokes: [(points: [SIMD2<Double>], width: Double)] = []
         guard s > 0.01 else { return (size.x, AntShape(id: id, fills: [], strokes: [], centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at })) }
 
         // Legs: each foot is where it was planted; two-bone IK finds the knee, bent outward. Rearing lifts the front
         // pair off the ground to wave. Thighs are drawn thicker than shins, so a leg tapers.
-        var thighs: [(points: [SIMD2<Double>], width: Double)] = [], shins = thighs
-        for f in feet {
+        var strokes = [(points: [SIMD2<Double>], width: Double)](repeating: ([], 0), count: 2 * feet.count)
+        strokes.reserveCapacity(2 * feet.count + 4)
+        for (n, f) in feet.enumerated() {
             let l = Ant.legs[f.i], hy = 0.9 * f.side
             let d0 = (f.at - SIMD2(x, y)) / s
             var p = SIMD2(d0.x * c + d0.y * sn, -d0.x * sn + d0.y * c)
@@ -655,10 +660,9 @@ final class Ant {
             var out = SIMD2(-dv.y, dv.x) / d
             if out.y * f.side < 0 { out = -out }
             let knee = hip + dv * 0.42 + out * (0.35 + max(0, reach - d) * 0.3)
-            thighs.append(([world(SIMD2(l.hip, hy)), world(knee)], 0.85 * s))
-            shins.append(([world(knee), world(p)], 0.5 * s))
+            strokes[n] = ([world(SIMD2(l.hip, hy)), world(knee)], 0.85 * s)
+            strokes[feet.count + n] = ([world(knee), world(p)], 0.5 * s)
         }
-        strokes = thighs + shins
         // Body: abdomen and waist bend at the waist (the rope, plus curling up), then thorax, then the head, which
         // turns at the neck when curling.
         let bend = max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95 - hips.x * 0.16
@@ -682,12 +686,12 @@ final class Ant {
             let root = SIMD2(hx + 1.6, side * 1.0), elbow = SIMD2(hx + 1.6 + cos(base) * sc, side * (1.0 + sin(base) * sc))
             let tip = base - 0.9 - antennae.x * 0.2 + cu * 1.6
             let end = elbow + SIMD2(cos(tip) * fu, side * sin(tip) * fu)
-            strokes.append(([root, elbow, end].map { world(neck($0)) }, 0.7 * s))
+            strokes.append(([world(neck(root)), world(neck(elbow)), world(neck(end))], 0.7 * s))
         }
         // Mandibles: a short pair of hooks at the front of the head, curving in, with a gap between their tips.
         for side in [-1.0, 1.0] {
-            let jaw = [SIMD2(hx + 1.8 * lift, side * 1.0), SIMD2(hx + 2.8 * lift, side * 1.15), SIMD2(hx + 3.4 * lift, side * 0.6)]
-            strokes.append((jaw.map { world(neck($0)) }, 0.5 * s))
+            strokes.append(([world(neck(SIMD2(hx + 1.8 * lift, side * 1.0))), world(neck(SIMD2(hx + 2.8 * lift, side * 1.15))),
+                             world(neck(SIMD2(hx + 3.4 * lift, side * 0.6)))], 0.5 * s))
         }
         return (size.x, AntShape(id: id, fills: fills, strokes: strokes, centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at }))
     }
