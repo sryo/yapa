@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Measures goal 3's promise as a person meets it: an option picked on the pad arrives in its session as text.
+The pad runs in a booted Simulator (`-drive`, as in jeta-flows) and talks to a real che built from this tree, which
+opens a real session in the Claude app and types into it. Each pick is tapped on the pad's screen and read back from
+the session's transcript, or from the clipboard when it must go there: a pick for a session the app doesn't have, and
+one whose session doesn't come into focus in time (che run with CHE_WAIT=0), and one typed that the app never says
+it sent (che reading a copy of the app's log without its sendMessage lines). After each, the pad's screen is watched
+for a prompt left with no options, and for its note saying where the text went.
+
+It acts on this Mac: it brings the Claude app forward on a scratch session (in ~/.fium/scratch/che-live, with hooks
+off, made the first time by typing into a new session there), types into it, and each typed pick there costs one short
+turn. It puts back the clipboard and the session the app had in front. che's Accessibility
+grant follows its signature, so the copy run here is signed as `mac/install` signs it.
+Prints the path of a K1 run file; `-v` also says what each pick did.
+"""
+import glob, json, os, re, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIVE, CHE, HOOKS = 8091, 8098, 8079
+BUNDLE = "com.sryo.yapa"
+REPS = int(os.environ.get("CHE_LIVE_REPS", "3"))
+SCRATCH = os.path.expanduser("~/.fium/scratch/che-live")
+SESSIONS = os.path.expanduser("~/Library/Application Support/Claude/claude-code-sessions")
+APPLOG = os.path.expanduser("~/Library/Logs/Claude/main.log")
+VERBOSE = "-v" in sys.argv
+AWAY = None
+
+
+def say(*a):
+    print(*a, file=sys.stderr)
+
+
+def sim(*a, check=True):
+    return subprocess.run(["xcrun", "simctl", *a], capture_output=True, text=True, check=check).stdout
+
+
+def post(url, body=None, timeout=30):
+    r = urllib.request.Request(url, data=json.dumps(body).encode() if isinstance(body, dict) else body)
+    with urllib.request.urlopen(r, timeout=timeout) as f:
+        b = f.read().decode()
+        return json.loads(b) if b.strip() else {}
+
+
+def state(): return post(f"http://127.0.0.1:{DRIVE}/state")
+
+
+def hook(event, sid, **more):
+    try: post(f"http://127.0.0.1:{HOOKS}/hook", {"hook_event_name": event, "session_id": sid, "cwd": SCRATCH, **more}, timeout=2)
+    except Exception: pass
+
+
+def until(f, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        v = f()
+        if v: return v
+        time.sleep(0.15)
+    return None
+
+
+def clipboard(): return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+
+
+def focused():
+    """The Claude app's focused session, from the end of its log."""
+    with open(APPLOG, "rb") as f:
+        f.seek(0, 2); f.seek(max(0, f.tell() - 4_000_000))
+        found = re.findall(r"setFocusedSession: sessionId=([^\s,]+)", f.read().decode("utf-8", "replace"))
+    return found[-1] if found else None
+
+
+def scratch():
+    """The scratch session's (Claude Code id, Claude app id), or None while the app has none in SCRATCH."""
+    for f in glob.glob(os.path.join(SESSIONS, "**", "local_*.json"), recursive=True):
+        try: o = json.load(open(f))
+        except Exception: continue
+        if o.get("cwd") == SCRATCH and not o.get("isArchived") and o.get("cliSessionId"):
+            return o["cliSessionId"], o["sessionId"]
+    return None
+
+
+def transcript(cli):
+    found = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{cli}.jsonl"))
+    return open(found[0], encoding="utf-8", errors="replace").read() if found else ""
+
+
+class Che:
+    """che built from this tree, on its own port, with its log kept for the refusals."""
+    def __init__(self, wait, unsent=False):
+        self.log = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"che-live-{os.getpid()}.log")
+        env = {**os.environ, "CHE_PORT": str(CHE), "CHE_ENTER": "1", "CHE_WAIT": str(wait)}
+        self.copying = False
+        if unsent:
+            # che reads a copy of the Claude app's log that leaves out its sendMessage lines, so it sees a session
+            # come into focus but never hears it sent what was typed: the miss a box that took no keystrokes makes.
+            fake = self.log + ".applog"
+            open(fake, "w").close()
+            env["CHE_APPLOG"] = fake
+            self.copying = True
+            threading.Thread(target=self.mirror, args=(fake,), daemon=True).start()
+        self.p = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=open(self.log, "a"))
+        if not until(lambda: self.up(), 10): raise SystemExit("che never started: " + open(self.log).read()[-500:])
+
+    def up(self):
+        try: return post(f"http://127.0.0.1:{CHE}/sessions?ids=", timeout=1) is not None
+        except urllib.error.HTTPError: return True
+        except Exception: return False
+
+    def mirror(self, fake):
+        with open(APPLOG, "rb") as src, open(fake, "ab") as out:
+            src.seek(0, 2)
+            while self.copying:
+                line = src.readline()
+                if not line: time.sleep(0.02); continue
+                if b"LocalSessions.sendMessage:" not in line: out.write(line); out.flush()
+
+    def stop(self): self.copying = False; self.p.terminate(); self.p.wait()
+
+
+def build_che():
+    mac = os.path.join(ROOT, "mac")
+    subprocess.run(["swift", "build", "-q", "-c", "release"], cwd=mac, check=True)
+    bin_dir = subprocess.run(["swift", "build", "-c", "release", "--show-bin-path"], cwd=mac, capture_output=True, text=True).stdout.strip()
+    dest = os.path.expanduser("~/Library/Application Support/yapa/che-live")
+    subprocess.run(["cp", os.path.join(bin_dir, "che"), dest], check=True)
+    ids = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True).stdout
+    sign = next((l.split()[1] for l in ids.splitlines() if "Apple Development" in l or "Developer ID Application" in l), "-")
+    subprocess.run(["codesign", "-f", "-s", sign, "-i", "com.sryo.yapa.che", dest], capture_output=True, check=True)
+    return dest
+
+
+def make_scratch():
+    """A session in SCRATCH, started the way a person would: the app's new-session link, then the first words typed."""
+    os.makedirs(os.path.join(SCRATCH, ".claude"), exist_ok=True)
+    json.dump({"disableAllHooks": True}, open(os.path.join(SCRATCH, ".claude", "settings.json"), "w"))
+    before = focused()
+    subprocess.run(["open", f"claude://code/new?folder={urllib.parse.quote(SCRATCH, safe='')}&source=services"], check=True)
+    if not until(lambda: focused() != before, 15): raise SystemExit("the Claude app never opened a new session in " + SCRATCH)
+    time.sleep(1.5)
+    post(f"http://127.0.0.1:{CHE}/say", "che-live scratch session: reply with just ok".encode())
+    got = until(scratch, 60)
+    if not got: raise SystemExit("the scratch session never got a Claude Code id; is it in the Claude app?")
+    return got
+
+
+def launch():
+    sim("terminate", "booted", BUNDLE, check=False)
+    data = sim("get_app_container", "booted", BUNDLE, "data").strip()
+    try: os.remove(os.path.join(data, "Documents", "sessions.json"))
+    except FileNotFoundError: pass
+    sim("launch", "booted", BUNDLE, "-drive", str(DRIVE), "-che", f"127.0.0.1:{CHE}", "-yata", "http://127.0.0.1:9/parts")
+    if not until(lambda: _alive(), 12): raise SystemExit("the pad never answered its driver")
+    hook("SessionStart", "warm"); hook("SessionEnd", "warm")
+
+
+def _alive():
+    try: state(); return True
+    except Exception: return False
+
+
+def pick(sid, label):
+    """Puts one action up for `sid` on the pad and taps it; returns the tap's time and the screens seen after."""
+    hook("UserPromptSubmit", sid)
+    hook("PreToolUse", sid, tool_name="mcp__ccd_turn__wrap_up",
+         tool_input={"recap": "che-live", "ask": "Pick it?", "actions": [{"label": label}, {"label": "che-live not this"}]})
+    s = until(lambda: (lambda s: s if any(p["style"] in ("option", "suggestion") and p["text"] == label for p in s["placed"]) else None)(state()), 8)
+    if not s: return None, []
+    o = next(p for p in s["placed"] if p["text"] == label)
+    t = time.time()
+    post(f"http://127.0.0.1:{DRIVE}/tap", {"x": o["x"] + o["w"] / 2, "y": o["y"] + o["h"] / 2})
+    seen = []
+    watch = threading.Thread(target=lambda: [seen.append(_safe_state()) or time.sleep(0.2) for _ in range(50)])
+    watch.start()
+    return t, (watch, seen)
+
+
+def _safe_state():
+    try: return state()
+    except Exception: return {}
+
+
+def empty_prompts(seen):
+    """Screens asking a question that shows no option to pick."""
+    return sum(1 for s in seen if s.get("mode") == "question" and s.get("asking")
+               and not any(p["style"] in ("option", "suggestion") for p in s.get("placed", [])))
+
+
+def run_path(name, sid, expect, wait, unsent=False):
+    """Runs REPS picks (one for the clipboard paths) and returns each one's (ok, ms, empty screens, why)."""
+    che = Che(wait, unsent)
+    results = []
+    try:
+        for i in range(REPS if expect == "session" else 1):
+            launch()
+            # A pick comes while the app shows some other session, as it does in use: the one you had in front.
+            if AWAY:
+                subprocess.run(["open", f"claude://code/continue?session={AWAY}&source=desktop_action"])
+                until(lambda: focused() == AWAY, 10); time.sleep(1)
+            token = uuid.uuid4().hex[:8]
+            label = f"che-live {token}"
+            t, watching = pick(sid, label)
+            if t is None:
+                results.append((False, None, 0, "the action never showed on the pad"))
+                say("FAIL " + name + ": the action never showed on the pad"); continue
+            watch, seen = watching
+            if expect == "session":
+                got = until(lambda: token in transcript(sid) and time.time(), 25)
+                ok, why = bool(got), "" if got else "the pick never reached the session's transcript"
+            else:
+                got = until(lambda: token in clipboard() and time.time(), 10)
+                ok, why = bool(got), "" if got else f"the pick wasn't on the clipboard: {clipboard()[:60]!r}"
+            watch.join()
+            notes = [s.get("note", "") for s in seen]
+            if ok and expect == "clipboard" and not any(n.startswith("Copied:") for n in notes):
+                ok, why = False, f"the pad never said it was copied: {sorted(set(notes))}"
+            if ok and expect == "session" and not any("tap to stop" in n for n in notes):
+                ok, why = False, f"the pad never said it was typed: {sorted(set(notes))}"
+            results.append((ok, (got - t) * 1000 if ok and expect == "session" else None, empty_prompts(seen), why))
+            if VERBOSE or why: say(("ok   " if ok else "FAIL ") + name + (": " + why if why else ""))
+        refused = sum(1 for l in open(che.log) if "refused" in l)
+    finally:
+        che.stop()
+    return results, refused
+
+
+def main():
+    if "Booted" not in sim("list", "devices", "booted"): raise SystemExit("che-live needs a booted Simulator")
+    if not "Claude.app/Contents/MacOS/Claude" in subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True).stdout: raise SystemExit("che-live needs the Claude app running")
+    say(f"che-live: brings the Claude app forward on a scratch session in {SCRATCH} and types into it; "
+        f"{REPS + 1} short turns there; the clipboard and the session in front are put back after")
+    global BIN
+    BIN = build_che()
+    app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
+    if app.returncode: raise SystemExit(app.stderr)
+    sim("install", "booted", os.path.join(ROOT, "jeta", app.stdout.strip().splitlines()[-1]))
+    sim("spawn", "booted", "defaults", "delete", BUNDLE, check=False)
+
+    clip, front = clipboard(), focused()
+    try:
+        sid = scratch()
+        if not sid:
+            che = Che(3)
+            try: sid = make_scratch()
+            finally: che.stop()
+        cli = sid[0]
+        global AWAY
+        AWAY = front if front != sid[1] else None
+        typed, r1 = run_path("typed into its session", cli, "session", 3)
+        lacking, r2 = run_path("a session the app lacks, to the clipboard", str(uuid.uuid4()), "clipboard", 3)
+        unfocused, r3 = run_path("a session that didn't focus, to the clipboard", cli, "clipboard", 0)
+        unsent, r4 = run_path("typed but never sent, to the clipboard", cli, "clipboard", 3, unsent=True)
+    finally:
+        sim("terminate", "booted", BUNDLE, check=False)
+        subprocess.run(["pbcopy"], input=clip, text=True)
+        if front: subprocess.run(["open", f"claude://code/continue?session={front}&source=desktop_action"])
+
+    every = typed + lacking + unfocused + unsent
+    ms = [r[1] for r in typed if r[1] is not None]
+    runs = os.path.join(os.environ.get("FIUM_HOME", os.path.expanduser("~/.fium")), "runs", "yapa")
+    os.makedirs(runs, exist_ok=True)
+    path = os.path.join(runs, f"che-live-{int(time.time())}.json")
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip()
+    dirty = bool(subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=ROOT).stdout.strip())
+    m = lambda d, k, v: {"dir": d, "kind": k, "samples": v}
+    json.dump({"commit": commit, "dirty": dirty, "metrics": {
+        "picks_typed_missed": m("lower", "quality", [sum(not r[0] for r in typed)]),
+        "picks_lacking_not_copied": m("lower", "quality", [sum(not r[0] for r in lacking)]),
+        "picks_unfocused_not_copied": m("lower", "quality", [sum(not r[0] for r in unfocused)]),
+        "picks_unsent_not_copied": m("lower", "quality", [sum(not r[0] for r in unsent)]),
+        "empty_option_screens": m("lower", "quality", [sum(r[2] for r in every)]),
+        "che_refusals": m("lower", "quality", [r1 + r2 + r3 + r4]),
+        **({"pick_to_text_ms": m("lower", "time", ms)} if ms else {}),
+    }, "limits": {"picks_typed_missed": 0, "picks_lacking_not_copied": 0, "picks_unfocused_not_copied": 0, "picks_unsent_not_copied": 0,
+                  "empty_option_screens": 0, "che_refusals": 0},
+       "failed": [r[3] for r in every if not r[0]]}, open(path, "w"))
+    print(path)
+
+
+main()

@@ -114,6 +114,11 @@ final class TranscribeTests: XCTestCase {
         let log = "x LocalSessions.setFocusedSession: sessionId=local_a\ny LocalSessions.setFocusedSession: sessionId=local_b\nz other"
         XCTAssertEqual(focusedSession(log: log), "local_b")
         XCTAssertNil(focusedSession(log: "nothing"))
+        // A session's text counts as sent only when the app logs sending it there, by its full id.
+        let sends = "[info] LocalSessions.sendMessage: sessionId=local_a, messageLength=17, imageCount=0"
+        XCTAssertTrue(wasSent(log: sends, session: "local_a"))
+        XCTAssertFalse(wasSent(log: sends, session: "local_ab"))
+        XCTAssertFalse(wasSent(log: "LocalSessions.setFocusedSession: sessionId=local_a", session: "local_a"))
     }
 
     // R6: the pad's new session opens in the Claude app, in a folder that's there; anything else opens nothing.

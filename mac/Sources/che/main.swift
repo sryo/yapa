@@ -11,13 +11,16 @@ import TalkKit
 let env = ProcessInfo.processInfo.environment
 let port = NWEndpoint.Port(env["CHE_PORT"] ?? "8078")!
 let enterDelay = Double(env["CHE_ENTER"] ?? "2") ?? 2
+let focusWait = Double(env["CHE_WAIT"] ?? "3") ?? 3
 let from = (env["CHE_FROM"] ?? "").split(separator: ",").map(String.init)
 let transcriber = Transcriber((env["CHE_LANGS"] ?? "en_US,es_ES").split(separator: ",").map(String.init))
 
 func log(_ s: String) { FileHandle.standardError.write(Data("che: \(s)\n".utf8)) }
 
 var target: Route = .clipboard
-let enter = PendingEnter(after: enterDelay) { key(36, to: target) }
+/// Run once the pending Enter is pressed (not when it's cancelled): checks the text reached its session.
+var afterEnter: (() -> Void)?
+let enter = PendingEnter(after: enterDelay) { key(36, to: target); afterEnter?(); afterEnter = nil }
 
 func post(_ e: CGEvent?, to r: Route) {
     if case .sendTo(let pid) = r { e?.postToPid(pid) } else { e?.post(tap: .cghidEventTap) }
@@ -43,7 +46,8 @@ func type(_ text: String, to r: Route) {
 let sessions = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
 
-let appLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Claude/main.log")
+let appLog = env["CHE_APPLOG"].map { URL(fileURLWithPath: $0) }
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Claude/main.log")
 
 /// The end of the Claude app's log, where it says which session it focused.
 /// The session the Claude app has focused, from its log. It says so only when the focus changes, so the line can be
@@ -63,7 +67,7 @@ func focusedNow() -> String? {
 }
 
 /// Opens the Claude app on a session: nil when the app doesn't have it (it runs in a terminal), false when the app
-/// never said it focused it within 3 s, true once it's in front on that session.
+/// never said it focused it within focusWait s, true once it's in front on that session.
 func open(session cli: String) async -> Bool? {
     guard let id = desktopSession(cli: cli, in: sessions),
           let url = URL(string: "claude://code/continue?session=\(id)&source=desktop_action") else {
@@ -72,7 +76,7 @@ func open(session cli: String) async -> Bool? {
     }
     NSWorkspace.shared.open(url)
     NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.activate()
-    for _ in 0..<60 {
+    for _ in 0..<Int(focusWait * 20) {
         if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundle, focusedNow() == id {
             // The box takes the focus a moment after the session shows.
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -80,8 +84,37 @@ func open(session cli: String) async -> Bool? {
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
     }
-    log("the Claude app didn't focus \(id) within 3 s")
+    log("the Claude app didn't focus \(id) within \(focusWait) s: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nothing") in front, its log last focused \(focusedNow() ?? "nothing")")
     return false
+}
+
+/// What became of each delivery into a Claude app session, by the id /say and /talk answered with: true once the app
+/// says it sent the text, false when it didn't within 4 s of the Enter (the text is then on the clipboard).
+var sent: [Int: Bool] = [:], deliveries = 0
+
+func copy(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+}
+
+/// Waits for the Claude app's log to say it sent a message to session `local`, from what the log holds now on.
+/// Keystrokes can land before a session's box takes them, and then nothing is sent though che typed it all.
+func confirm(_ id: Int, session local: String, text: String) {
+    let from = (try? FileManager.default.attributesOfItem(atPath: appLog.path)[.size] as? UInt64) ?? 0
+    Task { @MainActor in
+        for _ in 0..<80 {
+            if let h = try? FileHandle(forReadingFrom: appLog) {
+                try? h.seek(toOffset: from)
+                let new = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+                try? h.close()
+                if wasSent(log: new, session: local) { sent[id] = true; return }
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        log("the Claude app didn't send the text to \(local) within 4 s; it's on the clipboard")
+        copy(text)
+        sent[id] = false
+    }
 }
 
 /// Puts the text where route() says, or on the clipboard when it mustn't go anywhere but a session that didn't open;
@@ -94,8 +127,7 @@ func deliver(_ text: String, clipboard: Bool = false) -> Route {
         r = .clipboard
     }
     if r == .clipboard {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        copy(text)
         return r
     }
     type(text, to: r)
@@ -120,7 +152,15 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     if !dry, let s = q["session"] { opened = await open(session: s) == true }
     let to = dry ? "none" : "\(deliver(text, clipboard: opened == false))" + (opened == true ? " in \(q["session"]!)" : "")
     log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
-    reply(c, "200 OK", ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay])
+    var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay]
+    // Typed into one of the app's sessions with an Enter to follow: the pad asks /sent?id= once it's pressed.
+    if opened == true, to != "clipboard", enterDelay > 0, let s = q["session"], let local = desktopSession(cli: s, in: sessions) {
+        deliveries += 1
+        let id = deliveries
+        afterEnter = { confirm(id, session: local, text: text) }
+        out["id"] = id
+    }
+    reply(c, "200 OK", out)
 }
 
 func handle(_ c: NWConnection, _ r: Request) {
@@ -136,7 +176,15 @@ func handle(_ c: NWConnection, _ r: Request) {
         }
         reply(c, "200 OK", ["sessions": list])
     case ("POST", "/cancel"):
+        afterEnter = nil
         reply(c, "200 OK", ["cancelled": enter.cancel()])
+    // Whether delivery `id` reached its session: answered once known, or null after 6 s.
+    case ("GET", let p) where p.hasPrefix("/sent"):
+        let id = Int(query(p)["id"] ?? "") ?? 0
+        Task { @MainActor in
+            for _ in 0..<120 where sent[id] == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+            reply(c, "200 OK", ["sent": sent[id].map { $0 as Any } ?? NSNull()])
+        }
     // The pad's dial starts a session in a folder: the Claude app opens it behind whatever is in front.
     case ("POST", let p) where p.hasPrefix("/new"):
         guard let folder = said(r.body), let url = newSession(in: folder) else {
@@ -169,7 +217,7 @@ func handle(_ c: NWConnection, _ r: Request) {
             }
         }
     default:
-        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, /say with UTF-8 text, /new or /cancel, or GET /sessions?ids="])
+        reply(c, "404 Not Found", ["error": "POST /talk with a WAV body, /say with UTF-8 text, /new or /cancel, or GET /sessions?ids= or /sent?id="])
     }
 }
 

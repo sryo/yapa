@@ -129,6 +129,11 @@ public func focusedSession(log: String) -> String? {
     return log[r.upperBound...].prefix { $0 != "\n" && $0 != "," && $0 != " " }.description
 }
 
+/// Whether the Claude app's log says it sent a message to session `local` (its `local_…` id).
+public func wasSent(log: String, session local: String) -> Bool {
+    log.contains("LocalSessions.sendMessage: sessionId=\(local),")
+}
+
 /// The link that opens a new Claude Code session in the Claude app, in `folder`: the one its own Finder service
 /// ("New Claude Code Session Here") opens. Nil unless the folder is an absolute path to a folder that's there.
 public func newSession(in folder: String) -> URL? {
