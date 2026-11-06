@@ -326,6 +326,8 @@ final class Ant {
     static let legs: [(hip: Double, x: Double, y: Double)] = [(1.3, 8.6, 6.4), (0.7, 0.6, 8.8), (0.1, -9.6, 7.2)]
     /// A stride, in body units, and how long a foot is in the air.
     static let stride = 4.6, stepTime = 0.1
+    /// Twenty points round a unit circle, what every body part's oval is drawn from.
+    static let circle = (0..<20).map { k -> SIMD2<Double> in let a = Double(k) / 20 * 2 * .pi; return SIMD2(cos(a), sin(a)) }
 
     struct Foot { var i: Int, side: Double, tripod: Int, at: SIMD2<Double>, from: SIMD2<Double>, to: SIMD2<Double>, s = 1.0 }
 
@@ -624,12 +626,13 @@ final class Ant {
     func shape(id: String, t: Double) -> (Double, AntShape) {
         let s = size.x * Ant.scale, r = rear.x, cu = curl.x, c = cos(h), sn = sin(h)
         let world = { (p: SIMD2<Double>) in SIMD2(self.x + (p.x * c - p.y * sn) * s, self.y + (p.x * sn + p.y * c) * s) }
-        func rotated(_ p: SIMD2<Double>, about o: SIMD2<Double>, by a: Double) -> SIMD2<Double> {
+        // A turn by an angle whose cosine and sine are worked out once per frame, not once per point.
+        func rotated(_ p: SIMD2<Double>, about o: SIMD2<Double>, cos ca: Double, sin sa: Double) -> SIMD2<Double> {
             let d = p - o
-            return o + SIMD2(d.x * cos(a) - d.y * sin(a), d.x * sin(a) + d.y * cos(a))
+            return o + SIMD2(d.x * ca - d.y * sa, d.x * sa + d.y * ca)
         }
         func oval(_ cx: Double, _ cy: Double, _ rx: Double, _ ry: Double, _ map: (SIMD2<Double>) -> SIMD2<Double>) -> [SIMD2<Double>] {
-            (0..<20).map { k in let a = Double(k) / 20 * 2 * .pi; return world(map(SIMD2(cx + cos(a) * rx, cy + sin(a) * ry))) }
+            Ant.circle.map { u in world(map(SIMD2(cx + u.x * rx, cy + u.y * ry))) }
         }
         var strokes: [(points: [SIMD2<Double>], width: Double)] = []
         guard s > 0.01 else { return (size.x, AntShape(id: id, fills: [], strokes: [], centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at })) }
@@ -661,10 +664,12 @@ final class Ant {
         let bend = max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95 - hips.x * 0.16
         // Proportions after a real ant's: a narrow thorax, a small waist, an abdomen about twice as long as wide, and
         // a gap at each joint.
-        let waist = { (p: SIMD2<Double>) in rotated(p + SIMD2(-1.9, 0), about: SIMD2(-1.9, 0), by: bend) }
+        let (bc, bs) = (cos(bend), sin(bend))
+        let waist = { (p: SIMD2<Double>) in rotated(p + SIMD2(-1.9, 0), about: SIMD2(-1.9, 0), cos: bc, sin: bs) }
         // Walking, the head bobs with each step: a nod forward and a slight swing to the side of the tripod pushing.
         let walking = min(1, v / 20), sway = sin(gait) * 0.14 * walking
-        let neckAt = SIMD2(3.0 + r, 0.0), neck = { (p: SIMD2<Double>) in rotated(p, about: neckAt, by: -cu * 0.7 + sway) }
+        let headTurn = -cu * 0.7 + sway, (nc, ns) = (cos(headTurn), sin(headTurn))
+        let neckAt = SIMD2(3.0 + r, 0.0), neck = { (p: SIMD2<Double>) in rotated(p, about: neckAt, cos: nc, sin: ns) }
         // Let go of after talking, it nods: the head dips back once.
         let nod = t - nodAt < 0.5 ? sin((t - nodAt) / 0.5 * .pi) * 1.4 : 0
         let lift = 1 + 0.18 * r, hx = 5.1 + 1.6 * r + tap * 0.4 * sin(t * 30) + abs(cos(gait)) * 0.35 * walking - nod
