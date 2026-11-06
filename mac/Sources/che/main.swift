@@ -66,24 +66,36 @@ func focusedNow() -> String? {
     return appFocused
 }
 
-/// Opens the Claude app on a session: nil when the app doesn't have it (it runs in a terminal), false when the app
-/// never said it focused it within focusWait s, true once it's in front on that session.
+/// The app that was in front before the Claude app's session link raised it (the link raises it even when opened in
+/// the background), to get the front back once the text is sent: the app takes keys only while it's in front.
+var handBack: NSRunningApplication?
+
+func giveBack() {
+    if let a = handBack, a.bundleIdentifier != claudeBundle { a.activate() }
+    handBack = nil
+}
+
+/// Turns the Claude app to a session: nil when the app doesn't have it (it runs in a terminal), false when the app never said it focused
+/// it within focusWait s, true once it shows that session.
 func open(session cli: String) async -> Bool? {
     guard let id = desktopSession(cli: cli, in: sessions),
           let url = URL(string: "claude://code/continue?session=\(id)&source=desktop_action") else {
         log("session \(cli) isn't one of the Claude app's")
         return nil
     }
-    NSWorkspace.shared.open(url)
-    NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.activate()
+    handBack = NSWorkspace.shared.frontmostApplication
+    let behind = NSWorkspace.OpenConfiguration()
+    behind.activates = false
+    _ = try? await NSWorkspace.shared.open(url, configuration: behind)
     for _ in 0..<Int(focusWait * 20) {
-        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundle, focusedNow() == id {
+        if focusedNow() == id {
             // The box takes the focus a moment after the session shows.
             try? await Task.sleep(nanoseconds: 300_000_000)
             return true
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
     }
+    giveBack()
     log("the Claude app didn't focus \(id) within \(focusWait) s: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nothing") in front, its log last focused \(focusedNow() ?? "nothing")")
     return false
 }
@@ -107,21 +119,24 @@ func confirm(_ id: Int, session local: String, text: String) {
                 try? h.seek(toOffset: from)
                 let new = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
                 try? h.close()
-                if wasSent(log: new, session: local) { sent[id] = true; return }
+                if wasSent(log: new, session: local) { sent[id] = true; giveBack(); return }
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         log("the Claude app didn't send the text to \(local) within 4 s; it's on the clipboard")
         copy(text)
         sent[id] = false
+        giveBack()
     }
 }
 
-/// Puts the text where route() says, or on the clipboard when it mustn't go anywhere but a session that didn't open;
-/// Enter follows after enterDelay unless the pad cancels it.
-func deliver(_ text: String, clipboard: Bool = false) -> Route {
-    var r = clipboard ? .clipboard : route(frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-                  claude: NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.processIdentifier)
+/// Puts the text where route() says (into the Claude app's process when it's for a session the app opened), or on
+/// the clipboard when it mustn't go anywhere but a session that didn't open; Enter follows after enterDelay unless
+/// the pad cancels it.
+func deliver(_ text: String, clipboard: Bool = false, app: Bool = false) -> Route {
+    let claude = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.processIdentifier
+    var r = clipboard ? .clipboard : app ? claude.map { .sendTo($0) } ?? .clipboard
+        : route(frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, claude: claude)
     if r != .clipboard && !AXIsProcessTrusted() {
         log("can't type: allow \(CommandLine.arguments[0]) in System Settings > Privacy & Security > Accessibility; text is on the clipboard")
         r = .clipboard
@@ -150,7 +165,7 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     // the clipboard, since anywhere else would be the wrong place.
     var opened: Bool?
     if !dry, let s = q["session"] { opened = await open(session: s) == true }
-    let to = dry ? "none" : "\(deliver(text, clipboard: opened == false))" + (opened == true ? " in \(q["session"]!)" : "")
+    let to = dry ? "none" : "\(deliver(text, clipboard: opened == false, app: opened == true))" + (opened == true ? " in \(q["session"]!)" : "")
     log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
     var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay]
     // Typed into one of the app's sessions with an Enter to follow: the pad asks /sent?id= once it's pressed.
@@ -159,7 +174,7 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
         let id = deliveries
         afterEnter = { confirm(id, session: local, text: text) }
         out["id"] = id
-    }
+    } else { giveBack() }
     reply(c, "200 OK", out)
 }
 
@@ -177,6 +192,7 @@ func handle(_ c: NWConnection, _ r: Request) {
         reply(c, "200 OK", ["sessions": list])
     case ("POST", "/cancel"):
         afterEnter = nil
+        giveBack()
         reply(c, "200 OK", ["cancelled": enter.cancel()])
     // Whether delivery `id` reached its session: answered once known, or null after 6 s.
     case ("GET", let p) where p.hasPrefix("/sent"):

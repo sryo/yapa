@@ -7,7 +7,8 @@ one whose session doesn't come into focus in time (che run with CHE_WAIT=0), and
 it sent (che reading a copy of the app's log without its sendMessage lines). After each, the pad's screen is watched
 for a prompt left with no options, and for its note saying where the text went.
 
-It acts on this Mac: it brings the Claude app forward on a scratch session (in ~/.fium/scratch/che-live, with hooks
+It acts on this Mac, though che gives the front back to whatever had it (Finder, during the bench) once the app's
+session link has raised the app, and the run counts each pick that kept the front. It turns the Claude app to a scratch session (in ~/.fium/scratch/che-live, with hooks
 off, made the first time by typing into a new session there), types into it, and each typed pick there costs one short
 turn. It puts back the clipboard and the session the app had in front. che's Accessibility
 grant follows its signature, so the copy run here is signed as `mac/install` signs it.
@@ -56,6 +57,13 @@ def until(f, secs):
         if v: return v
         time.sleep(0.15)
     return None
+
+
+def front():
+    out = subprocess.run(["lsappinfo", "info", "-only", "bundleid", subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()],
+                         capture_output=True, text=True).stdout
+    m = re.search(r'"([^"]+)"', out.split("=", 1)[-1]) if "=" in out else None
+    return m.group(1) if m else None
 
 
 def clipboard(): return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
@@ -195,27 +203,35 @@ def run_path(name, sid, expect, wait, unsent=False):
             # A pick comes while the app shows some other session, as it does in use: the one you had in front.
             if AWAY:
                 subprocess.run(["open", f"claude://code/continue?session={AWAY}&source=desktop_action"])
-                until(lambda: focused() == AWAY, 10); time.sleep(1)
+                until(lambda: focused() == AWAY, 10); until(lambda: front() == "com.anthropic.claudefordesktop", 5); time.sleep(2)
+            # And with another app in front, as when you're at the Mac doing something else: che must leave it there.
+            subprocess.run(["open", "-a", "Finder"]); until(lambda: front() == "com.apple.finder", 5); time.sleep(1)
             token = uuid.uuid4().hex[:8]
             label = f"che-live {token}"
             t, watching = pick(sid, label)
             if t is None:
-                results.append((False, None, 0, "the action never showed on the pad"))
+                results.append((False, None, 0, "the action never showed on the pad", 0))
                 say("FAIL " + name + ": the action never showed on the pad"); continue
             watch, seen = watching
             if expect == "session":
                 got = until(lambda: token in transcript(sid) and time.time(), 25)
                 ok, why = bool(got), "" if got else "the pick never reached the session's transcript"
+                # The session asked for itself, so what lands is the pick alone, not "name: pick".
+                if ok and '"' + label + '"' not in transcript(sid):
+                    ok, why = False, "the session got more than the pick: " + re.findall(r'"([^"]*' + token + ')"', transcript(sid))[0]
             else:
                 got = until(lambda: token in clipboard() and time.time(), 10)
                 ok, why = bool(got), "" if got else f"the pick wasn't on the clipboard: {clipboard()[:60]!r}"
             watch.join()
+            # The app's session link raises it; che gives the front back once the session shows.
+            kept = not until(lambda: front() == "com.apple.finder", 3)
             notes = [s.get("note", "") for s in seen]
             if ok and expect == "clipboard" and not any(n.startswith("Copied:") for n in notes):
                 ok, why = False, f"the pad never said it was copied: {sorted(set(notes))}"
             if ok and expect == "session" and not any("tap to stop" in n for n in notes):
                 ok, why = False, f"the pad never said it was typed: {sorted(set(notes))}"
-            results.append((ok, (got - t) * 1000 if ok and expect == "session" else None, empty_prompts(seen), why))
+            results.append((ok, (got - t) * 1000 if ok and expect == "session" else None, empty_prompts(seen), why, int(kept)))
+            if kept: say(f"     {name}: {front()} kept the front from Finder")
             if VERBOSE or why: say(("ok   " if ok else "FAIL ") + name + (": " + why if why else ""))
         refused = sum(1 for l in open(che.log) if "refused" in l)
     finally:
@@ -226,7 +242,7 @@ def run_path(name, sid, expect, wait, unsent=False):
 def main():
     if "Booted" not in sim("list", "devices", "booted"): raise SystemExit("che-live needs a booted Simulator")
     if not "Claude.app/Contents/MacOS/Claude" in subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True).stdout: raise SystemExit("che-live needs the Claude app running")
-    say(f"che-live: brings the Claude app forward on a scratch session in {SCRATCH} and types into it; "
+    say(f"che-live: puts Finder in front and has che type into a scratch session in {SCRATCH} in the Claude app behind it; "
         f"{REPS + 1} short turns there; the clipboard and the session in front are put back after")
     global BIN
     BIN = build_che()
@@ -269,9 +285,10 @@ def main():
         "picks_unsent_not_copied": m("lower", "quality", [sum(not r[0] for r in unsent)]),
         "empty_option_screens": m("lower", "quality", [sum(r[2] for r in every)]),
         "che_refusals": m("lower", "quality", [r1 + r2 + r3 + r4]),
+        "picks_that_kept_the_front": m("lower", "quality", [sum(r[4] for r in every)]),
         **({"pick_to_text_ms": m("lower", "time", ms)} if ms else {}),
     }, "limits": {"picks_typed_missed": 0, "picks_lacking_not_copied": 0, "picks_unfocused_not_copied": 0, "picks_unsent_not_copied": 0,
-                  "empty_option_screens": 0, "che_refusals": 0},
+                  "empty_option_screens": 0, "che_refusals": 0, "picks_that_kept_the_front": 0},
        "failed": [r[3] for r in every if not r[0]]}, open(path, "w"))
     print(path)
 

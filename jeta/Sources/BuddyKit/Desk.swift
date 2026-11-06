@@ -124,6 +124,7 @@ public final class Desk {
     /// the same kind of line, under `name`, so the pad offers those answers and a pick is typed into the session.
     public static func turn(_ e: [String: Any], name: String = "") -> Data? {
         let block: [String: Any]
+        var own = false
         switch e["hook_event_name"] as? String {
         case "PreToolUse" where (e["tool_name"] as? String ?? "").hasSuffix("__wrap_up"):
             let input = e["tool_input"] as? [String: Any] ?? [:]
@@ -137,6 +138,7 @@ public final class Desk {
             let line = "jeta: \(name.replacingOccurrences(of: " ", with: "\u{00A0}")) needs you · \(ask)"
                 + (options.count >= 2 ? " · " + options.joined(separator: " | ") : "")
             block = ["type": "text", "text": line]
+            own = true
         // A failed turn needs you: it won't go on until you look, so it asks like a question, with the error.
         case "StopFailure" where !name.isEmpty:
             let why = [e["error"], e["error_message"], e["last_assistant_message"]].lazy.compactMap { $0 as? String }.first { !$0.isEmpty }
@@ -152,7 +154,9 @@ public final class Desk {
         default:
             return nil
         }
-        let turn: [String: Any] = ["evt": "turn", "role": "assistant", "content": [block], "session_id": e["session_id"] ?? ""]
+        var turn: [String: Any] = ["evt": "turn", "role": "assistant", "content": [block], "session_id": e["session_id"] ?? ""]
+        // A session's own next-step box: a pick goes to it alone, even once the pad knows it by another name.
+        if own { turn["own"] = true }
         return try? JSONSerialization.data(withJSONObject: turn)
     }
 

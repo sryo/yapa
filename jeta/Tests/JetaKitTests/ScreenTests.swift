@@ -81,6 +81,14 @@ final class ScreenTests: XCTestCase {
                 "content": [["type": "text", "text": "jeta: old\u{00A0}pad needs you · Commit? · Commit it | Not yet"]]])
         own.update(b)
         XCTAssertEqual(own.choose(1), "Not yet")
+        // Still its own once the pad has learned the Claude app's name for it, after the line came.
+        var renamed = Screen()
+        renamed.sessions = [SessionInfo(id: "y", name: "Fix the pad", state: .finished(at: 0), events: 1)]
+        var r = NoticeBoard()
+        r.take(["evt": "turn", "role": "assistant", "session_id": "y", "own": true,
+                "content": [["type": "text", "text": "jeta: pad needs you · Commit? · Commit it | Not yet"]]])
+        renamed.update(r)
+        XCTAssertEqual(renamed.choose(0), "Commit it")
         s.tap()
         XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option || $0.style == .suggestion }.count, 2, "the detail drops the options")
     }

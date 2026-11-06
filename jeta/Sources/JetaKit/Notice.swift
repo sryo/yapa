@@ -7,6 +7,8 @@ public struct Notice: Equatable {
     public var options: [String] = []
     /// The Claude Code session the line came from (the manager's), when the hooks say; an answer goes back there.
     public var from: String? = nil
+    /// The line came from the session it names (its own next-step box), whatever that session is called by now.
+    public var own = false
 }
 
 /// One line of the manager's session list.
@@ -51,7 +53,8 @@ public struct NoticeBoard {
                 var options: [String] = []
                 if case .choose(_, _, let o)? = NoticeBoard.parse(line) { options = o }
                 pending.removeAll { $0.session == s }
-                pending.insert(Notice(session: s, text: q, options: options, from: event["session_id"] as? String), at: 0)
+                pending.insert(Notice(session: s, text: q, options: options, from: event["session_id"] as? String,
+                                       own: event["own"] as? Bool == true), at: 0)
                 if let i = roster.firstIndex(where: { $0.session == s }) { roster[i].state = "needs you" }
                 else { roster.append(Roster(session: s, state: "needs you")) }
             case .list(let r)?: roster = r

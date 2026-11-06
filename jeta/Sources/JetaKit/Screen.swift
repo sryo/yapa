@@ -318,6 +318,7 @@ public struct Screen {
         // A session asking for itself (its next-step box) gets the answer alone; the manager, asking for another,
         // gets who it's for.
         let plain = { (s: String) in s.replacingOccurrences(of: "\u{00A0}", with: " ") }
+        if n.own { return n.options[i] }
         if let f = n.from, let me = sessions.first(where: { $0.id == f }), plain(me.name) == plain(n.session) { return n.options[i] }
         return "\(n.session): \(n.options[i])"
     }

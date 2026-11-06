@@ -256,6 +256,7 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual(board.pending.first?.options, ["Yes, commit", "Create Pr", "Not / yet"])
         XCTAssertEqual(board.pending.first?.from, "s1")
         XCTAssertEqual(board.pending.first?.session, "Old\u{00A0}iPhone\u{00A0}SE")
+        XCTAssertEqual(board.pending.first?.own, true, "a next-step box is its own session's")
         board.answered(by: "s1")
         XCTAssertTrue(board.pending.isEmpty)
         XCTAssertNil(Desk.turn(event("PreToolUse", ["tool_name": "mcp__ccd_turn__wrap_up", "tool_input": ["recap": "Done."]]), name: "x"))
