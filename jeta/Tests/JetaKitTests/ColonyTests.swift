@@ -162,7 +162,25 @@ final class ColonyTests: XCTestCase {
             biggest = max(biggest, a.size.x); turned = max(turned, abs(a.h - h0))
         }
         XCTAssertLessThan(biggest, 1.02)
-        XCTAssertLessThan(turned, 0.1)
+        // It turns once on the spot, about a full turn, and no more.
+        XCTAssertGreaterThan(turned, 2 * .pi * 0.9)
+        XCTAssertLessThan(turned, 2 * .pi * 1.3)
+        XCTAssertLessThan(simd_length(SIMD2(a.x, a.y) - SIMD2(160, 284)), 3)
+    }
+
+    // Left alone long enough to sleep, it curls up, antennae folded; just finished, it stands uncurled.
+    func testSleepCurlsUp() {
+        var rng = SplitMix(5)
+        let a = Ant(at: SIMD2(160, 284), heading: 0, rng: &rng), b = Ant(at: SIMD2(160, 284), heading: 0, rng: &rng)
+        XCTAssertEqual(Colony.act(for: .sleep, front: false, listening: false), .sleep)
+        a.set(.sleep, at: 0, rng: &rng); b.set(.rest, at: 0, rng: &rng)
+        for k in 1...600 {
+            a.update(1.0 / 120, t: Double(k) / 120, screen: SIMD2(320, 568), listenAt: nil, rng: &rng)
+            b.update(1.0 / 120, t: Double(k) / 120, screen: SIMD2(320, 568), listenAt: nil, rng: &rng)
+        }
+        XCTAssertGreaterThan(a.curl.x, 0.8)
+        XCTAssertLessThan(a.antennae.x, -0.8)
+        XCTAssertLessThan(b.curl.x, 0.05)
     }
 
     // Reading a session's text: its ant waits in the top left corner by the text, the others walk off the nearest edge
@@ -270,11 +288,11 @@ final class ColonyTests: XCTestCase {
         XCTAssertLessThan(simd_length(c.position(of: "a")! - home), 30)
     }
 
-    // A working ant drops a crumb each minute of its turn, one every five after ten, in one tight pile beside its
+    // A working ant drops a crumb each minute of its turn, in one tight pile beside its
     // spot (never under it, never one on another), and picks them all up once the turn ends; nothing shows while
     // text is up.
     func testCrumbsCountTheMinutes() {
-        XCTAssertEqual([0, 59, 60, 600, 899, 900, 99999].map(Colony.crumbs(after:)), [0, 0, 1, 10, 10, 11, 20])
+        XCTAssertEqual([0, 59, 60, 600, 900, 7200].map(Colony.crumbs(after:)), [0, 0, 1, 10, 15, 120])
         let c = Colony(seed: 5, now: 0)
         c.update([("a", .busy, false, 1), ("b", .idle, false, 1)], at: 0)
         c.working = ["a": -300]
@@ -327,6 +345,15 @@ final class ColonyTests: XCTestCase {
 
     // A busy ant walks in wide, slow curves: it never spins in place, beside its crumbs or anywhere else. Its path,
     // sampled every quarter second, bends no tighter on average than a circle 10 pt across.
+    // Thinking, a busy ant's antennae drum; running a tool, they don't.
+    func testThinkingDrums() {
+        let c = Colony(seed: 4, now: 0)
+        c.update([("a", .focused, false, 1), ("b", .busy, false, 1)], at: 0)
+        for k in 1...240 { c.update([("a", .focused, false, 1), ("b", .busy, false, 1)], at: Double(k) / 120) }
+        XCTAssertGreaterThan(c.drumming("a"), 0.5)
+        XCTAssertEqual(c.drumming("b"), 0, accuracy: 0.01)
+    }
+
     func testBusyAntsNeverSpin() {
         for seed in 0..<6 {
             let c = Colony(seed: UInt64(seed), now: 0)
@@ -352,5 +379,25 @@ final class ColonyTests: XCTestCase {
                 XCTAssertGreaterThan(radius, 5, "seed \(seed): \(id) turns on a \(radius) pt radius: it's spinning")
             }
         }
+    }
+
+    // A finished turn you haven't seen keeps its crumbs by its ant; once you look, the ant picks them up.
+    func testUnseenDoneKeepsItsCrumbs() {
+        let c = Colony(seed: 3, now: 0)
+        c.update([("a", .busy, false, 1), ("b", .idle, false, 1)], at: 0)
+        c.working = ["a": -300]
+        c.update([("a", .busy, false, 1), ("b", .idle, false, 1)], at: 1)
+        XCTAssertEqual(c.crumbs(at: 2).count, 5)
+        c.working = [:]; c.unseen = ["a"]
+        c.update([("a", .proud, false, 2), ("b", .idle, false, 1)], at: 3)
+        c.update([("a", .idle, false, 2), ("b", .idle, false, 1)], at: 10)
+        XCTAssertEqual(c.crumbs(at: 10).count, 5, "done, not seen: the crumbs stay")
+        c.update([("a", .sleep, false, 2), ("b", .sleep, false, 1)], at: 120)
+        XCTAssertEqual(c.acting("a"), "rest", "an ant beside its crumbs never curls up")
+        XCTAssertEqual(c.acting("b"), "sleep")
+        c.unseen = []
+        c.update([("a", .idle, false, 2), ("b", .idle, false, 1)], at: 121)
+        c.update([("a", .idle, false, 2), ("b", .idle, false, 1)], at: 123)
+        XCTAssertTrue(c.crumbs(at: 123).isEmpty)
     }
 }

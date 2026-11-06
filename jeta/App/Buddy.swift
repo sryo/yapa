@@ -28,6 +28,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
         super.init()
         UIDevice.current.isBatteryMonitoringEnabled = true
         manager = CBPeripheralManager(delegate: self, queue: nil)
+        hooks.onFrom = { [weak self] host in if self?.view.talk?.pinned != true { self?.view.talk?.macHost = host } }
         hooks.onChange = { [weak self] in
             guard let self else { return }
             let t = CACurrentMediaTime(), active = self.hooks.desk.active
@@ -42,7 +43,8 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.view.show(replies: self.hooks.desk.replies())
             self.update()
         }
-        view.onDecide = { [weak self] in self?.decide($0) ?? false }
+        view.onDecide = { [weak self] in self?.decide($0, words: $1) ?? false }
+        view.onLooked = { [weak self] id in self?.hooks.desk.looked(at: id); self?.hooks.onChange?() }
         view.onAnswer = { [weak self] answers in
             guard let self, let id = self.hooks.desk.asked()?.id, self.hooks.answer(id, answers) else { return false }
             AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
@@ -108,7 +110,7 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
             self.askedFor = Set(ids)
             if names.count != self.namedCount { self.log("the Mac named \(names.count) of \(ids.count) sessions") }
             self.namedCount = names.count
-            for (id, n) in names { desk.name(id, n.name, parent: n.parent) }
+            for (id, n) in names { desk.name(id, n.name, parent: n.parent, focused: n.focused) }
             self.view.crowd.update(desk.members(at: CACurrentMediaTime()), at: CACurrentMediaTime())
         }
     }
@@ -118,12 +120,19 @@ final class BuddyLink: NSObject, CBPeripheralManagerDelegate {
     }
 
     /// Answers the waiting prompt; false when none can be answered.
-    private func decide(_ approve: Bool) -> Bool {
+    private func decide(_ how: String, words: String?) -> Bool {
         let t = CACurrentMediaTime()
-        guard let line = buddy.decide(approve, at: t) else { return false }
+        guard var line = buddy.decide(how == "once" || how == "session", at: t) else { return false }
+        // Over the hooks a decision can say more than once or deny: for the session, the words said, stopping it.
+        if hooks.desk.active, var o = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] {
+            o["decision"] = how == "stop" ? "deny" : how
+            if how == "stop" { o["interrupt"] = true }
+            if let words { o["message"] = words }
+            line = String(decoding: try! JSONSerialization.data(withJSONObject: o), as: UTF8.self)
+        }
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
         send(line)
-        log("decided \(line.contains("\"once\"") ? "once" : "deny") \(Self.ms())")
+        log("decided \(how) \(Self.ms())")
         update()
         return true
     }

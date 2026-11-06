@@ -10,7 +10,7 @@ final class FaceView: UIView {
     private var board = NoticeBoard()
     private(set) var screen = Screen()
     /// The text's springs, a layer for each line they show, and where each line rests (to hit-test options).
-    private let motion = TextMotion()
+    let motion = TextMotion()
     private var texts: [String: CATextLayer] = [:]
     private(set) var placed: [Placed] = []
     /// The way the last swipe went (-1 left, 1 right), and the mode the text was last shown for.
@@ -20,14 +20,16 @@ final class FaceView: UIView {
     /// Answers the request showing with the labels picked for each of its questions; false if it's gone.
     var onAnswer: (([String: String]) -> Bool)?
     /// A tap on Allow or Deny answers the prompt up (true for once); false when none can be answered.
-    var onDecide: ((Bool) -> Bool)?
+    /// A permission answered on the pad: "once", "session", "deny" or "stop", with any words said as the reason.
+    var onDecide: ((_ how: String, _ words: String?) -> Bool)?
+    /// A session's finished turn was looked at on the pad.
+    var onLooked: ((String) -> Void)?
     /// A tap brought a session that needs you forward: its prompt is the one the next tap answers.
     var onFocus: ((String) -> Void)?
     var talk: Talk?
     /// One face per Claude Code session, when two or more report through the hooks; with one, the face above.
     let crowd = Crowd(seed: UInt64(Date().timeIntervalSince1970) &+ 1, now: CACurrentMediaTime())
     private var names: [String: CATextLayer] = [:]
-    private let more = CATextLayer()
     /// An ant for each face: the crowd's, or the single face's.
     let colony = Colony(seed: UInt64(Date().timeIntervalSince1970) &+ 2, now: CACurrentMediaTime())
     private var antLayers: [String: [CAShapeLayer]] = [:]
@@ -35,11 +37,6 @@ final class FaceView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
-        more.contentsScale = UIScreen.main.scale
-        more.fontSize = 13
-        more.foregroundColor = UIColor(white: 0.55, alpha: 1).cgColor
-        more.alignmentMode = .center
-        layer.addSublayer(more)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
         addGestureRecognizer(tap)
         for way in [UISwipeGestureRecognizer.Direction.left, .right] {
@@ -50,7 +47,8 @@ final class FaceView: UIView {
         let down = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
         down.direction = .down
         addGestureRecognizer(down)
-        // Reading, any drag up or down turns the page, however slow; a finger that moved at all is never a tap.
+        // With text up, a drag sideways carries it with the finger, and reading, any drag up or down turns the page,
+        // however slow; a finger that moved at all is never a tap.
         let drag = UIPanGestureRecognizer(target: self, action: #selector(dragged))
         drag.maximumNumberOfTouches = 1
         drag.delegate = self
@@ -62,6 +60,13 @@ final class FaceView: UIView {
         talk?.onNote = { [weak self] in self?.screen.note = $0; self?.noteEnds = $1.map { end in (end, end - CACurrentMediaTime()) } }
         // Reading a reply, talking answers that session; otherwise the ant held.
         talk?.session = { [weak self] p in self.flatMap { $0.screen.mode == .reply ? $0.screen.asker : $0.session(at: p) } }
+        // Holding to talk while a permission request is up denies it, with the words as the reason.
+        talk?.refusing = { [weak self] in self?.screen.asking?.options.contains("Deny") == true }
+        talk?.onRefuse = { [weak self] words in
+            guard let self, self.onDecide?("deny", words) == true else { return }
+            self.colony.answered(self.crowd.single ? "face" : self.crowd.front ?? "", allowed: false)
+            self.screen.answered()
+        }
         // The face hops as it says a question and gulps when its words come back.
         motion.onSay = { [weak self] in self?.speaker.say(at: CACurrentMediaTime()) }
         motion.onSwallow = { [weak self] in self?.speaker.swallow(at: CACurrentMediaTime()) }
@@ -103,21 +108,30 @@ final class FaceView: UIView {
     }
 
     // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.
-    @objc private func tapped(_ g: UITapGestureRecognizer) {
-        // A tap right after talking stops the pending Enter.
-        if talk?.tapped() == true { return }
+    @objc private func tapped(_ g: UITapGestureRecognizer) { tap(at: g.location(in: self)) }
+
+    /// A tap at `p`, from the finger or from test/jeta-flows' driver.
+    func tap(at p: CGPoint) {
+        // A tap right after talking stops the pending Enter; one on an option is that option, not a stop.
+        if option(at: p) == nil, talk?.tapped() == true { return }
         // A tap puts the dial away.
         if dial.isOpen { dial.close(); return }
-        // A question folded away while nobody was looking comes back first.
-        if screen.unfold() { return }
+        // A folded question comes back on a tap on its ant (any tap, with one ant); a tap on no ant leaves it away.
+        let under = colony.hit(SIMD2(Double(p.x), Double(p.y)))
+        if crowd.single || under != nil, screen.unfold(session: crowd.single ? nil : under) { return }
         // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
-        let p = g.location(in: self)
         // A permission request is answered only by its buttons: Allow or Deny, never a tap anywhere else.
         if screen.asking != nil, let (i, o) = option(at: p) {
             switch screen.pick(i) {
             case .decide(let allow):
-                guard onDecide?(allow) == true else { return }
+                guard onDecide?(allow ? "once" : "deny", nil) == true else { return }
                 colony.answered(crowd.single ? "face" : crowd.front ?? "", allowed: allow)
+            case .allowSession:
+                guard onDecide?("session", nil) == true else { return }
+                colony.answered(crowd.single ? "face" : crowd.front ?? "", allowed: true)
+            case .stop:
+                guard onDecide?("stop", nil) == true else { return }
+                colony.answered(crowd.single ? "face" : crowd.front ?? "", allowed: false)
             case .answer(let answers):
                 guard onAnswer?(answers) == true else { return }
             case .more:
@@ -177,28 +191,65 @@ final class FaceView: UIView {
     }
 
     @objc private func swiped(_ g: UISwipeGestureRecognizer) {
+        guard !carries else { return }
+        swipe(left: g.direction == .left, at: g.location(in: self))
+    }
+
+    /// Text is up and a drag carries it: the swipe is the drag let go.
+    var carries: Bool { screen.mode != .face && !dial.isOpen }
+
+    func swipe(left: Bool, at p: CGPoint) {
         // On the bare faces, swiping one away hides it until its session's next event; nothing changes in Claude.
         let t = CACurrentMediaTime()
-        let p = g.location(in: self)
         if screen.mode == .face, !crowd.single, let id = colony.hit(SIMD2(Double(p.x), Double(p.y))) {
             crowd.hide(id, at: t)
             return
         }
-        swipeWay = g.direction == .left ? -1 : 1
+        swipeWay = left ? -1 : 1
         screen.swipe()
     }
 
     // Holding anywhere is talking (Talk owns that gesture), so the session list opens with a swipe down on the bare face.
-    @objc private func swipedDown(_ g: UISwipeGestureRecognizer) {
+    @objc private func swipedDown(_ g: UISwipeGestureRecognizer) { swipeDown() }
+
+    func swipeDown() {
         if screen.mode != .reply { screen.swipeDown() }
     }
 
     @objc private func dragged(_ g: UIPanGestureRecognizer) {
-        guard g.state == .ended, screen.mode == .reply else { return }
         let d = g.translation(in: self)
+        if g.state == .began { sideways = abs(d.x) > abs(d.y) }
+        if sideways {
+            if g.state == .began || g.state == .changed { slide(by: Double(d.x)); return }
+            if g.state == .ended || g.state == .cancelled {
+                let v = g.state == .ended ? Double(g.velocity(in: self).x) : 0
+                slid(by: g.state == .ended ? Double(d.x) : 0, speed: v, at: g.location(in: self))
+            }
+            return
+        }
+        guard g.state == .ended, screen.mode == .reply else { return }
         guard abs(d.y) > 20, abs(d.y) > abs(d.x) else { return }
         pageWay = d.y < 0 ? -1 : 1
         screen.scroll(by: d.y < 0 ? 1 : -1)
+    }
+
+    /// Which way the drag under way went first, and whether it carries the text (nil until it moves).
+    private var sideways = false, sliding: Bool?
+
+    /// A finger `dx` points sideways of where it landed: the text goes with it. A slow drag first looks like a hold,
+    /// so the hold it began is dropped; a finger that has been talking a while goes on talking instead.
+    func slide(by dx: Double) {
+        if sliding == nil { sliding = talk?.drop() != false }
+        if sliding == true { motion.hold(dx, at: CACurrentMediaTime()) }
+    }
+
+    /// The finger lifts: carried a fifth of the screen, or flicked that way, it's a swipe and the text goes on off
+    /// that side; short of that, the text springs back.
+    func slid(by dx: Double, speed v: Double, at p: CGPoint) {
+        defer { sliding = nil }
+        guard sliding != false else { return }
+        motion.hold(nil, speed: v, at: CACurrentMediaTime())
+        if abs(dx) > Double(bounds.width) * 0.2 || (abs(v) > 500 && v * dx > 0) { swipe(left: dx < 0, at: p) }
     }
 
     /// What each session last said, for the reading screen.
@@ -226,6 +277,12 @@ final class FaceView: UIView {
     fileprivate var userBrightness: CGFloat?, lit = Spring(x: 1)
     private var options: [Placed] { screen.asking == nil ? placed.filter { $0.style == .option || $0.style == .suggestion } : [] }
     private(set) var fingers: [Int: SIMD2<Double>] = [:]
+
+    /// Fingers set by test/jeta-flows' driver, as if they were touching.
+    func drive(fingers f: [Int: SIMD2<Double>]) {
+        fingers = f
+        feedChord(at: CACurrentMediaTime())
+    }
 
     private func track(_ event: UIEvent?) {
         fingers = [:]
@@ -291,11 +348,23 @@ final class FaceView: UIView {
         colony.listener = heldAnt
         // The session whose text is open waits in the corner and the others walk off the screen until it closes.
         // The dial's words are nobody's, so every ant walks off while it's open.
-        colony.solo = dial.isOpen ? "dial" : crowd.single ? nil : crowd.solo
+        // A lone ant is "face", and it goes to the corner by its text like any other.
+        colony.solo = dial.isOpen ? "dial" : crowd.solo.map { crowd.single ? "face" : $0 }
+        // Its ant stands beside the text's first line: to its left when there's room, else just above it.
+        if let top = placed.min(by: { $0.y < $1.y }), let left = placed.map(\.x).min() {
+            colony.byText = left >= 80 ? SIMD2(Double(left) - 40, Double(top.y + top.height / 2))
+                : SIMD2(Double(left) + 30, max(40, Double(top.y) - 34))
+        } else { colony.byText = nil }
         colony.families = Dictionary(crowd.sessions.compactMap { s in s.parent.map { (s.id, $0) } }) { a, _ in a }
         colony.working = Dictionary(crowd.sessions.compactMap { s in s.since.map { (s.id, $0) } }) { a, _ in a }
+        colony.unseen = Set(crowd.sessions.filter(\.unseen).map(\.id))
+        crowd.waiting = screen.waiting
+        // A reply open on the pad is a finished turn you've now seen.
+        if screen.mode == .reply, let id = screen.asker, crowd.sessions.contains(where: { $0.id == id && $0.unseen }) { onLooked?(id) }
         // With one session or none, a single ant plays the big face's mood; otherwise one per session not swiped away.
-        colony.update(crowd.single ? [("face", face.mood, true, crowd.sessions.first?.events)]
+        // The big face dozes off by itself, but not while a question waits.
+        let lone = face.mood == .sleep && !screen.waiting.isEmpty ? .idle : face.mood
+        colony.update(crowd.single ? [("face", lone, true, crowd.sessions.first?.events)]
                       : crowd.sessions.map { s in (s.id, crowd.face(s.id)?.mood ?? .idle, s.id == crowd.front, s.events) }, at: t)
         let about = crowd.single ? "face" : slots.first(where: { $0.id == crowd.solo ?? spoke })?.id ?? crowd.front
         let anchor = about.flatMap(colony.position).map { ($0 - mid) / u } ?? f.centre
@@ -334,7 +403,7 @@ extension FaceView {
     /// The face the text comes from: the one in front when several sessions show, else the single face.
     var speaker: Face { crowd.single ? face : crowd.front.flatMap(crowd.face) ?? face }
 
-    /// Each session's name under its ant while touched, with what it's doing while it works, and "N more sessions" at the bottom for the ones folded away.
+    /// Each session's name under its ant while touched, with what it's doing while it works.
     func drawNames(_ slots: [Slot]) {
         let ids = Set(slots.map(\.id))
         for (id, n) in names where !ids.contains(id) { n.removeFromSuperlayer(); names[id] = nil }
@@ -360,12 +429,8 @@ extension FaceView {
             name.position = CGPoint(x: min(max(at.x, 100), bounds.width - 100), y: at.y + 35)
             name.opacity = Float(s.named)
         }
-        more.string = crowd.overflow > 0 && !slots.isEmpty ? crowd.overflow == 1 ? "1 more session" : "\(crowd.overflow) more sessions" : ""
-        more.bounds = CGRect(x: 0, y: 0, width: 200, height: 18)
-        more.position = CGPoint(x: bounds.midX + screen.drift.x, y: bounds.height - 24 + screen.drift.y)
     }
 
-    /// Each ant as four layers: its body filled, then its thighs, shins and antennae stroked, each at its own width.
     func drawCrumbs(_ crumbs: [[SIMD2<Double>]]) {
         if crumbLayer.superlayer == nil {
             crumbLayer.fillColor = UIColor(white: 0.96, alpha: 1).cgColor
@@ -377,30 +442,36 @@ extension FaceView {
         crumbLayer.path = path
     }
 
+    /// Each ant as layers: its body filled, then one stroked layer per width its strokes come in (thighs, shins and
+    /// mandibles, antennae), so a new part draws without a layer of its own.
     func drawAnts(_ shapes: [AntShape]) {
         let ids = Set(shapes.map(\.id))
         for (id, ls) in antLayers where !ids.contains(id) { ls.forEach { $0.removeFromSuperlayer() }; antLayers[id] = nil }
         let white = UIColor(white: 0.96, alpha: 1).cgColor
         for a in shapes {
-            let ls = antLayers[a.id] ?? (0..<4).map { i in
-                let l = CAShapeLayer()
-                l.fillColor = i == 0 ? white : nil
-                l.strokeColor = i == 0 ? nil : white
+            var widths: [Double] = []
+            for s in a.strokes where !widths.contains(s.width) { widths.append(s.width) }
+            var ls = antLayers[a.id] ?? []
+            while ls.count < widths.count + 1 {
+                let l = CAShapeLayer(), fill = ls.isEmpty
+                l.fillColor = fill ? white : nil
+                l.strokeColor = fill ? nil : white
                 l.lineCap = .round
                 l.lineJoin = .round
                 layer.insertSublayer(l, at: 0)
-                return l
+                ls.append(l)
             }
             antLayers[a.id] = ls
             let body = CGMutablePath()
             for f in a.fills { body.addLines(between: f.map { CGPoint(x: $0.x, y: $0.y) }); body.closeSubpath() }
             ls[0].path = body
-            // Six thighs, six shins, two antennae.
-            for (n, part) in [a.strokes.prefix(6), a.strokes.dropFirst(6).prefix(6), a.strokes.suffix(2)].enumerated() {
+            for (n, l) in ls.dropFirst().enumerated() {
                 let p = CGMutablePath()
-                for s in part { p.addLines(between: s.points.map { CGPoint(x: $0.x, y: $0.y) }) }
-                ls[n + 1].path = p
-                ls[n + 1].lineWidth = CGFloat(part.first?.width ?? 1)
+                if n < widths.count {
+                    for s in a.strokes where s.width == widths[n] { p.addLines(between: s.points.map { CGPoint(x: $0.x, y: $0.y) }) }
+                    l.lineWidth = CGFloat(widths[n])
+                }
+                l.path = p
             }
         }
     }
@@ -529,6 +600,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     var buddy: BuddyLink?
+    var drive: Drive?
     func sceneWillResignActive(_: UIScene) { (window?.rootViewController?.view as? FaceView)?.wake() }
     func scene(_ scene: UIScene, willConnectTo _: UISceneSession, options _: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
@@ -536,6 +608,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let controller = FaceController()
         window?.rootViewController = controller
         buddy = BuddyLink(view: controller.view as! FaceView)
+        #if targetEnvironment(simulator)
+        drive = Drive(view: controller.view as! FaceView, args: CommandLine.arguments)
+        #endif
         window?.makeKeyAndVisible()
         // To try the screens without the Buddy link: launch with `-jeta "jeta: server needs you · Which hostname?"`.
         let args = CommandLine.arguments
@@ -549,9 +624,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))
 
 extension FaceView: UIGestureRecognizerDelegate {
-    // The page drag is only for reading, and it lets the swipes and the hold see the same touch.
+    // The drag is only for text, and it lets the swipes and the hold see the same touch.
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        g is UIPanGestureRecognizer ? screen.mode == .reply : super.gestureRecognizerShouldBegin(g)
+        g is UIPanGestureRecognizer ? carries : super.gestureRecognizerShouldBegin(g)
     }
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith o: UIGestureRecognizer) -> Bool { true }
 }

@@ -46,12 +46,20 @@ let sessions = FileManager.default.homeDirectoryForCurrentUser
 let appLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Claude/main.log")
 
 /// The end of the Claude app's log, where it says which session it focused.
-func logTail() -> String {
-    guard let h = try? FileHandle(forReadingFrom: appLog) else { return "" }
+/// The session the Claude app has focused, from its log. It says so only when the focus changes, so the line can be
+/// far back: che reads the whole log once, then only what's new.
+var logRead: UInt64 = 0, appFocused: String?
+func focusedNow() -> String? {
+    guard let h = try? FileHandle(forReadingFrom: appLog) else { return appFocused }
     defer { try? h.close() }
     let end = (try? h.seekToEnd()) ?? 0
-    try? h.seek(toOffset: end > 65536 ? end - 65536 : 0)
-    return String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+    // A log cut or started again is read from the top.
+    if end < logRead { logRead = 0 }
+    try? h.seek(toOffset: logRead)
+    let new = h.readDataToEndOfFile()
+    logRead += UInt64(new.count)
+    if let f = focusedSession(log: String(decoding: new, as: UTF8.self)) { appFocused = f }
+    return appFocused
 }
 
 /// Opens the Claude app on a session: nil when the app doesn't have it (it runs in a terminal), false when the app
@@ -65,7 +73,7 @@ func open(session cli: String) async -> Bool? {
     NSWorkspace.shared.open(url)
     NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.activate()
     for _ in 0..<60 {
-        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundle, focusedSession(log: logTail()) == id {
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == claudeBundle, focusedNow() == id {
             // The box takes the focus a moment after the session shows.
             try? await Task.sleep(nanoseconds: 300_000_000)
             return true
@@ -120,8 +128,11 @@ func handle(_ c: NWConnection, _ r: Request) {
     // The pad's names for the sessions its hooks report: GET /sessions?ids=a,b.
     case ("GET", let p) where p.hasPrefix("/sessions"):
         let ids = Set((query(p)["ids"] ?? "").split(separator: ",").map(String.init))
-        let list = named(ids, in: sessions).mapValues { n in
-            ["name": n.name, "title": n.title].merging(n.parent.map { ["parent": $0] } ?? [:]) { a, _ in a }
+        let list = named(ids, in: sessions).mapValues { n -> [String: Any] in
+            var o: [String: Any] = ["name": n.name, "title": n.title]
+            if let p = n.parent { o["parent"] = p }
+            if let f = n.focused { o["focused"] = f }
+            return o
         }
         reply(c, "200 OK", ["sessions": list])
     case ("POST", "/cancel"):
@@ -189,4 +200,7 @@ Task {
     listener.start(queue: .main)
     log("listening on \(port) for \(["this Mac"] + from), Enter after \(enterDelay) s")
 }
-dispatchMain()
+// The main run loop, not dispatchMain: NSWorkspace learns which app is in front from run loop notifications, so
+// without one frontmostApplication stays whatever was in front when che started.
+_ = focusedNow()
+RunLoop.main.run()

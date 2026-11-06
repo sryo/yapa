@@ -53,6 +53,8 @@ public final class TextMotion {
 
     private var items: [Item] = [], last: [Placed]? = nil, now = 0.0, anchor = SIMD2<Double>(0, 0)
     private var pressed: String?, gone: Set<String> = []
+    /// How far a finger has carried the text sideways; nil when no finger is on it.
+    private var held: Double?
 
     public init() {}
 
@@ -92,6 +94,16 @@ public final class TextMotion {
     public func press(_ key: String?, at t: Double) {
         advance(to: t)
         pressed = key
+    }
+
+    /// A finger carrying the text sideways by `dx` points: every line follows it 1:1. Once it lifts (nil), the lines
+    /// leave at the finger's `speed` and spring home from where it left them, unless the swipe sends them off.
+    public func hold(_ dx: Double?, speed: Double = 0, at t: Double) {
+        advance(to: t)
+        for i in items where i.exit == .none {
+            if let dx { i.cx.x += dx - (held ?? 0) } else { i.cx.v = speed }
+        }
+        held = dx
     }
 
     /// The option was picked: it pops and goes to the face, and the options not taken drop away.
@@ -140,7 +152,7 @@ public final class TextMotion {
                 case .none:
                     let overshoot = simd_distance(i.at, i.home) > 2 && i.s.x < 0.9 * i.line.scale
                     let (k, d) = overshoot ? (140.0, 0.55) : (120.0, 0.75)
-                    i.cx.step(to: i.home.x, k: k, damping: d, dt: dt)
+                    i.cx.step(to: i.home.x + (held ?? 0), k: k, damping: d, dt: dt)
                     i.cy.step(to: i.home.y, k: k, damping: d, dt: dt)
                     i.s.step(to: i.line.scale, k: k, damping: d, dt: dt)
                 case .face:

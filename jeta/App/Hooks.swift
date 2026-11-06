@@ -16,6 +16,8 @@ final class HookListener {
     private var timer: Timer?
     /// Says when the port couldn't be opened, and when it opened after all.
     var onLog: ((String) -> Void)?
+    /// The address each hook came from: the Mac's, on the home network.
+    var onFrom: ((String) -> Void)?
 
     /// Where the sessions are kept between launches, so an install doesn't lose the faces.
     private let saved = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("sessions.json")
@@ -74,6 +76,8 @@ final class HookListener {
 
     private func accept(_ c: NWConnection) {
         guard case .hostPort(let host, _) = c.endpoint, homeNetwork("\(host)".components(separatedBy: "%")[0]) else { return c.cancel() }
+        let from = "\(host)".components(separatedBy: "%")[0]
+        if !from.hasPrefix("169.254.") { onFrom?(from) }
         c.start(queue: .main)
         read(c)
     }

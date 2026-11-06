@@ -143,6 +143,8 @@ public func newSession(in folder: String) -> URL? {
 /// What the pad calls a session, and the session that started it.
 public struct Named: Equatable {
     public var name: String, title: String, parent: String?
+    /// When the Claude app last showed the session, in seconds since 1970.
+    public var focused: Double? = nil
 }
 
 /// The Claude app's names for the Claude Code sessions `ids` (their hooks' `session_id`), from the session files it
@@ -165,7 +167,8 @@ public func named(_ ids: Set<String>, in root: URL) -> [String: Named] {
         let up = (from?["sessionId"] as? String ?? o["forkedFromSessionId"] as? String).flatMap { all[$0] }
         let name = (from?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? short(title)
         guard !name.isEmpty else { continue }
-        out[id] = Named(name: name, title: title, parent: up.flatMap { p in cli(p).first(where: ids.contains) ?? cli(p).first })
+        out[id] = Named(name: name, title: title, parent: up.flatMap { p in cli(p).first(where: ids.contains) ?? cli(p).first },
+                        focused: (o["lastFocusedAt"] as? Double).map { $0 / 1000 })
     }
     return out
 }

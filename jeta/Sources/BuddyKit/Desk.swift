@@ -21,11 +21,26 @@ public final class Desk {
         /// The tool it's on and with what, and when its turn began.
         var doing = "", turn: Double?
         var finished: Double?, failed = false
+        /// A finished turn you haven't looked at yet, and when it finished by the wall clock (to compare with when the
+        /// Claude app last showed the session).
+        var unseen = false, finishedWall = 0.0
+        /// Subagents it started that haven't stopped, and a Stop that waits for them.
+        var subagents = 0, stopWaits = false
         /// The text the session last stopped on, and when.
         var reply: String?, replied = 0.0
     }
-    struct Held { let id, session, tool, hint: String, input: NSDictionary, since: Double; var event = "PermissionRequest" }
+    struct Held {
+        let id, session, tool, hint: String, input: NSDictionary, since: Double; var event = "PermissionRequest"
+        /// The rules the request suggests adding, which "this session" adds for the session alone.
+        var suggestions: [[String: Any]] = []
+    }
     var sessions: [String: Session] = [:], held: [Held] = [], msg = "", count = 0
+    /// The wall clock, in seconds since 1970; tests set their own.
+    public var wall: () -> Double = { Date().timeIntervalSince1970 }
+    /// A session that stopped is shown done only this long after, since another turn often follows at once.
+    public static let grace = 5.0
+    /// A session working with no news for this long is stale: the pad likely missed its Stop.
+    public static let staleAfter = 600.0
     /// The session a tap brought forward: its prompt is the one shown and answered.
     public var focus: String?
     /// The folders sessions ran in, the latest first: where the dial offers to start a new one.
@@ -60,27 +75,39 @@ public final class Desk {
         switch event {
         case "PermissionRequest":
             count += 1
-            let h = Held(id: "\(run)-\(count)", session: id, tool: tool, hint: "\(s.name): \(detail(input))", input: input as NSDictionary, since: t)
+            var h = Held(id: "\(run)-\(count)", session: id, tool: tool, hint: "\(s.name): \(detail(input))", input: input as NSDictionary, since: t)
+            h.suggestions = e["permission_suggestions"] as? [[String: Any]] ?? []
             held.append(h)
             return (h.id, [])
         case "SessionEnd":
             sessions[id] = nil
         case "UserPromptSubmit", "PreToolUse":
+            let fresh = sessions[id]?.running != true
             sessions[id]?.running = true
             sessions[id]?.finished = nil
             sessions[id]?.failed = false
+            sessions[id]?.unseen = false
+            sessions[id]?.stopWaits = false
             sessions[id]?.reading = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "LS"].contains(tool)
-            if event == "UserPromptSubmit" || sessions[id]?.turn == nil { sessions[id]?.turn = t }
+            if event == "UserPromptSubmit" || fresh || sessions[id]?.turn == nil { sessions[id]?.turn = t }
             if event == "UserPromptSubmit" { sessions[id]?.doing = "thinking" }
             if event == "PreToolUse" { sessions[id]?.doing = Desk.doing(tool, input) }
             if event == "PreToolUse" { msg = "\(s.name): \(tool) \(detail(input))" }
+        // A tool done, the model is thinking again until its next one.
+        case "PostToolUse" where sessions[id]?.running == true:
+            sessions[id]?.doing = "thinking"; sessions[id]?.reading = false
+        case "SubagentStart":
+            sessions[id]?.subagents += 1
+        case "SubagentStop":
+            let open = sessions[id]?.subagents ?? 0
+            sessions[id]?.subagents = max(0, open - 1)
+            // The last subagent it waited on is done, so its turn is.
+            if sessions[id]?.subagents == 0, sessions[id]?.stopWaits == true { finish(id, failed: false, at: t) }
         case "Stop", "StopFailure":
-            sessions[id]?.running = false
-            sessions[id]?.finished = event == "Stop" ? t : nil
-            sessions[id]?.failed = event == "StopFailure"
-            sessions[id]?.turn = nil
-            sessions[id]?.doing = ""
             if let m = e["last_assistant_message"] as? String, !m.isEmpty { sessions[id]?.reply = m; sessions[id]?.replied = t }
+            // A turn whose subagents are still at work isn't done until they are.
+            if event == "Stop", (sessions[id]?.subagents ?? 0) > 0 { sessions[id]?.stopWaits = true; break }
+            finish(id, failed: event == "StopFailure", at: t)
         default:
             break
         }
@@ -137,6 +164,18 @@ public final class Desk {
         return on.isEmpty ? name : name + " " + (on.count > 40 ? String(on.prefix(39)) + "…" : on)
     }
 
+    private func finish(_ id: String, failed: Bool, at t: Double) {
+        sessions[id]?.running = false
+        sessions[id]?.finished = failed ? nil : t
+        sessions[id]?.failed = failed
+        sessions[id]?.unseen = !failed
+        sessions[id]?.finishedWall = wall()
+        sessions[id]?.stopWaits = false
+    }
+
+    /// You looked at a session's finished turn (its reply opened on the pad).
+    public func looked(at id: String) { sessions[id]?.unseen = false }
+
     /// What the pad calls a session.
     public func name(of id: String) -> String { sessions[id]?.name ?? "" }
 
@@ -155,7 +194,8 @@ public final class Desk {
                            options: (q["options"] as? [[String: Any]] ?? []).compactMap { $0["label"] as? String },
                            multi: q["multiSelect"] as? Bool ?? false)
         }
-        return Asked(id: h.id, session: name, tool: h.tool, text: "\(h.tool): \(full(input))", questions: questions)
+        return Asked(id: h.id, session: name, tool: h.tool, text: "\(h.tool): \(full(input))", questions: questions,
+                     forSession: !h.suggestions.isEmpty)
     }
 
     /// The sessions the Mac hasn't named yet.
@@ -163,8 +203,10 @@ public final class Desk {
     public var ids: [String] { sessions.keys.sorted() }
 
     /// Names a session as the Claude app does, with the session that started it; what's already up keeps its name.
-    public func name(_ id: String, _ name: String, parent: String?) {
+    public func name(_ id: String, _ name: String, parent: String?, focused: Double? = nil) {
         guard sessions[id] != nil, !name.isEmpty else { return }
+        // The Claude app showed it since its turn finished: you've seen it.
+        if let f = focused, let s = sessions[id], s.unseen, f > s.finishedWall { sessions[id]?.unseen = false }
         sessions[id]?.name = name
         sessions[id]?.parent = parent == id ? nil : parent
         sessions[id]?.named = true
@@ -188,9 +230,17 @@ public final class Desk {
         held.removeAll { $0.id == id }
         // Questions held before they run aren't refused: let go, they show at the desk.
         if h.event == "PreToolUse" { return Settle(id: h.id, body: Data()) }
-        let allow = cmd["decision"] as? String == "once"
+        // "once", "session" (allowed, with the request's own suggested rules added for this session alone) or "deny",
+        // with the words said on the pad as the reason, and "interrupt" to stop the session too.
+        let how = cmd["decision"] as? String, allow = how == "once" || how == "session"
         var decision: [String: Any] = ["behavior": allow ? "allow" : "deny"]
-        if !allow { decision["message"] = "Denied on the pad." }
+        if how == "session", !h.suggestions.isEmpty {
+            decision["updatedPermissions"] = h.suggestions.map { $0.merging(["destination": "session"]) { $1 } }
+        }
+        if !allow {
+            decision["message"] = (cmd["message"] as? String).flatMap { $0.isEmpty ? nil : "Denied on the pad: " + $0 } ?? "Denied on the pad."
+            if cmd["interrupt"] as? Bool == true { decision["interrupt"] = true }
+        }
         let out = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
         return Settle(id: h.id, body: try! JSONSerialization.data(withJSONObject: out))
     }
@@ -198,16 +248,21 @@ public final class Desk {
     /// Requests older than their hook's own 10 min timeout: that hook has given up, so the pad stops showing them.
     public func expire(at t: Double) -> [Settle] { release(held.filter { t - $0.since > 600 }) }
 
-    /// Each session and what it's doing, in the order they started: quiet after 30 min with nothing new.
+    /// Each session and what it's doing, in the order they started. One state each, by precedence: it needs you, it
+    /// failed, it's stale (working, but no news for 10 min), it's working (or stopped under 5 s ago, since another
+    /// turn often follows), it's done, it's quiet (30 min with nothing new).
     public func members(at t: Double) -> [SessionInfo] {
         sessions.sorted { ($0.value.started, $0.key) < ($1.value.started, $1.key) }.map { id, s in
+            let graced = s.finished.map { t - $0 < Desk.grace } ?? false
             let state: SessionState = held.contains { $0.session == id } ? .needs
-                : t - s.seen >= 1800 ? .quiet
                 : s.failed ? .failed
-                : s.running ? .working(reading: s.reading)
+                : s.running && t - s.seen >= Desk.staleAfter ? .stale(since: s.seen)
+                : s.running || graced ? .working(reading: s.reading)
+                : t - s.seen >= 1800 ? .quiet
                 : s.finished.map { .finished(at: $0) } ?? .quiet
+            let working = s.running || graced
             return SessionInfo(id: id, name: s.name, state: state, events: s.events, parent: s.parent,
-                               doing: s.running ? s.doing : "", since: s.running ? s.turn : nil)
+                               doing: working ? s.doing : "", since: working ? s.turn : nil, unseen: s.unseen)
         }
     }
 
@@ -223,14 +278,17 @@ public final class Desk {
         let list: [[String: Any]] = sessions.map { id, s in
             var o: [String: Any] = ["id": id, "name": s.name, "started": s.started - t, "seen": s.seen - t, "events": s.events, "failed": s.failed]
             if let f = s.finished { o["finished"] = f - t }
+            if s.running { o["running"] = true; o["turn"] = (s.turn ?? s.seen) - t; o["doing"] = s.doing; o["reading"] = s.reading }
             if s.named { o["named"] = true; o["parent"] = s.parent }
+            if s.unseen { o["unseen"] = true; o["finishedWall"] = s.finishedWall }
             if let r = s.reply { o["reply"] = r; o["replied"] = s.replied - t }
             return o
         }
         return try! JSONSerialization.data(withJSONObject: ["wall": wall, "sessions": list])
     }
 
-    /// Takes back what `save` wrote, aged by the wall-clock time since; none was working any more by then.
+    /// Takes back what `save` wrote, aged by the wall-clock time since. A session working then is still working (an
+    /// install mid-turn shouldn't put its ant to sleep); one that sends no news for a while goes stale as usual.
     public func load(_ data: Data, at t: Double, wall: Double) {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let then = o["wall"] as? Double,
               let list = o["sessions"] as? [[String: Any]] else { return }
@@ -243,9 +301,15 @@ public final class Desk {
             v.events = s["events"] as? Int ?? 0
             v.failed = s["failed"] as? Bool ?? false
             v.named = s["named"] as? Bool ?? false
+            v.unseen = s["unseen"] as? Bool ?? false
+            v.finishedWall = s["finishedWall"] as? Double ?? 0
             v.parent = s["parent"] as? String
             v.finished = (s["finished"] as? Double).map { now + $0 }
             v.reply = s["reply"] as? String
+            v.running = s["running"] as? Bool ?? false
+            v.turn = (s["turn"] as? Double).map { now + $0 }
+            v.doing = s["doing"] as? String ?? ""
+            v.reading = s["reading"] as? Bool ?? false
             v.replied = now + (s["replied"] as? Double ?? 0)
             if sessions[id] == nil { sessions[id] = v }
         }

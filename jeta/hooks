@@ -11,7 +11,7 @@ exec /usr/bin/osascript -l JavaScript - "$@" <<'EOF'
 ObjC.import("Foundation"); ObjC.import("stdlib")
 
 const statusEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop",
-                      "StopFailure", "SessionEnd", "Notification"]
+                      "StopFailure", "SessionEnd", "Notification", "SubagentStart", "SubagentStop"]
 const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"]
 
 // Each hook ends in this mark, so off finds exactly them.

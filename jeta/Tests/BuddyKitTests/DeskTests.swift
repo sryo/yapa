@@ -131,7 +131,8 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual(state("s1", at: 4), .needs)
         _ = d.take(event("PostToolUse", push), at: 5)
         _ = d.take(event("Stop"), at: 6)
-        XCTAssertEqual(state("s1", at: 6), .finished(at: 6))
+        XCTAssertEqual(state("s1", at: 6), .working(reading: false), "just stopped: another turn often follows")
+        XCTAssertEqual(state("s1", at: 11.1), .finished(at: 6))
         _ = d.take(event("UserPromptSubmit", session: "s2"), at: 7)
         _ = d.take(event("StopFailure", session: "s2"), at: 8)
         XCTAssertEqual(state("s2", at: 8), .failed)
@@ -167,8 +168,8 @@ final class DeskTests: XCTestCase {
         XCTAssertNil(Desk.turn(event("PostToolUse", ["tool_input": ["command": "echo 'jeta: clear server'"]])))
     }
 
-    // R1: a pad that restarts (an install) keeps its sessions, aged by the time it was off; waiting requests and
-    // work in progress don't survive it, and a session quiet for 2 h is gone.
+    // R1: a pad that restarts (an install) keeps its sessions, aged by the time it was off, a working one still
+    // working; waiting requests don't survive it, and a session quiet for 2 h is gone.
     func testR1_SessionsOutliveARestart() {
         let d = Desk()
         _ = d.take(event("Stop"), at: 100)
@@ -181,7 +182,11 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual(m.map(\.name), ["yapa", "fium"])
         XCTAssertEqual(m.map(\.events), [1, 2])
         XCTAssertNil(e.heartbeat(at: 5)["prompt"], "a request whose hook is gone isn't shown")
-        XCTAssertEqual(e.heartbeat(at: 5)["running"] as? Int, 0)
+        XCTAssertEqual(e.heartbeat(at: 5)["running"] as? Int, 1)
+        XCTAssertEqual(m[1].state, .working(reading: false), "fium was mid-turn")
+        XCTAssertEqual(m[1].since, 5 - 30 - 10, "its turn still began when it did")
+        let late = Desk(); late.load(saved, at: 5, wall: 1_000 + 900)
+        if case .stale = late.members(at: 5)[1].state {} else { XCTFail("no news for 15 min is stale") }
         let old = Desk(); old.load(saved, at: 5, wall: 1_000 + 7300)
         XCTAssertFalse(old.active)
     }
@@ -260,9 +265,11 @@ final class DeskTests: XCTestCase {
         _ = d.take(event("PreToolUse", ["tool_name": "mcp__ccd_turn__wrap_up", "tool_input": [:]], session: "s2"), at: 13)
         XCTAssertEqual(d.members(at: 14).map(\.doing), ["Read ya", "wrap up"])
         XCTAssertEqual(d.members(at: 14).map(\.since), [10, 13])
+        _ = d.take(event("PostToolUse", ["tool_name": "Read"]), at: 15)
+        XCTAssertEqual(d.members(at: 16).first?.doing, "thinking", "a tool done, it thinks again")
         _ = d.take(event("Stop"), at: 20)
-        XCTAssertEqual(d.members(at: 21).first?.doing, "")
-        XCTAssertNil(d.members(at: 21).first?.since)
+        XCTAssertEqual(d.members(at: 26).first?.doing, "")
+        XCTAssertNil(d.members(at: 26).first?.since)
     }
 
     // R10: a failed turn needs you like a question does, with the error as its text, until the session goes on.
@@ -274,5 +281,73 @@ final class DeskTests: XCTestCase {
         board.answered(by: "s1")
         XCTAssertTrue(board.pending.isEmpty)
         XCTAssertNotNil(Desk.turn(event("StopFailure"), name: "che"), "with no error given, it still asks")
+    }
+
+    // R3: a request can be allowed for the rest of the session (its own suggested rules, added for the session
+    // alone), or denied with the words said on the pad as the reason, and stopped.
+    func testR3_AllowForTheSessionDenyWithWordsAndStop() {
+        func decision(_ cmd: [String: Any], suggestions: [[String: Any]]?) -> [String: Any] {
+            let d = Desk()
+            var more: [String: Any] = push
+            if let suggestions { more["permission_suggestions"] = suggestions }
+            let id = d.take(event("PermissionRequest", more), at: 1).hold!
+            XCTAssertEqual(d.asked()?.forSession, suggestions != nil)
+            let body = d.decide(cmd.merging(["cmd": "permission", "id": id]) { $1 })!.body
+            let o = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+            return (o["hookSpecificOutput"] as! [String: Any])["decision"] as! [String: Any]
+        }
+        let rule: [String: Any] = ["type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "git push:*"]],
+                                   "behavior": "allow", "destination": "localSettings"]
+        let session = decision(["decision": "session"], suggestions: [rule])
+        XCTAssertEqual(session["behavior"] as? String, "allow")
+        let added = session["updatedPermissions"] as? [[String: Any]]
+        XCTAssertEqual(added?.first?["destination"] as? String, "session")
+        XCTAssertEqual(added?.first?["type"] as? String, "addRules")
+        let words = decision(["decision": "deny", "message": "use the staging db"], suggestions: nil)
+        XCTAssertEqual(words["behavior"] as? String, "deny")
+        XCTAssertEqual(words["message"] as? String, "Denied on the pad: use the staging db")
+        XCTAssertNil(words["interrupt"])
+        XCTAssertEqual(decision(["decision": "deny", "interrupt": true], suggestions: nil)["interrupt"] as? Bool, true)
+    }
+
+    // R2: one state each, by precedence: a session working with no news for 10 min is stale; one that stops and
+    // starts again within 5 s never shows done; a turn whose subagents still run isn't done until they stop.
+    func testR2_StaleGraceAndSubagents() {
+        let d = Desk()
+        func state(_ id: String, at t: Double) -> SessionState? { d.members(at: t).first { $0.id == id }?.state }
+        _ = d.take(event("UserPromptSubmit"), at: 0)
+        XCTAssertEqual(state("s1", at: 599), .working(reading: false))
+        XCTAssertEqual(state("s1", at: 601), .stale(since: 0))
+        _ = d.take(event("Stop"), at: 700)
+        _ = d.take(event("UserPromptSubmit"), at: 703)
+        XCTAssertEqual(state("s1", at: 704), .working(reading: false), "never done in between")
+        _ = d.take(event("SubagentStart"), at: 710)
+        _ = d.take(event("Stop"), at: 720)
+        XCTAssertEqual(state("s1", at: 760), .working(reading: false), "its subagent still runs")
+        _ = d.take(event("SubagentStop"), at: 800)
+        XCTAssertEqual(state("s1", at: 806), .finished(at: 800))
+    }
+
+    // R2: a finished turn stays unseen until you look: its reply opened on the pad, a new prompt, or the Claude app
+    // showing the session since it finished. It outlives a restart.
+    func testR2_DoneStaysUnseenUntilLooked() {
+        let d = Desk()
+        var clock = 1000.0
+        d.wall = { clock }
+        _ = d.take(event("SessionStart"), at: 0)
+        _ = d.take(event("SessionStart", session: "s2"), at: 0)
+        for s in ["s1", "s2"] { _ = d.take(event("UserPromptSubmit", session: s), at: 1); _ = d.take(event("Stop", session: s), at: 2) }
+        XCTAssertEqual(d.members(at: 10).map(\.unseen), [true, true])
+        d.looked(at: "s1")
+        clock = 1100
+        d.name("s2", "che", parent: nil, focused: 999)
+        XCTAssertTrue(d.members(at: 10).last!.unseen, "focused before it finished")
+        let e = Desk()
+        e.load(d.save(at: 10, wall: clock), at: 0, wall: clock)
+        XCTAssertEqual(e.members(at: 1).map(\.unseen), [false, true])
+        d.name("s2", "che", parent: nil, focused: 1050)
+        XCTAssertFalse(d.members(at: 10).last!.unseen, "the Claude app showed it since")
+        _ = e.take(event("UserPromptSubmit", session: "s2"), at: 2)
+        XCTAssertFalse(e.members(at: 3).last!.unseen)
     }
 }

@@ -20,7 +20,7 @@ final class ScreenTests: XCTestCase {
     }
 
     // R5: a tap opens the detail (wrapped, with a page count when several sessions wait); a swipe moves to the next;
-    // another tap closes it back to the question.
+    // another tap puts the questions away into their ants, and a tap on one brings its question back.
     func testR5_DetailPagesAndCloses() {
         var s = Screen()
         s.update(board("jeta: che needs you · Merge the branch now that every check passes and the phone runs it?",
@@ -36,6 +36,9 @@ final class ScreenTests: XCTestCase {
         XCTAssertGreaterThan(second.filter { !$0.isEmpty }.count, 3, "long questions don't wrap")
         XCTAssert(second.allSatisfy { $0.count <= 30 }, "a line is wider than the screen")
         s.tap()
+        XCTAssertEqual(s.mode, .face, "put away, with nothing answered")
+        XCTAssertFalse(s.unfold(session: "elsewhere"), "a tap on another ant leaves it away")
+        XCTAssertTrue(s.unfold())
         XCTAssertEqual(s.mode, .question)
     }
 
@@ -70,6 +73,14 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(lines.last?.text, "tap one, or hold to answer")
         XCTAssertEqual(s.choose(1), "server: 8443")
         XCTAssertNil(s.choose(2))
+        // A session's own next-step box: the answer goes to it alone, with no name before it.
+        var own = Screen()
+        own.sessions = [SessionInfo(id: "x", name: "old pad", state: .finished(at: 0), events: 1)]
+        var b = NoticeBoard()
+        b.take(["evt": "turn", "role": "assistant", "session_id": "x",
+                "content": [["type": "text", "text": "jeta: old\u{00A0}pad needs you · Commit? · Commit it | Not yet"]]])
+        own.update(b)
+        XCTAssertEqual(own.choose(1), "Not yet")
         s.tap()
         XCTAssertEqual(s.lines(width: 40).filter { $0.style == .option || $0.style == .suggestion }.count, 2, "the detail drops the options")
     }
@@ -296,5 +307,28 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s.mode, .face)
         s.update(replies: [Reply(id: "a", session: "yapa", text: "Built it.\n\nShould I **commit**?", at: 9)])
         XCTAssertEqual(s.mode, .reply, "it asks, so it opens")
+    }
+
+    // The session list shows every session, and they all fit on the landscape screen.
+    func testSessionListShowsEverySession() {
+        var s = Screen()
+        s.now = 1000
+        s.sessions = (0..<9).map { SessionInfo(id: "s\($0)", name: "session\($0)", state: .working(reading: false), events: 1, doing: "Bash ./ya", since: 700) }
+        s.swipeDown()
+        let placed = s.place(width: 568, height: 320)
+        for k in 0..<9 { XCTAssertTrue(placed.contains { $0.text.hasPrefix("session\(k) ·") }, "session\(k) is listed") }
+        for p in placed { XCTAssertLessThanOrEqual(p.y + p.height, 320, "\(p.text) is off the bottom") }
+    }
+
+    // A permission request offers Allow, This session (when it can be), Deny and Stop, each answering as it says.
+    func testPermissionOffersThisSessionAndStop() {
+        var s = Screen()
+        s.ask(Asked(id: "1", session: "yapa", tool: "Bash", text: "Bash: git push", forSession: true))
+        XCTAssertEqual(s.asking?.options, ["Allow", "This session", "Deny", "Stop"])
+        XCTAssertEqual([0, 1, 2, 3].map { s.pick($0) }, [.decide(true), .allowSession, .decide(false), .stop])
+        var t = Screen()
+        t.ask(Asked(id: "2", session: "yapa", tool: "Bash", text: "Bash: ls"))
+        XCTAssertEqual(t.asking?.options, ["Allow", "Deny", "Stop"])
+        XCTAssertEqual([0, 1, 2].map { t.pick($0) }, [.decide(true), .decide(false), .stop])
     }
 }

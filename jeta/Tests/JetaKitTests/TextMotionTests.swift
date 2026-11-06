@@ -165,6 +165,25 @@ final class TextMotionTests: XCTestCase {
         }
     }
 
+    // T5: while a finger drags sideways the lines follow it 1:1, and let go short, they glide back with no jump.
+    func testT5_TextFollowsTheFinger() {
+        let m = motion(), placed = question.place(width: w, height: h)
+        m.show(placed, from: face, at: 0)
+        _ = frames(m, from: 0, to: 1.5, face: face)
+        var t = 1.5
+        for dx in stride(from: 0.0, through: -90, by: -6) {
+            t += 1 / 60
+            m.hold(dx, at: t)
+            for l in m.frame(at: t) { XCTAssertEqual(l.cx - (l.line.x + l.line.width / 2), dx, accuracy: 0.5, "\(l.line.text) lags the finger") }
+        }
+        m.hold(nil, speed: -300, at: t)
+        let back = frames(m, from: t, to: t + 1.5, face: face)
+        for (a, b) in zip(back, back.dropFirst()) {
+            for (x, y) in zip(a, b) { XCTAssertLessThan(abs(y.cx - x.cx), 30, "\(x.line.text) jumps on the way back") }
+        }
+        XCTAssert(m.frame(at: t + 1.5).allSatisfy(settled), "let go, the lines don't go home")
+    }
+
     // T6: pressing an option squashes it; choosing it pops it and hands it to the face, which swallows it, while
     // the other options drop off the bottom of the screen. Neither comes back while the question stays up.
     func testT6_ChosenOptionsGoToTheFaceAndTheRestDrop() {

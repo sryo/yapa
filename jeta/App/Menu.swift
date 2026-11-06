@@ -5,7 +5,7 @@ import UIKit
 /// what yata says about the phone (every part, up or down and on or off, the tunnel, the disk). Its acts are run
 /// here: a new session through che on the Mac, a part through yata's /parts, which only the phone itself may change.
 extension FaceView {
-    static let yata = URL(string: "http://127.0.0.1:8077/parts")!
+    static var yata = URL(string: "http://127.0.0.1:8077/parts")!
 
     func dialRoot() -> [Dial.Item] {
         // A Mac folder under its user's home reads from ~, as the Mac's own shell would say it.

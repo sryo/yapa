@@ -3,7 +3,8 @@ import simd
 
 /// What one Claude Code session is doing, as its hooks say.
 public enum SessionState: Equatable {
-    case working(reading: Bool), needs, finished(at: Double), failed, quiet
+    /// `stale` is working with no news since then: the pad likely missed its Stop.
+    case working(reading: Bool), needs, finished(at: Double), failed, stale(since: Double), quiet
 }
 
 public struct SessionInfo: Equatable {
@@ -14,9 +15,12 @@ public struct SessionInfo: Equatable {
     public var parent: String?
     /// What it's doing (its tool and on what), and when its turn began, while it works.
     public var doing = "", since: Double?
-    public init(id: String, name: String, state: SessionState, events: Int, parent: String? = nil, doing: String = "", since: Double? = nil) {
+    /// It finished a turn you haven't looked at yet.
+    public var unseen: Bool
+    public init(id: String, name: String, state: SessionState, events: Int, parent: String? = nil, doing: String = "", since: Double? = nil,
+                unseen: Bool = false) {
         self.id = id; self.name = name; self.state = state; self.events = events; self.parent = parent
-        self.doing = doing; self.since = since
+        self.doing = doing; self.since = since; self.unseen = unseen
     }
 }
 
@@ -27,20 +31,20 @@ public struct Slot: Equatable {
     public var named: Double
 }
 
-/// One small face per session, each showing its session's state. Up to `most` sit in a row; past that the quiet
-/// ones fold into "+N". One that needs you steps forward, bigger and in the middle. Places and sizes are springs,
+/// One small face per session, each showing its session's state: every session in use is on the screen, none
+/// folded away. One that needs you steps forward, bigger and in the middle. Places and sizes are springs,
 /// so faces glide when sessions come and go, and the whole group drifts slowly so nothing burns into the panel.
 public final class Crowd {
-    public static let most = 6
     static let step = 1.0 / 240
     /// Half a face's size at scale 1, with room for a lunge or a hop, in fractions of the short side.
     static let reach = 0.25
     /// Half the screen's size, in fractions of its short side (16:9 landscape is 0.89 by 0.5).
     public var screen = SIMD2<Double>(0.89, 0.5)
-    public private(set) var overflow = 0
     /// The session whose text is open: its face waits beside the text, in the top left, and the others step away
     /// until it closes, so it's clear who's talking.
     public var solo: String?
+    /// The sessions with a question waiting on the screen: an ant still waiting on you never dozes off.
+    public var waiting: Set<String> = []
 
     private var faces: [String: Face] = [:], places: [String: [Spring]] = [:]
     private var members: [SessionInfo] = [], hidden: [String: Int] = [:], focused: String?, standing: String?, leaving: String?
@@ -144,26 +148,22 @@ public final class Crowd {
     /// The sessions not swiped away, with their hook event counts.
     public var sessions: [SessionInfo] { visible }
 
-    /// The faces on screen, in the order their sessions started: past `most`, quiet ones are the ones left out.
-    private var shown: [SessionInfo] {
-        let v = visible
-        guard v.count > Crowd.most else { return v }
-        var keep = Set(v.filter { $0.state != .quiet }.prefix(Crowd.most).map(\.id))
-        for m in v where keep.count < Crowd.most { keep.insert(m.id) }
-        return v.filter { keep.contains($0.id) }
-    }
+    /// The faces on screen, in the order their sessions started.
+    private var shown: [SessionInfo] { visible }
 
     private func moods(at t: Double) {
-        overflow = max(0, visible.count - Crowd.most)
         for m in members {
-            let mood: Mood
+            var mood: Mood
             switch m.state {
-            case .working: mood = .busy
+            case .working: mood = m.doing == "thinking" ? .focused : .busy
             case .needs: mood = .attention
             case .finished(let at): mood = t - at < 5 ? .proud : t - at < 95 ? .idle : .sleep
             case .failed: mood = .attention
+            // Stale is most likely still working, with its Stop missed.
+            case .stale: mood = .idle
             case .quiet: mood = .sleep
             }
+            if mood == .sleep, waiting.contains(m.id) { mood = .idle }
             faces[m.id]?.set(mood, at: t)
         }
     }

@@ -31,11 +31,16 @@ public final class Colony {
     /// The session whose text is open: its ant waits in the top left corner, beside the text, and the others walk off
     /// the nearest edge until it closes, then come back to where they were, so it's clear who's talking.
     public var solo: String?
+    /// Where the ant whose text is open stands: beside the text's first line, wherever the text is.
+    public var byText: SIMD2<Double>?
     /// Each session started by another, and the one that started it: its ant's spot is beside that one's.
     public var families: [String: String] = [:]
     /// When each working session's turn began. Its ant drops a crumb by its spot each minute of the turn (one every
     /// five after the first ten), so how long it's been at it shows without words, and picks them up when it stops.
     public var working: [String: Double] = [:]
+    /// Sessions whose finished turn you haven't looked at: their ants keep their crumbs until you do, so from across
+    /// the room a pile by a still ant says "done, not seen yet".
+    public var unseen: Set<String> = []
     struct Crumb { var at: SIMD2<Double>, shape: [SIMD2<Double>], born: Double }
     /// How far a pile sits from its ant's spot.
     static let pileAt = 25.0
@@ -72,12 +77,16 @@ public final class Colony {
                 return a
             }()
             a.home = home
+            a.thinking = s.mood == .focused
             let listening = listenAt != nil && s.id == listener
-            let act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listening) : s.id == solo ? .aside : .wait
+            var act = solo == nil ? Colony.act(for: s.mood, front: s.front, listening: listening) : s.id == solo ? .aside : .wait
+            // Crumbs say a turn waits to be seen, so an ant beside its pile stays up.
+            if act == .sleep, let p = piles[s.id], p.gone == nil, !p.crumbs.isEmpty { act = .rest }
             if a.act != act || a.front != s.front {
                 let was = a.act
                 a.front = s.front
                 a.set(act, at: t, rng: &rng)
+                if act == .needs && s.front { a.stage = stage(for: s.id) }
                 // Let go of, it nods; leaving for the text, the ones nearest an edge go first, and coming back the
                 // ones nearest their spots do.
                 if was == .listen { a.nodAt = t; a.homing = true }
@@ -89,6 +98,25 @@ public final class Colony {
         let calling = ants.values.contains { $0.act == .needs && $0.front }
         for a in ants.values { a.hushed = calling && !(a.act == .needs && a.front) }
         drop(at: t)
+    }
+
+    /// Where the ant that needs you stands: near the middle, at the place clearest of the other ants' spots (they
+    /// hold still meanwhile), so a big ant never lands on one.
+    private func stage(for id: String) -> SIMD2<Double> {
+        let mid = SIMD2(screen.x / 2, screen.y / 2 - 30)
+        let others = ants.filter { $0.key != id && $0.value.act != .leave }.map(\.value.spot)
+        var best = mid, score = -Double.infinity
+        for dx in stride(from: -150.0, through: 150, by: 30) {
+            for dy in stride(from: -40.0, through: 40, by: 20) {
+                let p = mid + SIMD2(dx, dy)
+                guard p.x > 60, p.x < screen.x - 60, p.y > 60, p.y < screen.y - 60 else { continue }
+                // Clear by 70 pt is enough; past that, nearer the middle is better.
+                let clear = min(70, others.map { simd_length($0 - p) }.min() ?? 70)
+                let sc = clear - simd_length(p - mid) * 0.05
+                if sc > score { score = sc; best = p }
+            }
+        }
+        return best
     }
 
     /// Where an ant comes among the others still here, by `key`, smallest first.
@@ -103,8 +131,7 @@ public final class Colony {
 
     /// How many crumbs a turn this long has dropped.
     static func crumbs(after d: Double) -> Int {
-        let m = Int(max(0, d) / 60)
-        return m <= 10 ? m : min(20, 10 + (m - 10) / 5)
+        Int(max(0, d) / 60)
     }
 
     private func drop(at t: Double) {
@@ -112,6 +139,7 @@ public final class Colony {
         for id in order {
             guard let a = ants[id] else { continue }
             guard let from = working[id], a.act != .leave else {
+                if unseen.contains(id) && a.act != .leave { continue }
                 if piles[id] != nil, piles[id]?.gone == nil { piles[id]?.gone = t }
                 if let g = piles[id]?.gone, t - g > 1 { piles[id] = nil }
                 continue
@@ -163,6 +191,11 @@ public final class Colony {
     }
 
     public func position(of id: String) -> SIMD2<Double>? { ants[id].map { SIMD2($0.x, $0.y) } }
+    /// What an ant is acting out, by name (rest, sleep, work, needs, …), for test/jeta-flows.
+    /// How hard an ant's antennae drum, 0 to 1.
+    public func drumming(_ id: String) -> Double { ants[id]?.tap ?? 0 }
+
+    public func acting(_ id: String) -> String? { ants[id].map { "\($0.act)" } }
     /// The spot an ant keeps to, creeping with it.
     public func spot(of id: String) -> SIMD2<Double>? { ants[id]?.spot }
 
@@ -243,13 +276,15 @@ public final class Colony {
     }
 
     static func act(for mood: Mood, front: Bool, listening: Bool) -> Ant.Act {
-        // Four situations: it needs you (a failed turn too), it's busy, it's your turn (done, then resting), or it's gone.
+        // Four situations: it needs you (a failed turn too), it's busy, it's your turn (done, then resting, then
+        // asleep), or it's gone.
         if listening || mood == .listening { return .listen }
         switch mood {
         case .busy, .focused: return .work
         case .attention, .impatient, .dizzy: return .needs
         case .celebrate, .proud, .heart: return .done
-        case .idle, .bored, .curious, .listening, .sleep: return .rest
+        case .idle, .bored, .curious, .listening: return .rest
+        case .sleep: return .sleep
         }
     }
 
@@ -265,6 +300,7 @@ public final class Colony {
             spots.removeAll(keepingCapacity: true); heaps.removeAll(keepingCapacity: true)
             for a in inOrder where a.act != .leave { spots.append(SIMD2(a.x, a.y)) }
             for (id, p) in piles where p.gone == nil { if let c = p.crumbs.first, let a = ants[id] { heaps.append(a.spot + c.at) } }
+            for a in inOrder { a.byText = byText }
             for a in inOrder { a.update(dt, t: now, screen: screen, listenAt: listenAt, others: spots, piles: heaps, rng: &rng) }
         }
         for (id, a) in ants where a.act == .leave && (a.x < -40 || a.x > screen.x + 40 || a.y < -40 || a.y > screen.y + 40) {
@@ -281,7 +317,7 @@ struct Bounce {
 }
 
 final class Ant {
-    enum Act { case rest, work, needs, done, listen, leave, aside, wait }
+    enum Act { case rest, sleep, work, needs, done, listen, leave, aside, wait }
 
     /// The body is ~15 units nose to tail, drawn at `scale` points a unit: ~22 pt; one that needs you grows 2.2 times.
     static let scale = 1.45
@@ -299,6 +335,10 @@ final class Ant {
     var goal: SIMD2<Double>?, faceTo: SIMD2<Double>?, mill: (c: SIMD2<Double>, r: Double)?
     var still = true, nervous = true, cruise = 44.0
     var twitchAt = 0.0, turn = 0.0, pauseTo = 0.0, tap = 0.0, wave = 0.0, phase: Double
+    /// Busy with no tool running: the model is thinking.
+    var thinking = false
+    /// Where to stand while its text is open.
+    var byText: SIMD2<Double>?
     /// Busy: where it's walking toward this frame, the course it wanders along and how fast that turns, and how far
     /// from its spot it may roam.
     var aim: SIMD2<Double>?, wander = 0.0, wanderV = 0.0, leash = 28.0
@@ -307,7 +347,7 @@ final class Ant {
     /// How fast it walks compared with the others, so ants walking together don't step in time.
     var pace = 1.0
     /// Needing you: when it next pulses. Another needs you, so it holds still. How the request it made was answered.
-    var pulseAt = 0.0, hushed = false, answered: Bool?
+    var pulseAt = 0.0, hushed = false, answered: Bool?, stage: SIMD2<Double>?
     /// Leaving for the text and coming back after, each in turn; how fast it walks home; when it last nodded.
     var departAt = 0.0, returnAt = 0.0, homeCruise = 50.0, nodAt = -10.0
     /// Its session's own spot, which it strolls and runs errands around, and whether it's walking back there.
@@ -351,7 +391,7 @@ final class Ant {
         // A short freeze and a pop, then it runs to the middle.
         case .needs: still = true; until = t + 0.25; size.v += 3.5; cruise = 90; pulseAt = t + 3
         case .done: still = true; antennae.target = 0.7
-        case .rest: still = true
+        case .rest, .sleep: still = true
         case .leave: cruise = 50
         case .aside: cruise = 80
         case .wait: cruise = 85; still = true
@@ -478,7 +518,7 @@ final class Ant {
         let el = t - since
         // Settled acts happen at its own spot (a second one that needs you waves from there): away from it (back from
         // the middle, from off screen, or drifted off), it walks back first.
-        let settled = [.rest, .work, .done].contains(act) || (act == .needs && !front)
+        let settled = [.rest, .sleep, .work, .done].contains(act) || (act == .needs && !front)
         if settled && (homing || simd_length(spot - SIMD2(x, y)) > 45) {
             // Back from off screen, each waits its turn.
             guard t >= returnAt else { goal = nil; still = true; return }
@@ -493,12 +533,17 @@ final class Ant {
         case .rest:
             // Your turn: it stands where it is (creeping against burn-in), done with its crumbs.
             break
+        case .sleep:
+            // Long left alone, it curls up where it stands, antennae folded; it still creeps against burn-in.
+            if el > 1 { antennae.target = -1; curl.target = 1 }
         case .work:
             // Busy, thinking or running tools alike, it walks slowly about its spot and never stops: Reynolds' wander
             // on a leash. Where it heads drifts smoothly (a slowly wandering angle, no twitches), and the farther it gets
             // from its spot the harder it's pulled back, so it keeps to a patch about `leash` across without a set
             // path, and no pixel stays under it for long. Slower after five minutes. While another needs you it holds
             // still.
+            // Thinking (no tool running), its antennae drum and its head shakes as it goes.
+            tap += ((thinking ? 0.6 : 0) - tap) * min(1, 4 * dt)
             if hushed { aim = nil; still = true; break }
             still = false
             // The course it means to walk wanders on the screen, not relative to where it faces (which turned with it
@@ -525,14 +570,16 @@ final class Ant {
             if !front {
                 still = true; faceTo = SIMD2(x, y + 100); size.target = 1.3; rear.target = 0.5; wave = 1; antennae.target = 1
             } else if flags == 0 {
-                still = false; goal = SIMD2(screen.x / 2, screen.y / 2 - 30)
+                still = false; goal = stage ?? SIMD2(screen.x / 2, screen.y / 2 - 30)
                 if simd_length(goal! - SIMD2(x, y)) < 4 {
                     flags = 1; goal = nil; still = true; faceTo = SIMD2(x, y + 100)
                     size.target = 2.2; rear.target = 1; wave = 1; antennae.target = 1
                 }
             }
         case .done:
-            // Only an ant that needs you tries to catch your eye; a finished one just lifts its antennae for a moment.
+            // Only an ant that needs you tries to catch your eye; a finished one turns once on the spot and lifts its
+            // antennae for a moment.
+            if el < 1 { spin = 2 * .pi }
             if el > 2.5 && flags == 0 { flags = 1; antennae.target = 0 }
         case .listen:
             // Held to talk, it steps about 40 pt out from under the fingertip, to the side with the most room, and
@@ -551,12 +598,13 @@ final class Ant {
             if let g = goal, simd_length(g - SIMD2(x, y)) < 4 { goal = nil }
             if goal == nil { still = true; faceTo = f; antennae.target = 1; tap = 0.35 }
         case .aside:
-            // Reading: the one talking goes to the corner by the text and faces in.
-            if flags == 0 {
-                flags = 1; goal = SIMD2(44, 70)
-            } else if let g = goal, simd_length(g - SIMD2(x, y)) < 4 {
+            // Reading: the one talking stands beside its text and faces in, following the text if it moves.
+            let by = byText ?? SIMD2(44, 70)
+            if flags == 0 || (goal == nil && simd_length(by - SIMD2(x, y)) > 8) {
+                flags = 1; goal = by; still = false
+            } else if goal != nil, simd_length(by - SIMD2(x, y)) < 4 {
                 goal = nil; still = true; faceTo = SIMD2(screen.x / 2, screen.y / 2)
-            }
+            } else if goal != nil { goal = by }
         case .wait:
             // The others walk off the nearest edge, one after another, and wait just past it.
             if flags == 0 && t >= departAt {
@@ -644,6 +692,11 @@ final class Ant {
             let tip = base - 0.9 - antennae.x * 0.2 + cu * 1.6
             let end = elbow + SIMD2(cos(tip) * fu, side * sin(tip) * fu)
             strokes.append(([root, elbow, end].map { world(neck($0)) }, 0.7 * s))
+        }
+        // Mandibles: a short pair of hooks at the front of the head, curving in, with a gap between their tips.
+        for side in [-1.0, 1.0] {
+            let jaw = [SIMD2(hx + 1.8 * lift, side * 1.0), SIMD2(hx + 2.8 * lift, side * 1.15), SIMD2(hx + 3.4 * lift, side * 0.6)]
+            strokes.append((jaw.map { world(neck($0)) }, 0.5 * s))
         }
         return (size.x, AntShape(id: id, fills: fills, strokes: strokes, centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at }))
     }

@@ -10,8 +10,11 @@ public struct Asked: Equatable {
         }
     }
     public var id, session, tool, text: String, questions: [Question]
-    public init(id: String, session: String, tool: String, text: String, questions: [Question] = []) {
+    /// Whether it can be allowed for the rest of the session (the request came with rules to add).
+    public var forSession: Bool
+    public init(id: String, session: String, tool: String, text: String, questions: [Question] = [], forSession: Bool = false) {
         self.id = id; self.session = session; self.tool = tool; self.text = text; self.questions = questions
+        self.forSession = forSession
     }
 }
 
@@ -19,6 +22,8 @@ public struct Asked: Equatable {
 public enum Pick: Equatable {
     /// A permission decided: allow or deny.
     case decide(Bool)
+    /// Allowed for the rest of the session, as its own suggestions say; or denied and the session stopped.
+    case allowSession, stop
     /// Every question answered: each question's text to the labels picked, joined by ", ".
     case answer([String: String])
     /// A box ticked, or on to the next question.
@@ -93,7 +98,9 @@ public struct Screen {
 
     private var askedNotice: Notice {
         guard let a = asked else { return Notice(session: "", text: "") }
-        guard step < a.questions.count else { return Notice(session: a.session, text: a.text, options: ["Allow", "Deny"]) }
+        guard step < a.questions.count else {
+            return Notice(session: a.session, text: a.text, options: ["Allow"] + (a.forSession ? ["This session"] : []) + ["Deny", "Stop"])
+        }
         let q = a.questions[step]
         let marks = q.options.enumerated().map { q.multi ? (ticked[step].contains($0) ? "✓ " : "○ ") + $1 : $1 }
         let head = a.questions.count > 1 ? "\(q.header) \(step + 1)/\(a.questions.count)" : q.header
@@ -102,7 +109,11 @@ public struct Screen {
 
     /// A tap on option `i` of the request showing.
     public mutating func pick(_ i: Int) -> Pick {
-        guard let a = asked, step < a.questions.count else { return .decide(i == 0) }
+        guard let a = asked, step < a.questions.count else {
+            // Allow, This session (when it can), Deny, Stop.
+            let o = i - (asked?.forSession == true ? 1 : 0)
+            return i == 0 ? .decide(true) : asked?.forSession == true && i == 1 ? .allowSession : o == 1 ? .decide(false) : .stop
+        }
         let q = a.questions[step]
         // The last option leaves the questions to the Mac's own dialog.
         if i == q.options.count + (q.multi ? 1 : 0) { return .decide(false) }
@@ -151,10 +162,15 @@ public struct Screen {
     /// A finger on the pad: whatever is up stays up a while longer.
     public mutating func attend() { touched = now }
 
-    /// A tap brings back a question folded away; true if there was one.
-    public mutating func unfold() -> Bool {
+    /// A tap on its ant brings back a question folded away (any tap, with `session` nil: the only ant); true if there
+    /// was one. A tap elsewhere leaves it folded, so the other ants and replies stay in reach.
+    public mutating func unfold(session id: String? = nil) -> Bool {
         attend()
         guard folded else { return false }
+        if let id {
+            guard let i = board.pending.firstIndex(where: { $0.from == id }) else { return false }
+            page = i
+        }
         folded = false
         settle()
         return mode != .face
@@ -165,7 +181,6 @@ public struct Screen {
     public mutating func idle() {
         let key = "\(mode) \(current?.text ?? "") \(reading ?? "")"
         if key != seen { seen = key; shownAt = now }
-        if mode != .face { folded = false }
         guard mode != .face, asking == nil, now - max(touched, shownAt) >= Screen.unattended else { return }
         folded = true
         mode = .face
@@ -174,8 +189,10 @@ public struct Screen {
     public mutating func tap() {
         switch mode {
         case .question: mode = .detail
-        case .detail: mode = .question
-        case .roster, .reply: mode = board.pending.isEmpty && asking == nil ? .face : .question
+        // Read to the end, a tap puts the question away into its ant, where a tap on it brings it back; a permission
+        // request stays, since only its buttons answer it.
+        case .detail: if asking != nil { mode = .question } else { mode = .face; folded = true }
+        case .roster, .reply: mode = (board.pending.isEmpty || folded) && asking == nil ? .face : .question
         case .face: break
         }
     }
@@ -204,6 +221,9 @@ public struct Screen {
 
     /// The session the question showing came from, where its answer goes.
     public var asker: String? { mode == .reply ? reading : asking == nil ? current?.from : nil }
+
+    /// The sessions (ids from the hooks) with a manager question waiting, shown or folded away.
+    public var waiting: Set<String> { Set(board.pending.compactMap(\.from)) }
 
     /// The session the open text is about (its id from the hooks), if it's known.
     public var subject: String? { mode == .reply ? reading : mode == .question || mode == .detail ? current?.from : nil }
@@ -246,7 +266,8 @@ public struct Screen {
         switch s.state {
         case .needs: return "needs you"
         case .working: return s.since.map { now - $0 < 60 ? "just started" : "working \(Screen.took(now - $0))" } ?? "working"
-        case .finished(let at): return "done " + ago(now - at)
+        case .finished(let at): return "done " + ago(now - at) + (s.unseen ? ", not seen" : "")
+        case .stale(let since): return "no news \(Screen.took(now - since))"
         case .failed: return "stopped on an error"
         case .quiet: return "quiet"
         }
@@ -294,6 +315,10 @@ public struct Screen {
     /// Tapping option `i` of the question showing: the line to send the manager, like `server: 8443`.
     public func choose(_ i: Int) -> String? {
         guard let n = current, mode == .question || mode == .detail, n.options.indices.contains(i) else { return nil }
+        // A session asking for itself (its next-step box) gets the answer alone; the manager, asking for another,
+        // gets who it's for.
+        let plain = { (s: String) in s.replacingOccurrences(of: "\u{00A0}", with: " ") }
+        if let f = n.from, let me = sessions.first(where: { $0.id == f }), plain(me.name) == plain(n.session) { return n.options[i] }
         return "\(n.session): \(n.options[i])"
     }
 
@@ -336,7 +361,10 @@ public struct Screen {
         case .question:
             guard let n = current else { return [] }
             let options = Screen.options(n)
-            if asking != nil { return wrap("\(n.session) asks", .title) + wrap(n.text, .body, max: 3) + options + wrap("tap more", .hint) }
+            if asking != nil {
+                return wrap("\(n.session) asks", .title) + wrap(n.text, .body, max: 3) + options
+                    + wrap(n.options.contains("Deny") ? "tap more · hold: deny, saying why" : "tap more", .hint)
+            }
             return wrap("\(n.session) needs you", .title) + wrap(n.text, .body, max: 1) + options
                 + wrap(options.isEmpty ? "tap more · hold: answer" : "tap one, or hold to answer", .hint)
         case .detail:
@@ -348,7 +376,10 @@ public struct Screen {
             return out
         case .roster:
             let rows = sessions.isEmpty ? board.roster.prefix(5).flatMap { wrap("\($0.session) · \($0.state)", .body, max: 1) }
-                : sessions.prefix(5).flatMap { s in
+                // Every session, with what it's doing under it; more than four, one line each so they all fit.
+                : sessions.count > 4 ? sessions.flatMap { s in
+                    wrap("\(s.name) · \(Screen.state(s, now: now))" + (s.doing.isEmpty ? "" : " · \(s.doing)"), .body, max: 1)
+                } : sessions.flatMap { s in
                     wrap("\(s.name) · \(Screen.state(s, now: now))", .body, max: 1) + (s.doing.isEmpty ? [] : wrap(s.doing, .hint, max: 1))
                 }
             return (rows.isEmpty ? wrap("no sessions yet", .body) : rows) + wrap("tap: close · hold: ask the manager", .hint)

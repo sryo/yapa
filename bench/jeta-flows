@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+"""Measures goal 2 and 3 the way a person meets them: every flow the pad offers, run end to end in a booted
+Simulator, from the hook or line that starts it, through the taps, swipes, holds and twists a hand would make, to
+what reaches the session (the hook's answer, or what che was asked to type) and the screen it leaves. A flow counts
+only if all of that happened. The pad runs with `-drive` (App/Drive.swift), which takes those gestures over HTTP on
+this Mac and says what's on the screen; che and yata are stand-ins here, so nothing is typed into a real session.
+Prints the path of a K1 run file; `-v` also says what each flow did.
+"""
+import json, os, subprocess, sys, threading, time, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIVE, STUB, HOOKS = 8091, 8095, 8079
+BUNDLE = "com.sryo.yapa"
+VERBOSE = "-v" in sys.argv
+
+# The stand-ins for che and yata: they remember what they were asked and answer as the real ones do.
+asked = []
+parts = {"parts": [{"name": "yata", "kind": "core", "on": True, "up": True, "watched": True},
+                   {"name": "web", "kind": "site", "on": True, "up": True, "watched": True}],
+         "disk_free_mb": 4000, "logs_mb": 3}
+
+
+class Stub(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def answer(self, o):
+        b = json.dumps(o).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+    def do_GET(self):
+        asked.append(("GET", self.path, ""))
+        self.answer(parts if self.path.startswith("/parts") else {"sessions": {}})
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+        asked.append(("POST", self.path, body))
+        p = self.path
+        if p.startswith("/talk"): self.answer({"text": "words from the pad", "enter_in": 0 if "dry" in p else 2, "lang": "en"})
+        elif p.startswith("/say"): self.answer({"text": body, "enter_in": 2})
+        elif p.startswith("/new"): self.answer({"folder": body, "url": "claude://code/new"})
+        elif p.startswith("/cancel"): self.answer({"cancelled": True})
+        elif p.startswith("/parts/"): self.answer(parts)
+        else: self.answer({})
+
+
+def sim(*a, check=True):
+    return subprocess.run(["xcrun", "simctl", *a], capture_output=True, text=True, check=check).stdout
+
+
+def drive(path, **o):
+    r = urllib.request.Request(f"http://127.0.0.1:{DRIVE}{path}", data=json.dumps(o).encode() if o or path != "/state" else None)
+    with urllib.request.urlopen(r, timeout=30) as f:
+        return json.load(f)
+
+
+def state(): return drive("/state")
+
+
+def hook(event, sid, folder, wait=2, **more):
+    e = {"hook_event_name": event, "session_id": sid, "cwd": "/Users/x/" + folder, **more}
+    r = urllib.request.Request(f"http://127.0.0.1:{HOOKS}/hook", data=json.dumps(e).encode())
+    try:
+        with urllib.request.urlopen(r, timeout=wait) as f:
+            b = f.read().decode()
+            return json.loads(b) if b.strip() else {}
+    except Exception as x:
+        return {"error": str(x)}
+
+
+def held(event, sid, folder, **more):
+    """A hook that waits for the pad (a permission request): runs in the background, its answer in .result."""
+    t = threading.Thread(target=lambda: setattr(t, "result", hook(event, sid, folder, wait=40, **more)), daemon=True)
+    t.result = None
+    t.start()
+    return t
+
+
+def until(f, secs=6):
+    end = time.time() + secs
+    while time.time() < end:
+        s = state()
+        if f(s): return s
+        time.sleep(0.15)
+    return None
+
+
+def option(s, text):
+    return next((p for p in s["placed"] if p["style"] in ("option", "suggestion") and text in p["text"]), None)
+
+
+def tap_option(text, s=None):
+    s = s or state()
+    o = option(s, text)
+    if not o: raise Fail(f"no option {text!r} on the screen: {[p['text'] for p in s['placed']]}")
+    return drive("/tap", x=o["x"] + o["w"] / 2, y=o["y"] + o["h"] / 2)
+
+
+def ant(s, sid): return s["ants"].get(sid) or (s["ants"].get("face") if s["single"] else None)
+
+
+def tap_ant(sid):
+    a = ant(state(), sid)
+    if not a: raise Fail(f"no ant for {sid}")
+    return drive("/tap", x=a["x"], y=a["y"])
+
+
+def decision(t, secs=6):
+    t.join(secs)
+    d = (t.result or {}).get("hookSpecificOutput", {}).get("decision")
+    if d is None: raise Fail(f"the hook got no decision: {t.result}")
+    return d
+
+
+def said(path, since):
+    return [a for a in asked[since:] if a[1].startswith(path)]
+
+
+class Fail(Exception): pass
+
+
+def need(ok, why):
+    if not ok: raise Fail(why)
+
+
+def wrap_up(sid, folder, ask, labels):
+    hook("PreToolUse", sid, folder, tool_name="mcp__ccd_turn__wrap_up",
+         tool_input={"recap": "done", "ask": ask, "actions": [{"label": l} for l in labels]})
+
+
+def bare(s): return s["mode"] == "face"
+
+
+# The flows. Each starts on a fresh pad and raises Fail with what went wrong.
+def permission(pick, check, words=False, suggestions=False):
+    def flow():
+        more = {"permission_suggestions": [{"type": "addRules", "rules": [{"toolName": "Bash"}], "behavior": "allow",
+                                            "destination": "session"}]} if suggestions else {}
+        hook("UserPromptSubmit", "a", "alpha")
+        t = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": "git push"}, **more)
+        need(until(lambda s: s["asking"] and option(s, "Deny")), "the request never showed its buttons")
+        since = len(asked)
+        if words: drive("/hold", **{"for": 1.0})
+        else: tap_option(pick)
+        d = decision(t)
+        check(d, since)
+        need(until(lambda s: not s["asking"]), "the request stayed up after its answer")
+    return flow
+
+
+def allow_check(d, _): need(d.get("behavior") == "allow" and not d.get("updatedPermissions"), f"Allow: {d}")
+def session_check(d, _):
+    need(d.get("behavior") == "allow" and any(u.get("destination") == "session" for u in d.get("updatedPermissions", [])), f"This session: {d}")
+def deny_check(d, _): need(d.get("behavior") == "deny" and not d.get("interrupt"), f"Deny: {d}")
+def stop_check(d, _): need(d.get("behavior") == "deny" and d.get("interrupt") is True, f"Stop: {d}")
+def words_check(d, since):
+    need(d.get("behavior") == "deny" and "words from the pad" in d.get("message", ""), f"held to deny: {d}")
+    need(said("/talk?dry", since), "the words weren't heard dry, so they may have been typed")
+
+
+def ask_question():
+    hook("UserPromptSubmit", "a", "alpha")
+    q = {"question": "Which colour?", "header": "Colour", "multiSelect": False, "options": [{"label": "red"}, {"label": "blue"}]}
+    t = held("PermissionRequest", "a", "alpha", tool_name="AskUserQuestion", tool_input={"questions": [q]})
+    need(until(lambda s: option(s, "blue")), "the question's options never showed")
+    tap_option("blue")
+    d = decision(t)
+    need("blue" in json.dumps(d), f"the answer didn't carry blue: {d}")
+    need(until(lambda s: not s["asking"]), "the question stayed up after its answer")
+
+
+def pick_action():
+    hook("UserPromptSubmit", "a", "alpha")
+    wrap_up("a", "alpha", "Commit the work?", ["Yes, commit", "Not yet"])
+    need(until(lambda s: option(s, "Yes, commit")), "the actions never showed")
+    since = len(asked)
+    tap_option("Yes, commit")
+    time.sleep(0.5)
+    got = said("/say", since)
+    need(got and got[0][2].strip() == "Yes, commit" and "session=a" in got[0][1], f"che wasn't asked to type just the pick into alpha: {got}")
+
+
+def put_away_actions():
+    """Actions you don't want to answer now can be put away, and found again on their ant."""
+    hook("UserPromptSubmit", "a", "alpha")
+    wrap_up("a", "alpha", "Commit the work?", ["Yes, commit", "Not yet"])
+    need(until(lambda s: option(s, "Not yet")), "the actions never showed")
+    for _ in range(3):
+        s = state()
+        if bare(s): break
+        drive("/tap", x=20, y=20)
+    need(until(bare, 2), f"no way back to the bare screen from the actions: still {state()['mode']}")
+    tap_ant("a")
+    need(until(lambda s: option(s, "Not yet")), "tapping its ant didn't bring the actions back")
+
+
+def two_with_actions():
+    """Two sessions each offering actions: either can be answered, the other is still there after."""
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    wrap_up("a", "alpha", "Commit alpha?", ["Commit alpha", "Leave alpha"])
+    wrap_up("b", "beta", "Push beta?", ["Push beta", "Leave beta"])
+    need(until(lambda s: option(s, "alpha") or option(s, "beta")), "neither session's actions showed")
+    # Get to beta's, whichever is up first: a swipe moves between them.
+    for _ in range(3):
+        if option(state(), "Push beta"): break
+        drive("/swipe", way="left")
+    since = len(asked)
+    tap_option("Push beta")
+    time.sleep(0.5)
+    need(any("session=b" in a[1] and "Push beta" in a[2] for a in said("/say", since)), "beta's pick didn't go to beta")
+    hook("UserPromptSubmit", "b", "beta")  # beta took the answer
+    need(until(lambda s: option(s, "Commit alpha"), 4), f"alpha's actions weren't there after beta's: {[p['text'] for p in state()['placed']]}")
+    since = len(asked)
+    tap_option("Commit alpha")
+    time.sleep(0.5)
+    need(any("session=a" in a[1] and "Commit alpha" in a[2] for a in said("/say", since)), f"alpha's pick didn't go to alpha: {said('/say', since)}")
+    need(not said("/cancel", 0), "picking the second stopped the first one's Enter")
+    hook("UserPromptSubmit", "a", "alpha")
+    need(until(bare, 4), f"text stayed up with nothing left to answer: {state()['mode']}")
+
+
+def awake_while_waiting():
+    """Long after their turns end, an ant whose actions are still up stays awake; one with nothing left curls up."""
+    for sid, folder in (("a", "alpha"), ("b", "beta")): hook("UserPromptSubmit", sid, folder)
+    wrap_up("a", "alpha", "Commit alpha?", ["Commit alpha", "Leave alpha"])
+    for sid, folder in (("a", "alpha"), ("b", "beta")): hook("Stop", sid, folder, last_assistant_message="done")
+    # Put the actions away into their ant, so every ant is back at its spot.
+    need(until(lambda s: option(s, "Leave alpha")), "the actions never showed")
+    for _ in range(3):
+        if bare(state()): break
+        drive("/tap", x=20, y=20)
+    need(until(bare, 2), f"the actions wouldn't go away: {state()['mode']}")
+    time.sleep(110)
+    acts = {k: v["act"] for k, v in state()["ants"].items()}
+    need(acts.get("a") not in (None, "sleep"), f"alpha curled up with its actions still up: {acts}")
+    need(acts.get("b") == "sleep", f"beta, with nothing left, didn't curl up: {acts}")
+
+
+def tap_out_of_reply():
+    """With another session's actions put away, a reply opens beside its ant, and tapping out of it goes back to the
+    ants, not to the other session's actions; a question's ant stands beside its text too."""
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    hook("Stop", "a", "alpha", last_assistant_message="Alpha is finished and tested.")
+    wrap_up("b", "beta", "Push beta?", ["Push beta", "Leave beta"])
+    need(until(lambda s: option(s, "Push beta")), "beta's actions never showed")
+    s = until(lambda s: ant(s, "b")["act"] == "aside" and near_text(s, "b"), 6)
+    need(s, f"beta's ant didn't stand beside its question: {ant(state(), 'b')} {first_line(state())}")
+    for _ in range(3):
+        if bare(state()): break
+        drive("/tap", x=20, y=20)
+    need(until(bare, 2), "beta's actions wouldn't go away")
+    time.sleep(6)
+    tap_ant("a")
+    need(until(lambda s: s["mode"] == "reply"), "tapping alpha didn't open its reply")
+    s = until(lambda s: ant(s, "a")["act"] == "aside" and near_text(s, "a"), 6)
+    need(s, f"alpha's ant didn't stand beside its reply: {ant(state(), 'a')} {first_line(state())}")
+    drive("/tap", x=400, y=250)
+    time.sleep(1)
+    s = state()
+    need(bare(s), f"tapping out of alpha's reply opened {s['mode']} of {s.get('asker')}")
+
+
+def first_line(s):
+    return min(s["placed"], key=lambda p: p["y"]) if s["placed"] else None
+
+
+def near_text(s, sid):
+    """The ant is within about 60 pt of the text's first line."""
+    a, l = ant(s, sid), first_line(s)
+    if not l: return False
+    dx = max(l["x"] - a["x"], 0, a["x"] - (l["x"] + l["w"])); dy = max(l["y"] - a["y"], 0, a["y"] - (l["y"] + l["h"]))
+    return (dx * dx + dy * dy) ** 0.5 < 60
+
+
+def answered_at_desk():
+    hook("UserPromptSubmit", "a", "alpha")
+    wrap_up("a", "alpha", "Commit the work?", ["Yes, commit", "Not yet"])
+    need(until(lambda s: option(s, "Not yet")), "the actions never showed")
+    hook("UserPromptSubmit", "a", "alpha")
+    need(until(bare, 4), "answered at the desk, the actions stayed on the pad")
+
+
+def read_reply():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    hook("Stop", "a", "alpha", last_assistant_message="Alpha is finished and tested.")
+    time.sleep(6)  # done only 5 s after the Stop
+    home = ant(state(), "a")
+    tap_ant("a")
+    s = until(lambda s: s["mode"] == "reply")
+    need(s and any("Alpha is finished" in p["text"] for p in s["placed"]), "tapping the ant didn't open its reply")
+    s = until(lambda s: ant(s, "a")["act"] == "aside" and near_text(s, "a"))
+    need(s, f"its ant didn't walk to the side of its text: {ant(state(), 'a')} {first_line(state())}")
+    drive("/tap")
+    need(until(bare, 3), "a tap didn't close the reply")
+    s = until(lambda s: abs(ant(s, "a")["x"] - home["x"]) < 40 and abs(ant(s, "a")["y"] - home["y"]) < 40, 8)
+    need(s, f"its ant didn't walk back home: {ant(state(), 'a')} vs {home}")
+
+
+def read_lone_reply():
+    hook("UserPromptSubmit", "a", "alpha")
+    hook("Stop", "a", "alpha", last_assistant_message="Alpha is finished and tested.")
+    time.sleep(6)
+    tap_ant("a")
+    need(until(lambda s: s["mode"] == "reply"), "tapping the only ant didn't open its reply")
+    need(until(lambda s: ant(s, "a")["act"] == "aside"), f"the only ant didn't walk to its text: {ant(state(), 'a')}")
+    drive("/tap")
+    need(until(bare, 3), "a tap didn't close the reply")
+
+
+def session_list():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    drive("/swipe", way="down")
+    s = until(lambda s: s["mode"] == "roster")
+    need(s and any("alpha" in p["text"] for p in s["placed"]) and any("beta" in p["text"] for p in s["placed"]),
+         "the session list didn't open with both sessions")
+    drive("/tap")
+    need(until(bare, 3), "a tap didn't close the session list")
+
+
+def talk():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    s = until(lambda s: ant(s, "b"))
+    need(s, "beta's ant never came")
+    a = ant(s, "b")
+    since = len(asked)
+    drive("/hold", x=a["x"], y=a["y"], **{"for": 1.0})
+    time.sleep(0.4)
+    got = said("/talk", since)
+    need(got and "session=b" in got[0][1], f"holding beta's ant didn't send the words to beta: {got}")
+    drive("/tap")
+    time.sleep(0.4)
+    need(said("/cancel", since), "a tap right after talking didn't stop the Enter")
+
+
+def dial_new_session():
+    hook("UserPromptSubmit", "a", "alpha")
+    drive("/twist", steps=0, release=False)
+    s = until(lambda s: s["dial"]["open"])
+    need(s and s["dial"]["current"] == "new session", f"two fingers didn't open the dial on new session: {s and s['dial']}")
+    drive("/twist", steps=0)  # letting go on it opens the folders
+    s = until(lambda s: s["dial"]["path"] == ["new session"])
+    need(s, f"letting go on new session didn't open the folders: {state()['dial']}")
+    since = len(asked)
+    drive("/twist", steps=0)  # on the first folder
+    time.sleep(0.5)
+    got = said("/new", since)
+    need(got and got[0][2] == "/Users/x/alpha", f"che wasn't asked for a new session in alpha's folder: {got}")
+    need(until(lambda s: "opening" in s["dial"]["note"], 3), f"the dial didn't say it's opening: {state()['dial']}")
+    drive("/tap")
+    need(until(lambda s: not s["dial"]["open"], 2), "a tap didn't put the dial away")
+
+
+def dial_server():
+    hook("UserPromptSubmit", "a", "alpha")
+    drive("/twist", steps=1)  # land, turn one step to server, let go
+    s = until(lambda s: s["dial"]["path"] == ["server"])
+    need(s, f"turning to server and letting go didn't open it: {state()['dial']}")
+    drive("/twist", steps=1)  # past back, onto the first part, let go
+    s = until(lambda s: len(s["dial"]["path"]) == 2)
+    need(s, f"letting go on a part didn't open it: {state()['dial']}")
+    for _ in range(4):
+        if state()["dial"]["current"] == "restart": break
+        drive("/twist", steps=1, release=False)
+    since = len(asked)
+    s = state()
+    need(s["dial"]["current"] == "restart", f"couldn't turn to restart: {s['dial']}")
+    drive("/twist", steps=0)
+    time.sleep(0.5)
+    need(any(a[1].endswith("/restart") for a in said("/parts/", since)), "yata wasn't asked to restart the part")
+
+
+def session_ends():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    hook("SessionEnd", "b", "beta")
+    need(until(lambda s: "b" not in s["ants"], 10), "the ended session's ant never left")
+
+
+def two_permissions():
+    """Two sessions each asking permission: answering one brings up the other, which answers its own hook."""
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    ta = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": "git push"})
+    time.sleep(0.3)
+    tb = held("PermissionRequest", "b", "beta", tool_name="Bash", tool_input={"command": "rm -rf build"})
+    need(until(lambda s: s["asking"] and option(s, "Deny")), "no request showed")
+    tap_option("Allow")
+    time.sleep(0.5)
+    first = ta if ta.result else tb
+    need(first.result, "neither hook got the first answer")
+    need(until(lambda s: s["asking"] and option(s, "Deny")), "the second request didn't come up after the first")
+    tap_option("Deny")
+    second = tb if first is ta else ta
+    d = decision(second)
+    need(d.get("behavior") == "deny", f"the second request's own hook didn't get Deny: {d}")
+    need(decision(first).get("behavior") == "allow", "the first request's answer changed")
+    need(until(lambda s: not s["asking"]), "a request stayed up after both were answered")
+
+
+def replies_side_by_side():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    hook("Stop", "a", "alpha", last_assistant_message="Alpha is finished.")
+    hook("Stop", "b", "beta", last_assistant_message="Beta is finished.")
+    time.sleep(6)
+    tap_ant("a")
+    need(until(lambda s: s["mode"] == "reply" and any("Alpha is finished" in p["text"] for p in s["placed"])), "alpha's reply didn't open")
+    drive("/swipe", way="left")
+    need(until(lambda s: any("Beta is finished" in p["text"] for p in s["placed"])), "a swipe didn't move to beta's reply")
+    drive("/tap")
+    need(until(bare, 3), "a tap didn't close the replies")
+
+
+def carried(s, dx):
+    """Every line on the screen sits `dx` points sideways of its place, give or take the drift."""
+    return s["shown"] and all(abs(l["cx"] - l["home"] - dx) < 2 for l in s["shown"])
+
+
+def text_follows_finger():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    hook("Stop", "a", "alpha", last_assistant_message="Alpha is finished.")
+    hook("Stop", "b", "beta", last_assistant_message="Beta is finished.")
+    time.sleep(6)
+    tap_ant("a")
+    need(until(lambda s: s["mode"] == "reply" and carried(s, 0), 4), "alpha's reply didn't open and settle")
+    for dx in (-60, -130, 40):
+        s = drive("/drag", dx=dx, release=False)
+        need(carried(s, dx), f"dragged to {dx}, the lines weren't there: {[round(l['cx'] - l['home']) for l in s['shown']]}")
+    drive("/drag", dx=-40, speed=0)
+    need(until(lambda s: carried(s, 0), 3), "let go short, the text didn't spring back")
+    need(any("Alpha is finished" in p["text"] for p in state()["placed"]), "let go short, it moved to another reply")
+    drive("/drag", dx=-260, speed=0)
+    need(until(lambda s: any("Beta is finished" in p["text"] for p in s["placed"])), "carried far and let go, it didn't move to beta's")
+
+
+def drag_drops_hold():
+    hook("UserPromptSubmit", "a", "alpha")
+    t = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": "git push"})
+    need(until(lambda s: s["asking"] and option(s, "Deny")), "the request never showed its buttons")
+    since = len(asked)
+    h = threading.Thread(target=lambda: drive("/hold", **{"for": 1.2}), daemon=True)
+    h.start()
+    time.sleep(0.25)
+    drive("/drag", dx=-120, speed=0)
+    h.join(5)
+    time.sleep(0.5)
+    need(not said("/talk", since), f"a drag that began as a hold was sent as talk: {said('/talk', since)}")
+    need(t.result is None and state()["asking"], f"a drag that began as a hold answered the request: {t.result}")
+    tap_option("Allow")
+    decision(t)
+
+
+def swipe_ant_away():
+    hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+    s = until(lambda s: ant(s, "b"))
+    need(s, "beta's ant never came")
+    b = ant(s, "b")
+    drive("/swipe", way="left", x=b["x"], y=b["y"])
+    need(until(lambda s: "b" not in [x["id"] for x in s["sessions"]], 3), "swiping beta's ant didn't put it away")
+    hook("PreToolUse", "b", "beta", tool_name="Read", tool_input={"file_path": "/x"})
+    need(until(lambda s: "b" in [x["id"] for x in s["sessions"]], 3), "beta's ant didn't come back on its next event")
+
+
+def dial_back():
+    hook("UserPromptSubmit", "a", "alpha")
+    drive("/twist", steps=1)
+    need(until(lambda s: s["dial"]["path"] == ["server"]), "server didn't open")
+    drive("/twist", steps=-1)  # back to back, let go
+    need(until(lambda s: s["dial"]["open"] and s["dial"]["path"] == [] and s["dial"]["current"] == "server"),
+         f"letting go on back didn't go up a level, on server: {state()['dial']}")
+    drive("/tap")
+    need(until(lambda s: not s["dial"]["open"], 2), "a tap didn't put the dial away")
+
+
+FLOWS = {
+    "permission allow": permission("Allow", allow_check),
+    "permission this session": permission("This session", session_check, suggestions=True),
+    "permission deny": permission("Deny", deny_check),
+    "permission stop": permission("Stop", stop_check),
+    "permission deny saying why": permission(None, words_check, words=True),
+    "question answered": ask_question,
+    "action picked": pick_action,
+    "actions put away and found again": put_away_actions,
+    "two sessions with actions": two_with_actions,
+    "actions answered at the desk": answered_at_desk,
+    "ants stay awake while something waits": awake_while_waiting,
+    "reply read beside its ant": read_reply,
+    "lone reply read beside its ant": read_lone_reply,
+    "session list": session_list,
+    "talk to a session, then stop the Enter": talk,
+    "dial: new session in a folder": dial_new_session,
+    "dial: restart a part": dial_server,
+    "session ends": session_ends,
+    "two permission requests at once": two_permissions,
+    "replies one after another": replies_side_by_side,
+    "ant swiped away and back": swipe_ant_away,
+    "dial: back up a level": dial_back,
+    "tap out of a reply": tap_out_of_reply,
+    "text follows the finger": text_follows_finger,
+    "a drag that began as a hold sends nothing": drag_drops_hold,
+}
+
+
+def launch():
+    sim("terminate", "booted", BUNDLE, check=False)
+    data = sim("get_app_container", "booted", BUNDLE, "data").strip()
+    for f in ("sessions.json",):
+        try: os.remove(os.path.join(data, "Documents", f))
+        except FileNotFoundError: pass
+    sim("spawn", "booted", "defaults", "delete", BUNDLE, check=False)
+    sim("launch", "booted", BUNDLE, "-drive", str(DRIVE), "-che", f"127.0.0.1:{STUB}", "-yata", f"http://127.0.0.1:{STUB}/parts")
+    for _ in range(60):
+        try: state(); hook("SessionStart", "warm", "warm"); hook("SessionEnd", "warm", "warm"); return
+        except Exception: time.sleep(0.2)
+    raise SystemExit("the pad never answered its driver")
+
+
+def main():
+    if "Booted" not in sim("list", "devices", "booted"):
+        raise SystemExit("jeta-flows needs a booted Simulator")
+    app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
+    if app.returncode: raise SystemExit(app.stderr)
+    sim("install", "booted", os.path.join(ROOT, "jeta", app.stdout.strip().splitlines()[-1]))
+    sim("privacy", "booted", "grant", "microphone", BUNDLE, check=False)
+    server = ThreadingHTTPServer(("127.0.0.1", STUB), Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    only = [a for a in sys.argv[1:] if not a.startswith("-")]
+    failed = []
+    for name, flow in FLOWS.items():
+        if only and not any(o in name for o in only): continue
+        launch()
+        try:
+            flow(); why = ""
+        except Fail as x: why = str(x)
+        except Exception as x: why = f"{type(x).__name__}: {x}"
+        if why: failed.append(name)
+        if VERBOSE or why: print(("FAIL " if why else "ok   ") + name + (": " + why if why else ""), file=sys.stderr)
+    sim("terminate", "booted", BUNDLE, check=False)
+    ran = len([n for n in FLOWS if not only or any(o in n for o in only)])
+    runs = os.path.join(os.environ.get("FIUM_HOME", os.path.expanduser("~/.fium")), "runs", "yapa")
+    os.makedirs(runs, exist_ok=True)
+    path = os.path.join(runs, f"flows-{int(time.time())}.json")
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip()
+    dirty = bool(subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=ROOT).stdout.strip())
+    json.dump({"commit": commit, "dirty": dirty,
+               "metrics": {"flows_failed": {"dir": "lower", "kind": "quality", "samples": [len(failed)]},
+                           "flows_completed": {"dir": "higher", "kind": "quality", "samples": [ran - len(failed)]}},
+               "limits": {"flows_failed": 0}, "failed": failed}, open(path, "w"))
+    print(path)
+
+
+main()

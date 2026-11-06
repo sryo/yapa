@@ -22,6 +22,19 @@ final class CrowdTests: XCTestCase {
         XCTAssertEqual(c.face("c")?.mood, .sleep, "dozing 90 s after that")
     }
 
+    // R1: an ant never dozes off while a question of it waits, or while its Stop was likely missed.
+    func testR1_NothingLeftForYouBeforeSleep() {
+        let c = Crowd(seed: 1, now: 0)
+        c.waiting = ["q"]
+        c.update([s("q", .finished(at: 0)), s("t", .stale(since: 0)), s("z", .finished(at: 0))], at: 100)
+        XCTAssertEqual(c.face("q")?.mood, .idle, "a question waits")
+        XCTAssertEqual(c.face("t")?.mood, .idle, "stale is likely still working")
+        XCTAssertEqual(c.face("z")?.mood, .sleep)
+        c.waiting = []
+        c.update([s("q", .finished(at: 0))], at: 101)
+        XCTAssertEqual(c.face("q")?.mood, .sleep, "answered, it dozes")
+    }
+
     // R2: one session keeps today's single big face; two or more each get their own, in the order they started.
     func testR2_OneSessionIsTheSingleFace() {
         let c = Crowd(seed: 1, now: 0)
@@ -32,15 +45,12 @@ final class CrowdTests: XCTestCase {
         XCTAssertEqual(c.slots(at: 3).map(\.id), ["a", "b"], "once they've grown in")
     }
 
-    // R2: up to 6 faces sit in a row; past that the quiet ones fold into "+N", and one that needs you never does.
-    func testR2_QuietOnesFoldPastSix() {
+    // R2: every session in use is on the screen, however many there are: none folds away.
+    func testR2_EverySessionShows() {
         let c = Crowd(seed: 1, now: 0)
         let all = (0..<9).map { s("q\($0)", .quiet) } + [s("w", .working(reading: true)), s("n", .needs)]
         c.update(all, at: 0)
-        let shown = c.slots(at: 2).map(\.id)
-        XCTAssertEqual(shown.count, Crowd.most)
-        XCTAssertTrue(shown.contains("w") && shown.contains("n"))
-        XCTAssertEqual(c.overflow, 11 - Crowd.most)
+        XCTAssertEqual(c.slots(at: 2).count, all.count)
     }
 
     // R2: a session that needs you steps forward, bigger and in the middle; a tap can bring another one forward.
