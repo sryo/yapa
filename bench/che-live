@@ -66,6 +66,14 @@ def front():
     return m.group(1) if m else None
 
 
+def activate(bundle):
+    """Brings a running app to the front as che does, with NSRunningApplication. `open -a` sends a reopen instead,
+    which makes Finder open a new window whenever it has none."""
+    subprocess.run(["osascript", "-l", "JavaScript", "-e",
+                    f"ObjC.import('AppKit'); $.NSRunningApplication.runningApplicationsWithBundleIdentifier('{bundle}')"
+                    ".firstObject.activateWithOptions($.NSApplicationActivateAllWindows)"], capture_output=True)
+
+
 def clipboard(): return subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
 
 
@@ -205,7 +213,7 @@ def run_path(name, sid, expect, wait, unsent=False):
                 subprocess.run(["open", f"claude://code/continue?session={AWAY}&source=desktop_action"])
                 until(lambda: focused() == AWAY, 10); until(lambda: front() == "com.anthropic.claudefordesktop", 5); time.sleep(2)
             # And with another app in front, as when you're at the Mac doing something else: che must leave it there.
-            subprocess.run(["open", "-a", "Finder"]); until(lambda: front() == "com.apple.finder", 5); time.sleep(1)
+            activate("com.apple.finder"); until(lambda: front() == "com.apple.finder", 5); time.sleep(1)
             token = uuid.uuid4().hex[:8]
             label = f"che-live {token}"
             t, watching = pick(sid, label)
