@@ -236,6 +236,31 @@ def awake_while_waiting():
     need(acts.get("b") == "sleep", f"beta, with nothing left, didn't curl up: {acts}")
 
 
+def ant_by_actions():
+    """Side-by-side actions, centred under where the ant was: its ant stands over them, on the screen, alone or
+    with another session, and again once they're put away and a tap on the ant brings them back."""
+    for n in (1, 2):
+        launch()
+        sids = [("a", "alpha"), ("b", "beta")][:n]
+        for sid, f in sids: hook("UserPromptSubmit", sid, f)
+        wrap_up("a", "alpha", "Commit alpha?", ["Commit alpha", "Leave alpha"])
+        for sid, f in sids: hook("Stop", sid, f, last_assistant_message="done")
+        need(until(lambda s: option(s, "Leave alpha")), "the actions never showed")
+        s = until(lambda s: ant(s, "a")["act"] == "aside" and near_text(s, "a"), 6)
+        need(s, f"with {n} session(s), the ant didn't stand by its actions: {ant(state(), 'a')} {first_line(state())}")
+        for _ in range(3):
+            if bare(state()): break
+            drive("/tap", x=20, y=20)
+        need(until(bare, 2), "the actions wouldn't go away")
+        # Put away, its ant comes closer, as if to the camera, while the other stays as it is.
+        s = until(lambda s: ant(s, "a")["act"] in ("rest", "done") and ant(s, "a")["scale"] > 1.2, 12)
+        need(s, f"with {n} session(s), the ant with actions waiting didn't come closer: {ant(state(), 'a')}")
+        need(n == 1 or ant(s, "b")["scale"] < 1.05, f"the ant with nothing waiting came closer too: {ant(s, 'b')}")
+        tap_ant("a")
+        s = until(lambda s: option(s, "Leave alpha") and ant(s, "a")["act"] == "aside" and near_text(s, "a"), 6)
+        need(s, f"with {n} session(s), brought back, the ant didn't stand by its actions: {ant(state(), 'a')} {first_line(state())}")
+
+
 def tap_out_of_reply():
     """With another session's actions put away, a reply opens beside its ant, and tapping out of it goes back to the
     ants, not to the other session's actions; a question's ant stands beside its text too."""
@@ -265,11 +290,19 @@ def first_line(s):
 
 
 def near_text(s, sid):
-    """The ant is within about 60 pt of the text's first line."""
+    """The ant is on the screen and within about 60 pt of the words of the text's first line (a centred line's
+    words, not its frame, which spans the screen)."""
     a, l = ant(s, sid), first_line(s)
-    if not l: return False
-    dx = max(l["x"] - a["x"], 0, a["x"] - (l["x"] + l["w"])); dy = max(l["y"] - a["y"], 0, a["y"] - (l["y"] + l["h"]))
+    if not l or not on_screen(s, a): return False
+    x0 = l["x"] if l["left"] else l["x"] + (l["w"] - l["words"]) / 2
+    dx = max(x0 - a["x"], 0, a["x"] - (x0 + l["words"])); dy = max(l["y"] - a["y"], 0, a["y"] - (l["y"] + l["h"]))
     return (dx * dx + dy * dy) ** 0.5 < 60
+
+
+def on_screen(s, a):
+    """The ant's whole body is on the screen, 20 pt in from each edge."""
+    w, h = s["size"]
+    return 20 <= a["x"] <= w - 20 and 20 <= a["y"] <= h - 20
 
 
 def answered_at_desk():
@@ -453,6 +486,78 @@ def text_follows_finger():
     need(until(lambda s: any("Beta is finished" in p["text"] for p in s["placed"])), "carried far and let go, it didn't move to beta's")
 
 
+def rubber(x, d):
+    """iOS's rubber band: how far the text goes for a pull of `x` points past the end of a screen `d` long."""
+    k = 0.55 * abs(x) / d + 1
+    return (1 - 1 / k) * d * (1 if x > 0 else -1)
+
+
+def carried_down(s, dy):
+    """Every line of the reply sits `dy` points below its place, give or take the drift, and the rest at theirs."""
+    return s["shown"] and all(abs(l["cy"] - l["homeY"] - (dy if l["band"] else 0)) < 2 for l in s["shown"])
+
+
+def pages_bounce():
+    long = " ".join(f"Step {i} of the release went through and was checked twice." for i in range(1, 31))
+    hook("UserPromptSubmit", "a", "alpha")
+    hook("Stop", "a", "alpha", last_assistant_message=long)
+    time.sleep(6)
+    tap_ant("a")
+    s = until(lambda s: s["mode"] == "reply" and carried_down(s, 0), 4)
+    W, H = s["size"]
+    need(s and s["pages"] and s["pages"][1] > 2, f"the long reply didn't open on several pages: {s and s['pages']}")
+    last = s["pages"][1] - 1
+    s = drive("/drag", dy=60, release=False)
+    need(carried_down(s, rubber(60, H)), f"pulled down on the first page, it didn't follow the rubber band: "
+         f"{[round(l['cy'] - l['homeY']) for l in s['shown']]} vs {round(rubber(60, H))}")
+    drive("/drag", dy=60, speed=0)
+    s = until(lambda s: carried_down(s, 0), 3)
+    need(s and s["pages"][0] == 0, f"let go past the first page, it didn't spring back onto it: {state()['pages']}")
+    s = drive("/drag", dy=-40, release=False)
+    need(carried_down(s, -40), f"dragged up, the page didn't follow 1:1: {[round(l['cy'] - l['homeY']) for l in s['shown']]}")
+    drive("/drag", dy=-30, speed=0)
+    s = until(lambda s: carried_down(s, 0), 3)
+    need(s and s["pages"][0] == 0, f"let go short, it turned the page: {state()['pages']}")
+    drive("/drag", dy=-150, speed=0)
+    need(until(lambda s: s["pages"][0] == 1 and carried_down(s, 0), 3), f"dragged far up, it didn't turn to page 2: {state()['pages']}")
+    need(until(lambda s: ant(s, "a")["act"] == "aside" and near_text(s, "a"), 3),
+         f"the page turned, its ant didn't stay beside the text: {ant(state(), 'a')} {first_line(state())}")
+    for _ in range(last - 1):
+        drive("/drag", dy=-150, speed=0)
+        time.sleep(0.4)
+    need(until(lambda s: s["pages"][0] == last and carried_down(s, 0), 3), f"it didn't reach the last page: {state()['pages']}")
+    s = drive("/drag", dy=-120, release=False)
+    need(carried_down(s, rubber(-120, H)), f"pulled up on the last page, it didn't follow the rubber band: "
+         f"{[round(l['cy'] - l['homeY']) for l in s['shown']]} vs {round(rubber(-120, H))}")
+    drive("/drag", dy=-120, speed=-900)
+    s = until(lambda s: carried_down(s, 0), 3)
+    need(s and s["pages"][0] == last, f"flicked past the last page, it didn't spring back onto it: {state()['pages']}")
+    s = drive("/drag", dx=-120, release=False)
+    need(carried(s, rubber(-120, W)), f"dragged sideways with only one reply, it didn't follow the rubber band: "
+         f"{[round(l['cx'] - l['home']) for l in s['shown']]} vs {round(rubber(-120, W))}")
+    drive("/drag", dx=-200, speed=-900)
+    s = until(lambda s: carried(s, 0), 3)
+    need(s and s["mode"] == "reply" and s["pages"][0] == last, f"swiped with only one reply, it didn't spring back: {state()['mode']}")
+
+
+def touch_shows_name():
+    hook("UserPromptSubmit", "a", "alpha")
+    hook("PreToolUse", "a", "alpha", tool_name="Bash", tool_input={"command": "make"})
+    need(until(lambda s: ant(s, "a")), "the only ant never showed")
+    tap_ant("a")
+    s = until(lambda s: s["names"].get("a", "").startswith("alpha"), 3)
+    need(s, f"touching the only ant didn't show its name: {state()['names']}")
+    need(s["mode"] == "face", f"touching the only working ant opened {s['mode']}")
+    need(until(lambda s: not s["names"], 6), f"the only ant's name stayed up: {state()['names']}")
+    hook("UserPromptSubmit", "b", "beta")
+    need(until(lambda s: ant(s, "b") and not s["single"]), "the second ant never showed")
+    time.sleep(1)
+    tap_ant("b")
+    s = until(lambda s: s["names"].get("b", "").startswith("beta"), 3)
+    need(s, f"touching one of two ants didn't show its name: {state()['names']}")
+    need("a" not in s["names"], f"touching beta showed alpha's name too: {s['names']}")
+
+
 def drag_drops_hold():
     hook("UserPromptSubmit", "a", "alpha")
     t = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": "git push"})
@@ -502,6 +607,7 @@ FLOWS = {
     "action picked": pick_action,
     "actions put away and found again": put_away_actions,
     "two sessions with actions": two_with_actions,
+    "an ant stands over its actions": ant_by_actions,
     "actions answered at the desk": answered_at_desk,
     "ants stay awake while something waits": awake_while_waiting,
     "reply read beside its ant": read_reply,
@@ -520,6 +626,8 @@ FLOWS = {
     "tap out of a reply": tap_out_of_reply,
     "text follows the finger": text_follows_finger,
     "a drag that began as a hold sends nothing": drag_drops_hold,
+    "touching an ant shows its name, the only one too": touch_shows_name,
+    "a reply's pages follow the finger and bounce at the ends": pages_bounce,
 }
 
 

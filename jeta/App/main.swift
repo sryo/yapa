@@ -29,7 +29,7 @@ final class FaceView: UIView {
     var talk: Talk?
     /// One face per Claude Code session, when two or more report through the hooks; with one, the face above.
     let crowd = Crowd(seed: UInt64(Date().timeIntervalSince1970) &+ 1, now: CACurrentMediaTime())
-    private var names: [String: CATextLayer] = [:]
+    private(set) var names: [String: CATextLayer] = [:]
     /// An ant for each face: the crowd's, or the single face's.
     let colony = Colony(seed: UInt64(Date().timeIntervalSince1970) &+ 2, now: CACurrentMediaTime())
     private var antLayers: [String: [CAShapeLayer]] = [:]
@@ -47,8 +47,8 @@ final class FaceView: UIView {
         let down = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
         down.direction = .down
         addGestureRecognizer(down)
-        // With text up, a drag sideways carries it with the finger, and reading, any drag up or down turns the page,
-        // however slow; a finger that moved at all is never a tap.
+        // With text up, a drag sideways carries it with the finger, and reading, so does a drag up or down, which
+        // turns the page; a finger that moved at all is never a tap.
         let drag = UIPanGestureRecognizer(target: self, action: #selector(dragged))
         drag.maximumNumberOfTouches = 1
         drag.delegate = self
@@ -152,10 +152,11 @@ final class FaceView: UIView {
         guard screen.mode == .face else { screen.tap(); return }
         // With a face per session, a touch on one shows its folder name for a moment. One that isn't forward is
         // also picked: one that needs you steps forward (its prompt is then the one answered), another opens its
-        // question if it has one, else just looks at you.
-        let t = CACurrentMediaTime(), hit = crowd.single ? nil : colony.hit(SIMD2(Double(p.x), Double(p.y)))
+        // question if it has one, else just looks at you. The lone ant is "face" to the colony, its session the only one.
+        let t = CACurrentMediaTime()
+        let hit = crowd.single ? under.flatMap { _ in crowd.session(at: .zero, t: t) } : under
         if let id = hit { crowd.touch(id, at: t) }
-        if let id = hit, id != crowd.front {
+        if !crowd.single, let id = hit, id != crowd.front {
             if crowd.slots(at: t).first(where: { $0.id == id }).flatMap({ s in crowd.face(s.id)?.mood }) == .attention {
                 crowd.focus(id, at: t)
                 onFocus?(id)
@@ -219,17 +220,15 @@ final class FaceView: UIView {
     @objc private func dragged(_ g: UIPanGestureRecognizer) {
         let d = g.translation(in: self)
         if g.state == .began { sideways = abs(d.x) > abs(d.y) }
-        if sideways {
-            if g.state == .began || g.state == .changed { slide(by: Double(d.x)); return }
-            if g.state == .ended || g.state == .cancelled {
-                let v = g.state == .ended ? Double(g.velocity(in: self).x) : 0
-                slid(by: g.state == .ended ? Double(d.x) : 0, speed: v, at: g.location(in: self))
-            }
-            return
+        // Sideways the text goes between sessions; up and down, reading, between the pages of a reply.
+        guard sideways || screen.mode == .reply else { return }
+        let pull = Double(sideways ? d.x : d.y)
+        if g.state == .began || g.state == .changed { slide(by: pull, across: sideways); return }
+        if g.state == .ended || g.state == .cancelled {
+            let v = g.velocity(in: self)
+            slid(by: g.state == .ended ? pull : 0, speed: g.state == .ended ? Double(sideways ? v.x : v.y) : 0,
+                 at: g.location(in: self), across: sideways)
         }
-        guard g.state == .ended, screen.mode == .reply else { return }
-        guard abs(d.y) > 20, abs(d.y) > abs(d.x) else { return }
-        page(by: d.y < 0 ? 1 : -1)
     }
 
     /// Turns a reply's pages `n` forward (back when negative), as a drag up or down does.
@@ -241,20 +240,35 @@ final class FaceView: UIView {
     /// Which way the drag under way went first, and whether it carries the text (nil until it moves).
     private var sideways = false, sliding: Bool?
 
-    /// A finger `dx` points sideways of where it landed: the text goes with it. A slow drag first looks like a hold,
-    /// so the hold it began is dropped; a finger that has been talking a while goes on talking instead.
-    func slide(by dx: Double) {
-        if sliding == nil { sliding = talk?.drop() != false }
-        if sliding == true { motion.hold(dx, at: CACurrentMediaTime()) }
+    /// Whether a drag `d` points along (sideways when `across`, else down) has somewhere to go: another session,
+    /// or the page before or after.
+    private func goes(_ d: Double, across: Bool) -> Bool {
+        if across { return screen.turns }
+        guard let p = screen.pages(width: Double(bounds.width), height: Double(bounds.height)) else { return false }
+        return d < 0 ? p.page + 1 < p.of : p.page > 0
     }
 
-    /// The finger lifts: carried a fifth of the screen, or flicked that way, it's a swipe and the text goes on off
-    /// that side; short of that, the text springs back.
-    func slid(by dx: Double, speed v: Double, at p: CGPoint) {
+    /// A finger `d` points from where it landed, sideways when `across` and else down: the text goes with it, 1:1
+    /// where there's somewhere to go, and past the first or last page (or the only session) on iOS's rubber band.
+    /// A slow drag first looks like a hold, so the hold it began is dropped; a finger that has been talking a while
+    /// goes on talking instead.
+    func slide(by d: Double, across: Bool = true) {
+        if sliding == nil { sliding = talk?.drop() != false }
+        guard sliding == true else { return }
+        let pull = goes(d, across: across) ? d : TextMotion.rubber(d, over: Double(across ? bounds.width : bounds.height)).offset
+        motion.hold(across ? SIMD2(pull, 0) : SIMD2(0, pull), speed: SIMD2<Double>(), at: CACurrentMediaTime())
+    }
+
+    /// The finger lifts: carried a fifth of the screen, or flicked that way, toward somewhere to go, it's a swipe
+    /// (the text goes on off that side) or a page turned; short of that, or past an end, the text springs back.
+    func slid(by d: Double, speed v: Double, at p: CGPoint, across: Bool = true) {
         defer { sliding = nil }
         guard sliding != false else { return }
-        motion.hold(nil, speed: v, at: CACurrentMediaTime())
-        if abs(dx) > Double(bounds.width) * 0.2 || (abs(v) > 500 && v * dx > 0) { swipe(left: dx < 0, at: p) }
+        let size = Double(across ? bounds.width : bounds.height), goes = goes(d, across: across)
+        let speed = goes ? v : v * TextMotion.rubber(d, over: size).slope
+        motion.hold(nil, speed: across ? SIMD2(speed, 0) : SIMD2(0, speed), at: CACurrentMediaTime())
+        guard goes, abs(d) > size * 0.2 || (abs(v) > 500 && v * d > 0) else { return }
+        if across { swipe(left: d < 0, at: p) } else { page(by: d < 0 ? 1 : -1) }
     }
 
     /// What each session last said, for the reading screen.
@@ -355,15 +369,19 @@ final class FaceView: UIView {
         // The dial's words are nobody's, so every ant walks off while it's open.
         // A lone ant is "face", and it goes to the corner by its text like any other.
         colony.solo = dial.isOpen ? "dial" : crowd.solo.map { crowd.single ? "face" : $0 }
-        // Its ant stands beside the text's first line: to its left when there's room, else just above it.
-        if let top = placed.min(by: { $0.y < $1.y }), let left = placed.map(\.x).min() {
-            colony.byText = left >= 80 ? SIMD2(Double(left) - 40, Double(top.y + top.height / 2))
+        // Its ant stands by the text's first line: above the middle of centred text (a question under it), else to
+        // its left when there's room, else just above it.
+        let shown = placed.filter(\.showing)
+        if let top = shown.min(by: { $0.y < $1.y }), let left = shown.map(\.x).min() {
+            colony.byText = !top.left ? SIMD2(top.x + top.width / 2, max(40, top.y - 34))
+                : left >= 80 ? SIMD2(Double(left) - 40, Double(top.y + top.height / 2))
                 : SIMD2(Double(left) + 30, max(40, Double(top.y) - 34))
         } else { colony.byText = nil }
         colony.families = Dictionary(crowd.sessions.compactMap { s in s.parent.map { (s.id, $0) } }) { a, _ in a }
         colony.working = Dictionary(crowd.sessions.compactMap { s in s.since.map { (s.id, $0) } }) { a, _ in a }
         colony.unseen = Set(crowd.sessions.filter(\.unseen).map(\.id))
         crowd.waiting = screen.waiting
+        colony.asking = crowd.single ? (screen.waiting.isEmpty ? [] : ["face"]) : screen.waiting
         // A reply open on the pad is a finished turn you've now seen.
         if screen.mode == .reply, let id = screen.asker, crowd.sessions.contains(where: { $0.id == id && $0.unseen }) { onLooked?(id) }
         // With one session or none, a single ant plays the big face's mood; otherwise one per session not swiped away.
@@ -400,7 +418,7 @@ final class FaceView: UIView {
         drawText(motion.frame(at: t))
         drawAnts(colony.shapes(at: t))
         drawCrumbs(colony.crumbs(at: t))
-        drawNames(slots)
+        drawNames(crowd.single ? crowd.slots(at: t) : slots)
         drawGrip()
         CATransaction.commit()
     }
@@ -415,7 +433,7 @@ extension FaceView {
         let ids = Set(slots.map(\.id))
         for (id, n) in names where !ids.contains(id) { n.removeFromSuperlayer(); names[id] = nil }
         for s in slots {
-            guard let at = colony.position(of: s.id) else { continue }
+            guard let at = colony.position(of: crowd.single ? "face" : s.id) else { continue }
             let name = names[s.id] ?? {
                 let n = CATextLayer()
                 n.contentsScale = UIScreen.main.scale

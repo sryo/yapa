@@ -42,6 +42,20 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s.mode, .question)
     }
 
+    // R5: a swipe sideways goes somewhere only with another question or reply to go to; with one, the text bounces.
+    func testR5_SwipeTurnsOnlyWithSomewhereToGo() {
+        var s = Screen()
+        s.update(board("jeta: server needs you · Which hostname?"))
+        XCTAssertFalse(s.turns, "one question turns")
+        s.update(board("jeta: server needs you · Which hostname?", "jeta: che needs you · Merge?"))
+        XCTAssertTrue(s.turns, "two questions don't turn")
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Done.", at: 1)])
+        XCTAssertTrue(s.read(session: "a"))
+        XCTAssertFalse(s.turns, "the only reply turns")
+        s.update(replies: [Reply(id: "a", session: "yapa", text: "Done.", at: 1), Reply(id: "b", session: "che", text: "Also.", at: 2)])
+        XCTAssertTrue(s.turns, "two replies don't turn")
+    }
+
     // R6: a swipe down on the bare face opens the session list; a tap closes it. Nothing else does: no mood demo.
     func testR6_SwipeDownShowsTheSessions() {
         var s = Screen()

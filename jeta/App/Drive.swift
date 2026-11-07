@@ -42,10 +42,13 @@ final class Drive {
             let left = o["way"] as? String == "left"
             if o["way"] as? String == "down" { view.swipeDown() }
             // With text up a swipe is a quick drag, as a finger makes it.
-            else if view.carries { return drag(left ? -200 : 200, release: true, speed: nil, at: at, done) }
+            else if view.carries { return drag(left ? -200 : 200, across: true, release: true, speed: nil, at: at, done) }
             else { view.swipe(left: left, at: at) }
             after(0.05, done)
-        case "/drag": drag(o["dx"] as? Double ?? 0, release: o["release"] as? Bool ?? true, speed: o["speed"] as? Double, at: at, done)
+        case "/drag":
+            let across = o["dy"] == nil
+            drag(o[across ? "dx" : "dy"] as? Double ?? 0, across: across, release: o["release"] as? Bool ?? true,
+                 speed: o["speed"] as? Double, at: at, done)
         case "/hold":
             view.talk?.hold(at: at)
             after(o["for"] as? Double ?? 1) { [weak self] in self?.view.talk?.letGo(); after(0.05, done) }
@@ -59,17 +62,20 @@ final class Drive {
     /// How far the finger dragging the text has carried it, while it's down.
     private var carried: Double?
 
-    /// The finger carries the text on to `dx` points from where it landed, a little each frame, then lifts (unless
-    /// `release` is false) at `speed`, or at the speed it moved.
-    private func drag(_ dx: Double, release: Bool, speed: Double?, at p: CGPoint, _ done: @escaping () -> Void) {
+    /// The finger carries the text on to `dx` points from where it landed (down, unless `across`), a little each
+    /// frame, then lifts (unless `release` is false) at `speed`, or at the speed it moved.
+    private func drag(_ dx: Double, across: Bool, release: Bool, speed: Double?, at p: CGPoint, _ done: @escaping () -> Void) {
         let from = carried ?? 0, frames = 8
         carried = dx
         for k in 1...frames {
-            after(Double(k) * 0.02) { [weak self] in self?.view.slide(by: from + (dx - from) * Double(k) / Double(frames)) }
+            after(Double(k) * 0.02) { [weak self] in self?.view.slide(by: from + (dx - from) * Double(k) / Double(frames), across: across) }
         }
         after(Double(frames) * 0.02 + 0.01) { [weak self] in
             guard let self else { return }
-            if release { self.carried = nil; self.view.slid(by: dx, speed: speed ?? (dx - from) / (Double(frames) * 0.02), at: p) }
+            if release {
+                self.carried = nil
+                self.view.slid(by: dx, speed: speed ?? (dx - from) / (Double(frames) * 0.02), at: p, across: across)
+            }
             after(0.05, done)
         }
     }
@@ -153,16 +159,27 @@ final class Drive {
         var ants: [String: Any] = [:]
         for id in ids {
             guard let p = v.colony.position(of: id) else { continue }
-            ants[id] = ["x": p.x, "y": p.y, "act": v.colony.acting(id) ?? ""]
+            ants[id] = ["x": p.x, "y": p.y, "act": v.colony.acting(id) ?? "", "scale": v.colony.scale(of: id) ?? 0]
         }
         return [
             "mode": "\(s.mode)", "note": s.note, "asking": s.asking != nil, "asker": s.asker ?? NSNull(),
             "front": v.crowd.front ?? NSNull(), "single": v.crowd.single,
-            "placed": v.placed.map { ["text": $0.text, "style": "\($0.style)", "x": $0.x, "y": $0.y, "w": $0.width, "h": $0.height] },
-            "shown": v.motion.frame(at: CACurrentMediaTime()).map { ["text": $0.line.text, "cx": $0.cx, "home": $0.line.x + $0.line.width / 2] },
+            "placed": v.placed.filter(\.showing).map { p -> [String: Any] in
+                // How wide the words are, which a centred line's frame isn't.
+                let words = (p.text as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: CGFloat(p.size), weight: p.bold ? .bold : .regular)]).width
+                return ["text": p.text, "style": "\(p.style)", "x": p.x, "y": p.y, "w": p.width, "h": p.height, "left": p.left,
+                        "words": Double(words) * p.scale]
+            },
+            "shown": v.motion.frame(at: CACurrentMediaTime()).map {
+                ["text": $0.line.text, "cx": $0.cx, "home": $0.line.x + $0.line.width / 2, "cy": $0.cy, "homeY": $0.line.y + $0.line.height / 2,
+                 "o": $0.opacity, "band": $0.line.band != nil]
+            },
+            "size": [v.bounds.width, v.bounds.height],
+            "pages": s.pages(width: Double(v.bounds.width), height: Double(v.bounds.height)).map { [$0.page, $0.of] } ?? NSNull(),
             "dial": ["open": v.dial.isOpen, "current": v.dial.current?.title ?? "", "path": v.dial.path, "note": v.dial.note],
             "sessions": v.crowd.sessions.map { ["id": $0.id, "name": $0.name, "state": "\($0.state)"] },
             "ants": ants,
+            "names": v.names.filter { $0.value.opacity > 0.5 }.mapValues { $0.string as? String ?? "" },
         ]
     }
 

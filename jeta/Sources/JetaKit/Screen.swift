@@ -44,7 +44,16 @@ public struct Reply: Equatable {
 public struct Screen {
     public enum Mode: Equatable { case face, question, detail, roster, reply }
     public enum Style: Equatable { case title, body, hint, option, suggestion }
-    public struct Line: Equatable { public var text: String, style: Style }
+    public struct Line: Equatable {
+        public var text: String, style: Style
+        /// A reply's line: which line of the whole reply it is, and how many lines it sits below the first one
+        /// showing (negative above it, past the page's last below it), so the pages around stay where a drag
+        /// brings them.
+        public var row: (index: Int, offset: Int)? = nil
+        public static func == (a: Line, b: Line) -> Bool {
+            a.text == b.text && a.style == b.style && a.row?.index == b.row?.index && a.row?.offset == b.row?.offset
+        }
+    }
 
     public private(set) var mode = Mode.face
     /// What talking is doing (listening, sending, what che typed); it takes the hint's place while it's up.
@@ -219,6 +228,13 @@ public struct Screen {
         page = ((page + n) % c + c) % c
     }
 
+    /// Whether a swipe sideways goes anywhere: to another reply, or another question.
+    public var turns: Bool {
+        if mode == .reply { return replies.count > 1 }
+        guard asking == nil, !board.pending.isEmpty else { return false }
+        return mode == .roster || board.pending.count > 1
+    }
+
     /// The session the question showing came from, where its answer goes.
     public var asker: String? { mode == .reply ? reading : asking == nil ? current?.from : nil }
 
@@ -289,12 +305,15 @@ public struct Screen {
     }
     private var shownReply: Reply? { replies.first { $0.id == reading } }
 
-    /// The reply's lines showing, which page that is and how many there are.
-    func window(width: Int) -> (lines: [Line], page: Int, pages: Int)? {
+    /// The reply's lines showing, which page that is and how many there are; `around` adds a page's worth of
+    /// lines on each side, past the ones showing.
+    func window(width: Int, around: Bool = false) -> (lines: [Line], page: Int, pages: Int)? {
         guard let r = shownReply else { return nil }
         let all = Screen.plain(r.text).flatMap { Screen.wrap($0, .body, width: width) }, step = Screen.readLines - 1
-        let from = min(scroll, max(0, all.count - Screen.readLines))
-        return (Array(all[from..<min(all.count, from + Screen.readLines)]), (from + step - 1) / step, max(1, (all.count - 2) / step + 1))
+        let from = min(scroll, max(0, all.count - Screen.readLines)), to = min(all.count, from + Screen.readLines)
+        let row = { (i: Int) -> Line in var l = all[i]; l.row = (i, i - from); return l }
+        let lines = (from..<to).map(row) + (around ? (max(0, from - step)..<from).map(row) + (to..<min(all.count, to + step)).map(row) : [])
+        return (lines, (from + step - 1) / step, max(1, (all.count - 2) / step + 1))
     }
 
     /// Reading a reply: the page showing and how many, for the dots beside it.
@@ -385,7 +404,7 @@ public struct Screen {
                 }
             return (rows.isEmpty ? wrap("no sessions yet", .body) : rows) + wrap("tap: close · hold: ask the manager", .hint)
         case .reply:
-            guard let r = shownReply, let w = window(width: width) else { return [] }
+            guard let r = shownReply, let w = window(width: width, around: true) else { return [] }
             return wrap("\(r.session) · \(Screen.ago(now - r.at))", .title) + w.lines
                 + wrap((w.page + 1 < w.pages ? "swipe up: more · " : "") + "hold: answer · tap: close", .hint)
         }

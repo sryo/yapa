@@ -97,10 +97,11 @@ final class ColonyTests: XCTestCase {
         XCTAssertLessThan(longestStill, 1.0, "and never stops")
     }
 
-    // Needing you: a short freeze and a pop, then the one forward runs to the middle and grows, and pulses every 3 s;
-    // the others hold still meanwhile. Allowed, it hurries home; denied, it walks home slowly.
-    func testNeedsPopsPulsesAndOthersHoldStill() {
-        func run(allowed: Bool) -> (popped: Bool, pulses: Int, othersMoved: Double, homeAfter: Double) {
+    // Needing you: a short freeze and a pop, then the one forward runs to the middle and grows, and steps closer to you
+    // every 3 s, growing a little and back, never in a jump; the others hold still meanwhile. Allowed, it hurries home;
+    // denied, it walks home slowly.
+    func testNeedsPopsStepsCloserAndOthersHoldStill() {
+        func run(allowed: Bool) -> (popped: Bool, pulses: Int, jump: Double, othersMoved: Double, homeAfter: Double) {
             let c = Colony(seed: 7, now: 0)
             c.update([("a", .idle, false, nil), ("b", .busy, false, 1)], at: 0)
             _ = c.shapes(at: 3)
@@ -115,19 +116,50 @@ final class ColonyTests: XCTestCase {
                 if let a = shapes.first(where: { $0.id == "a" }) { sizes.append(a.fills[0].map { simd_length($0 - a.centre) }.max()!) }
                 othersMoved = max(othersMoved, simd_length(c.position(of: "b")! - b0))
             }
-            // A pulse is the body swelling past what it settled to and back.
+            // A step closer is the body growing past what it settled to and back.
             let settled = sizes[800...].min()!
             let pulses = (1..<sizes.count).filter { sizes[$0] > settled * 1.04 && sizes[$0 - 1] <= settled * 1.04 }.count
+            let jump = (801..<sizes.count).map { abs(sizes[$0] / sizes[$0 - 1] - 1) }.max()!
             c.answered("a", allowed: allowed)
             c.update([("a", .idle, false, nil), ("b", .busy, false, 1)], at: 15.1)
             _ = c.shapes(at: 16.6)
-            return (froze, pulses, othersMoved, simd_length(c.position(of: "a")! - home))
+            return (froze, pulses, jump, othersMoved, simd_length(c.position(of: "a")! - home))
         }
         let yes = run(allowed: true), no = run(allowed: false)
         XCTAssertTrue(yes.popped, "it freezes a moment first")
-        XCTAssertGreaterThanOrEqual(yes.pulses, 2, "it pulses every 3 s")
+        XCTAssertGreaterThanOrEqual(yes.pulses, 2, "it doesn't step closer every 3 s")
+        XCTAssertLessThan(yes.jump, 0.02, "it throbs instead of stepping closer")
         XCTAssertLessThan(yes.othersMoved, 8, "the others hold still")
         XCTAssertLessThan(yes.homeAfter, no.homeAfter - 20, "allowed hurries home, denied walks slowly")
+    }
+
+    // A session whose question or actions wait: its ant faces you and walks toward you, as if toward the camera,
+    // stepping in place as it grows to 1.25 times, slowly; once nothing waits it walks back to its size. The others
+    // stay as they are.
+    func testAntComesCloserWhileItsActionsWait() {
+        let c = Colony(seed: 3, now: 0)
+        let all: [(id: String, mood: Mood, front: Bool, events: Int?)] = [("a", .idle, false, nil), ("b", .idle, false, nil)]
+        c.update(all, at: 0)
+        func size(_ id: String, _ t: Double) -> Double {
+            let a = c.shapes(at: t).first { $0.id == id }!
+            return a.fills[0].map { simd_length($0 - a.centre) }.max()!
+        }
+        let a0 = size("a", 4), b0 = size("b", 4)
+        c.asking = ["a"]
+        c.update(all, at: 4)
+        var last = a0, jump = 0.0, stepped = 0
+        for k in 1...400 {
+            let t = 4 + Double(k) / 100, s = size("a", t)
+            jump = max(jump, abs(s / last - 1)); last = s
+            if k < 150, c.shapes(at: t).first(where: { $0.id == "a" })!.planted.contains(where: { $0 == nil }) { stepped += 1 }
+        }
+        XCTAssertEqual(size("a", 8) / a0, 1.25, accuracy: 0.07, "it doesn't come closer")
+        XCTAssertEqual(size("b", 8) / b0, 1, accuracy: 0.03, "the other came closer too")
+        XCTAssertLessThan(jump, 0.02, "it jumps closer instead of walking")
+        XCTAssertGreaterThan(stepped, 20, "it grows without stepping")
+        c.asking = []
+        c.update(all, at: 8)
+        XCTAssertEqual(size("a", 12) / a0, 1, accuracy: 0.04, "it doesn't walk back once nothing waits")
     }
 
     // Held to talk, only that ant reacts: it steps out from under the fingertip and keeps its size; let go, it walks

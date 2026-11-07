@@ -31,8 +31,9 @@ final class TextMotionTests: XCTestCase {
         s.cx + s.line.width / 2 * s.sx < 0 || s.cx - s.line.width / 2 * s.sx > w
             || s.cy + s.line.height / 2 * s.sy < 0 || s.cy - s.line.height / 2 * s.sy > h
     }
+    /// At its place, as bright as it rests (a reply's line off its page out of sight), at its size.
     func settled(_ s: Shown) -> Bool {
-        simd_distance(centre(s), home(s)) < 0.5 && abs(s.opacity - s.line.opacity) < 0.01
+        simd_distance(centre(s), home(s)) < 0.5 && abs(s.opacity - (s.line.showing ? s.line.opacity : 0)) < 0.01
             && abs(s.sx - 1) < 0.01 && abs(s.sy - 1) < 0.01
     }
     var question: Screen { screen("jeta: server needs you · Which port? · 8443 | 8080") }
@@ -182,6 +183,73 @@ final class TextMotionTests: XCTestCase {
             for (x, y) in zip(a, b) { XCTAssertLessThan(abs(y.cx - x.cx), 30, "\(x.line.text) jumps on the way back") }
         }
         XCTAssert(m.frame(at: t + 1.5).allSatisfy(settled), "let go, the lines don't go home")
+    }
+
+    // T5b: past the first or last page the text follows iOS's rubber band: at first a little over half the finger,
+    // less the farther it pulls, never a whole screen; and a drag up or down carries it like one sideways.
+    func testT5b_RubberBandResistsAndNeverReachesTheEdge() {
+        XCTAssertEqual(TextMotion.rubber(0, over: h).slope, 0.55, accuracy: 1e-9, "it doesn't start at 0.55 of the finger")
+        XCTAssertEqual(TextMotion.rubber(100, over: 320).offset, 46.93, accuracy: 0.01)
+        XCTAssertEqual(TextMotion.rubber(-100, over: 320).offset, -46.93, accuracy: 0.01, "a pull up isn't the same as down")
+        var last = 0.0
+        for x in stride(from: 10.0, through: 10_000, by: 10) {
+            let r = TextMotion.rubber(x, over: h)
+            XCTAssertGreaterThan(r.offset, last, "pulling farther doesn't move it farther")
+            XCTAssertLessThan(r.offset, h, "it goes a whole screen")
+            XCTAssertLessThan(r.offset, x, "it follows the finger 1:1 or more")
+            last = r.offset
+        }
+        var s = reading
+        let m = motion()
+        m.show(s.place(width: w, height: h), from: face, at: 0)
+        _ = frames(m, from: 0, to: 1.5, face: face)
+        var t = 1.5
+        for dy in stride(from: 0.0, through: 120, by: 6) {
+            t += 1 / 60
+            let y = TextMotion.rubber(dy, over: h).offset
+            m.hold(SIMD2(0, y), speed: SIMD2<Double>(), at: t)
+            for l in m.frame(at: t) {
+                XCTAssertEqual(l.cy - (l.line.y + l.line.height / 2), l.line.band == nil ? 0 : y, accuracy: 0.5,
+                               "\(l.line.text) doesn't follow the finger, or moves when it isn't the reply's")
+            }
+        }
+        m.hold(nil, speed: SIMD2<Double>(), at: t)
+        XCTAssert(smooth(frames(m, from: t, to: t + 1.5, face: face)), "a line jumps on the way back")
+        t += 1.5
+        XCTAssert(m.frame(at: t).allSatisfy(settled), "let go, the lines don't go home")
+        // Dragged up, the next page comes up right under the one showing, and fades in as it enters the band.
+        m.hold(SIMD2(0, -100), speed: SIMD2<Double>(), at: t)
+        let up = m.frame(at: t).filter { $0.line.band != nil }.sorted { $0.line.y < $1.line.y }
+        for (a, b) in zip(up, up.dropFirst()) { XCTAssertEqual(b.cy - a.cy, b.line.y - a.line.y, accuracy: 0.5, "the pages come apart") }
+        let band = up[0].line.band!
+        for l in up {
+            let inside = l.cy - l.line.height / 2 >= band.lowerBound && l.cy + l.line.height / 2 <= band.upperBound
+            if inside { XCTAssertEqual(l.opacity, l.line.opacity, accuracy: 0.02, "\(l.line.text) is in the band and dim") }
+            if l.cy + l.line.height / 2 < band.lowerBound - l.line.height || l.cy - l.line.height / 2 > band.upperBound + l.line.height {
+                XCTAssertEqual(l.opacity, 0, accuracy: 0.01, "\(l.line.text) shows outside the band")
+            }
+        }
+        // Let go, the page turns: every line glides on to its place in one piece, none flying off or jumping in.
+        m.hold(nil, speed: SIMD2(0, -400), at: t)
+        s.scroll(by: 1)
+        m.show(s.place(width: w, height: h), from: face, page: -1, at: t)
+        XCTAssert(smooth(frames(m, from: t, to: t + 1.5, face: face)), "a line jumps as the page turns")
+        XCTAssert(m.frame(at: t + 1.5).allSatisfy(settled), "the turned page doesn't settle")
+    }
+
+    var reading: Screen {
+        var s = Screen()
+        s.update(replies: [Reply(id: "a", session: "yapa", text: (1...30).map { "Line \($0) of the reply." }.joined(separator: "\n"), at: 0)])
+        s.read(session: "a")
+        return s
+    }
+
+    /// No line moves more than 30 pt between frames, and none that stays shown comes and goes.
+    func smooth(_ fs: [[Shown]]) -> Bool {
+        for (a, b) in zip(fs, fs.dropFirst()) {
+            for x in a { if let y = b.first(where: { $0.line.key == x.line.key }), abs(y.cy - x.cy) > 30 || abs(y.cx - x.cx) > 30 { return false } }
+        }
+        return true
     }
 
     // T6: pressing an option squashes it; choosing it pops it and hands it to the face, which swallows it, while

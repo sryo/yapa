@@ -9,6 +9,11 @@ public struct Placed: Equatable {
     public var size: Double, bold: Bool, opacity: Double, left: Bool
     /// How big it rests, against its font size, so a line growing or shrinking springs instead of jumping.
     public var scale = 1.0
+    /// A reply's line: the band its page shows in, top to bottom. It fades out past the band's edges, and a drag
+    /// up or down carries it (and none of the other lines).
+    public var band: ClosedRange<Double>? = nil
+    /// Whether it's on the page showing, not one of the pages around it waiting out of sight.
+    public var showing: Bool { band.map { $0.contains(y + height / 2) } ?? true }
 }
 
 /// A line as drawn this frame: where its frame's centre is now, how see-through, how stretched, and how blurred
@@ -53,8 +58,8 @@ public final class TextMotion {
 
     private var items: [Item] = [], last: [Placed]? = nil, now = 0.0, anchor = SIMD2<Double>(0, 0)
     private var pressed: String?, gone: Set<String> = []
-    /// How far a finger has carried the text sideways; nil when no finger is on it.
-    private var held: Double?
+    /// How far a finger has carried the text, sideways and down; nil when no finger is on it.
+    private var held: SIMD2<Double>?
 
     public init() {}
 
@@ -81,6 +86,8 @@ public final class TextMotion {
             }
             let item = l.key.hasPrefix("note:")
                 ? Item(l, at: SIMD2(l.x + l.width / 2, screen.y + l.height), scale: 1, opacity: l.opacity, start: t)
+                // A reply's lines past its page wait where they are, out of sight; after a page turn, so do the new ones.
+                : l.band != nil && (page != 0 || !l.showing) ? Item(l, at: SIMD2(l.x + l.width / 2, l.y + l.height / 2), scale: 1, opacity: l.opacity, start: t)
                 : page != 0 ? Item(l, at: SIMD2(l.x + l.width / 2, l.y + l.height / 2 - page * screen.y * 0.4), scale: 1, opacity: 0, start: t)
                 : Item(l, at: anchor, scale: 0.15, opacity: 0, start: t + wait + Double(n) * TextMotion.stagger)
             // The face says a batch of lines once, as the first one leaves it.
@@ -99,11 +106,32 @@ public final class TextMotion {
     /// A finger carrying the text sideways by `dx` points: every line follows it 1:1. Once it lifts (nil), the lines
     /// leave at the finger's `speed` and spring home from where it left them, unless the swipe sends them off.
     public func hold(_ dx: Double?, speed: Double = 0, at t: Double) {
+        hold(dx.map { SIMD2($0, 0) }, speed: SIMD2(speed, 0), at: t)
+    }
+
+    /// The same, with the text carried `d` points sideways and, a reply's lines only, down.
+    public func hold(_ d: SIMD2<Double>?, speed: SIMD2<Double>, at t: Double) {
         advance(to: t)
+        let was = held ?? SIMD2<Double>()
         for i in items where i.exit == .none {
-            if let dx { i.cx.x += dx - (held ?? 0) } else { i.cx.v = speed }
+            if let d {
+                let by = d - was
+                i.cx.x += by.x
+                if i.line.band != nil { i.cy.x += by.y }
+            } else {
+                if was.x != 0 || speed.x != 0 { i.cx.v = speed.x }
+                if i.line.band != nil, was.y != 0 || speed.y != 0 { i.cy.v = speed.y }
+            }
         }
-        held = dx
+        held = d
+    }
+
+    /// iOS's rubber band, for a pull past the first or last page: the text goes `offset` for a finger `x` points
+    /// along, less the farther it pulls, and never as far as `d` (the screen's length that way), with c = 0.55 as
+    /// UIScrollView has it. `slope` is how fast the text goes against the finger there, for its speed when it lifts.
+    public static func rubber(_ x: Double, over d: Double) -> (offset: Double, slope: Double) {
+        let c = 0.55, k = c * abs(x) / d + 1
+        return ((1 - 1 / k) * d * (x < 0 ? -1 : 1), c / (k * k))
     }
 
     /// The option was picked: it pops and goes to the face, and the options not taken drop away.
@@ -126,10 +154,17 @@ public final class TextMotion {
         advance(to: t)
         return items.map { i in
             let s = max(0, i.s.x), q = max(-0.3, min(0.3, i.sq.x))
-            let op = max(0, min(1, i.op.x)), shown = i.line.opacity > 0 ? min(1, op / i.line.opacity) : 1
+            let op = max(0, min(1, i.op.x)) * TextMotion.fade(i), shown = i.line.opacity > 0 ? min(1, op / i.line.opacity) : 1
             return Shown(line: i.line, cx: i.cx.x, cy: i.cy.x, opacity: op, sx: s * (1 + 0.5 * q), sy: s * (1 - q),
                          blur: i.line.size * 0.35 * max(1 - shown, i.bl.x))
         }
+    }
+
+    /// How much of a reply's line shows: all of it inside its band, gone once half of it is past an edge.
+    static func fade(_ i: Item) -> Double {
+        guard let b = i.line.band else { return 1 }
+        let half = i.line.height / 2, over = max(0, b.lowerBound - (i.cy.x - half), i.cy.x + half - b.upperBound)
+        return max(0, 1 - over / (i.line.height / 2))
     }
 
     private func offScreen(_ i: Item) -> Bool {
@@ -151,9 +186,10 @@ public final class TextMotion {
                 switch i.exit {
                 case .none:
                     let overshoot = simd_distance(i.at, i.home) > 2 && i.s.x < 0.9 * i.line.scale
-                    let (k, d) = overshoot ? (140.0, 0.55) : (120.0, 0.75)
-                    i.cx.step(to: i.home.x + (held ?? 0), k: k, damping: d, dt: dt)
-                    i.cy.step(to: i.home.y, k: k, damping: d, dt: dt)
+                    // A reply's lines scroll as a page does on iOS: they settle on the page without overshooting it.
+                    let (k, d) = overshoot ? (140.0, 0.55) : i.line.band != nil ? (120.0, 1.0) : (120.0, 0.75)
+                    i.cx.step(to: i.home.x + (held?.x ?? 0), k: k, damping: d, dt: dt)
+                    i.cy.step(to: i.home.y + (i.line.band != nil ? held?.y ?? 0 : 0), k: k, damping: d, dt: dt)
                     i.s.step(to: i.line.scale, k: k, damping: d, dt: dt)
                 case .face:
                     i.cx.step(to: anchor.x, k: 150, damping: 1, dt: dt)
@@ -229,7 +265,12 @@ extension Screen {
             size *= 0.92
         }
         let d = drift
-        return out.map { var p = $0; p.x += d.x; p.y += d.y; return p }
+        return out.map {
+            var p = $0
+            p.x += d.x; p.y += d.y
+            p.band = p.band.map { $0.lowerBound + d.y...$0.upperBound + d.y }
+            return p
+        }
     }
 
     private func place(_ lines: [Line], width w: Double, height h: Double, size: Double, open: Bool) -> ([Placed], Bool) {
@@ -250,6 +291,8 @@ extension Screen {
         let (mx, my) = (11.0, 9.0)
         func lay(from top: Double) -> (placed: [Placed], bottom: Double) {
             var y = top, seen: [String: Int] = [:], out: [Placed] = [], column = 0, rowHeight = 0.0
+            // A reply's page: where its first line sits, and the band its lines show in.
+            var first = 0.0, band = 0.0...0.0, bottom = top
             let rowStart = sideBySide ? (w - (optionWidth + 10) * Double(perRow) + 10) / 2 : side
             for (i, l) in lines.enumerated() {
                 // A box ticked or not is the same option, so it stays where it is.
@@ -271,12 +314,25 @@ extension Screen {
                     continue
                 }
                 let s = l.style == .title ? size * 1.1 : l.style == .body ? size : size * 0.85
-                out.append(Placed(key: key, text: l.text, style: l.style, x: open ? left : mx, y: y, width: open ? w - left - mx : w - 2 * mx,
-                                  height: s * 1.4, size: s, bold: false, opacity: l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4,
-                                  left: open))
+                var p = Placed(key: key, text: l.text, style: l.style, x: open ? left : mx, y: y, width: open ? w - left - mx : w - 2 * mx,
+                               height: s * 1.4, size: s, bold: false, opacity: l.style == .title ? 1 : l.style == .body ? 0.65 : 0.4,
+                               left: open)
+                if let r = l.row {
+                    // The pages around sit above and below the one showing, keyed by their place in the reply.
+                    p.key = "row\(r.index):" + words
+                    let showing = lines.filter { ($0.row?.offset).map { $0 >= 0 && $0 < Screen.readLines } ?? false }.count
+                    if r.offset == 0 { first = y; band = y...y + Double(showing) * s * 1.5 }
+                    p.y = first + Double(r.offset) * s * 1.5
+                    p.band = band
+                    out.append(p)
+                    if r.offset >= 0 && r.offset < showing { y += s * 1.5; bottom = max(bottom, p.y + p.height) }
+                    continue
+                }
+                out.append(p)
+                bottom = max(bottom, y + p.height)
                 y += s * (l.style == .hint && i > 0 && lines[i - 1].style != .hint ? 2.0 : 1.5)
             }
-            return (out, out.map { $0.y + $0.height }.max() ?? top)
+            return (out, bottom)
         }
         let tall = lay(from: 0).bottom
         // A note alone, on the bare face, sits at the bottom; a question under the face; the rest near the top. Lines
