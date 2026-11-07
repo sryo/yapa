@@ -1,5 +1,7 @@
 # yapa
 
+Your agents don’t need faces.
+
 yapa turns the old iPhone in your drawer into a small server. It serves your sites, git or files to the internet without opening ports, and buzzes when an agent needs you, so you approve with a tap or answer by holding a button and talking. It runs on the charger and stays cool.
 
 <img src="docs/statuses.svg" alt="The phone's screen: four ants, one per session, one working, one thinking, one finishing its turn, one curled up asleep; then one comes forward asking to run git push, and Allow is tapped." width="655">
