@@ -134,8 +134,8 @@ final class ColonyTests: XCTestCase {
     }
 
     // A session whose question or actions wait: its ant faces you and walks toward you, as if toward the camera,
-    // stepping in place as it grows to 1.25 times, slowly; once nothing waits it walks back to its size. The others
-    // stay as they are.
+    // stepping in place as it grows to 1.25 times, slowly, then rears up to look at you; once nothing waits it walks
+    // back to its size and settles. The others stay as they are.
     func testAntComesCloserWhileItsActionsWait() {
         let c = Colony(seed: 3, now: 0)
         let all: [(id: String, mood: Mood, front: Bool, events: Int?)] = [("a", .idle, false, nil), ("b", .idle, false, nil)]
@@ -145,6 +145,15 @@ final class ColonyTests: XCTestCase {
             return a.fills[0].map { simd_length($0 - a.centre) }.max()!
         }
         let a0 = size("a", 4), b0 = size("b", 4)
+        // Come close, it rears up to look at you: its head, now in front of its thorax, comes up toward the lens,
+        // nearer its middle and bigger against its abdomen, and it faces you square.
+        func head(_ t: Double) -> (reach: Double, ratio: Double) {
+            let a = c.shapes(at: t).first { $0.id == "a" }!
+            let r = { (f: [SIMD2<Double>]) in f.map { simd_length($0 - f.reduce(.zero, +) / Double(f.count)) }.max()! }
+            let mid = a.fills[3].reduce(.zero, +) / Double(a.fills[3].count)
+            return (simd_length(mid - a.centre) / r(a.fills[0]), r(a.fills[3]) / r(a.fills[0]))
+        }
+        let flat = head(4)
         c.asking = ["a"]
         c.update(all, at: 4)
         var last = a0, jump = 0.0, stepped = 0
@@ -157,9 +166,13 @@ final class ColonyTests: XCTestCase {
         XCTAssertEqual(size("b", 8) / b0, 1, accuracy: 0.03, "the other came closer too")
         XCTAssertLessThan(jump, 0.02, "it jumps closer instead of walking")
         XCTAssertGreaterThan(stepped, 20, "it grows without stepping")
+        let up = head(8)
+        XCTAssertLessThan(up.reach, flat.reach * 0.7, "its head doesn't come up toward the lens")
+        XCTAssertGreaterThan(up.ratio, flat.ratio * 1.2, "its head isn't nearer and bigger")
         c.asking = []
         c.update(all, at: 8)
         XCTAssertEqual(size("a", 12) / a0, 1, accuracy: 0.04, "it doesn't walk back once nothing waits")
+        XCTAssertEqual(head(12).ratio, flat.ratio, accuracy: flat.ratio * 0.05, "it stays reared up once nothing waits")
     }
 
     // Held to talk, only that ant reacts: it steps out from under the fingertip and keeps its size; let go, it walks

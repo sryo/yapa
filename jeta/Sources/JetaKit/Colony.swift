@@ -372,6 +372,9 @@ final class Ant {
     var approach = 1.0, approachTo = 1.0, calling = false, callUntil = -1.0
     /// How big it's drawn: the size its situation gives it, as near as it has come.
     var big: Double { size.x * approach }
+    /// Reared up to look at you, 0 to 1: its head and thorax tip up toward the lens, about the waist, while the
+    /// abdomen stays on the ground.
+    var look = Bounce(0, k: 18, d: 8.5)
     var size = Bounce(1), rear = Bounce(0, k: 60, d: 11), antennae = Bounce(0, k: 80, d: 12), curl = Bounce(0, k: 14, d: 7)
     /// The abdomen's swing with the gait: 1 to the right while the right front and hind legs are in the air, -1 left.
     var hips = Bounce(0, k: 900, d: 45), lastTripod = 1
@@ -435,7 +438,7 @@ final class Ant {
     /// A foot's rest spot on the ground, `ahead` body units forward along the heading.
     func rest(_ i: Int, _ side: Double, ahead: Double) -> SIMD2<Double> {
         let l = Ant.legs[i], k = Ant.scale * big * (1 - curl.x * 0.55), c = cos(h), s = sin(h)
-        let lx = l.x * k + ahead * Ant.scale * big, ly = l.y * side * k
+        let lx = l.x * k + ahead * Ant.scale * big, ly = l.y * side * k * (i > 0 ? 1 + 0.3 * look.x : 1)
         return SIMD2(x + c * lx - s * ly, y + s * lx + c * ly)
     }
 
@@ -447,6 +450,8 @@ final class Ant {
         // that needs you steps closer each time it calls, and back.
         let waits = calling && (act == .rest || act == .done) && !homing
         if waits { faceTo = SIMD2(x, y + 100) }
+        // Once it has nearly come, it rears up and looks at you.
+        look.target = waits && approach > 1 + (Ant.closer - 1) * 0.6 ? 1 : 0
         approachTo = (waits ? Ant.closer : 1) * (act == .needs && t < callUntil ? Ant.calls : 1)
         approach += (approachTo - approach) * min(1, dt * (approachTo > approach ? 2.5 : 1.5))
         // Standing still, it creeps along the drift (and turns, unless it's facing something); its feet stretch and,
@@ -500,7 +505,7 @@ final class Ant {
         gait += max(v, marching ? 30 : 0) * dt / (Ant.stride * Ant.scale * max(0.2, big)) * .pi
         let len = 6.6 * Ant.scale * big, back = SIMD2(x, y) - tail, bl = max(1e-6, simd_length(back))
         tail = SIMD2(x, y) - back / bl * len
-        size.step(dt); rear.step(dt); antennae.step(dt); curl.step(dt)
+        size.step(dt); rear.step(dt); antennae.step(dt); curl.step(dt); look.step(dt)
         // Tripod 1 is R1 L2 R3, tripod 0 is L1 R2 L3: the abdomen swings toward the side whose front and hind legs step.
         let up0 = feet.contains { $0.tripod == 0 && $0.s < 1 }, up1 = feet.contains { $0.tripod == 1 && $0.s < 1 }
         hips.target = up1 == up0 ? 0 : up1 ? 1 : -1
@@ -663,14 +668,26 @@ final class Ant {
     /// The drawing, and its size so bigger ants draw on top.
     func shape(id: String, t: Double) -> (Double, AntShape) {
         let s = big * Ant.scale, r = rear.x, cu = curl.x, c = cos(h), sn = sin(h)
-        let world = { (p: SIMD2<Double>) in SIMD2(self.x + (p.x * c - p.y * sn) * s, self.y + (p.x * sn + p.y * c) * s) }
+        let flat = { (p: SIMD2<Double>) in SIMD2(self.x + (p.x * c - p.y * sn) * s, self.y + (p.x * sn + p.y * c) * s) }
+        // Reared up to look at you, seen from above: what's ahead of the waist tips up toward the lens by up to 65°,
+        // so it comes nearer the middle and, nearer the camera, bigger (a camera 24 body units up); what's behind it
+        // stays on the ground.
+        let pitch = look.x * 65 * .pi / 180, (pc, ps) = (cos(pitch), sin(pitch)), pivot = -1.9
+        let lens = { (p: SIMD2<Double>) -> SIMD2<Double> in
+            guard pitch > 0.001, p.x > pivot else { return p }
+            let u = p.x - pivot
+            return SIMD2(pivot + u * pc, p.y) / (1 - u * ps / 24)
+        }
+        let world = { (p: SIMD2<Double>) in flat(lens(p)) }
         // A turn by an angle whose cosine and sine are worked out once per frame, not once per point.
         func rotated(_ p: SIMD2<Double>, about o: SIMD2<Double>, cos ca: Double, sin sa: Double) -> SIMD2<Double> {
             let d = p - o
             return o + SIMD2(d.x * ca - d.y * sa, d.x * sa + d.y * ca)
         }
+        // A body part keeps its shape reared up: drawn at where its centre comes, as much bigger as that is nearer.
         func oval(_ cx: Double, _ cy: Double, _ rx: Double, _ ry: Double, _ map: (SIMD2<Double>) -> SIMD2<Double>) -> [SIMD2<Double>] {
-            Ant.circle.map { u in world(map(SIMD2(cx + u.x * rx, cy + u.y * ry))) }
+            let o = map(SIMD2(cx, cy)), at = lens(o), m = pitch > 0.001 && o.x > pivot ? 1 / (1 - (o.x - pivot) * ps / 24) : 1
+            return Ant.circle.map { u in flat(at + (map(SIMD2(cx + u.x * rx, cy + u.y * ry)) - o) * m) }
         }
         guard s > 0.01 else { return (big, AntShape(id: id, fills: [], strokes: [], centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at })) }
 
@@ -686,19 +703,22 @@ final class Ant {
                 let w = SIMD2(l.x + 2.5, (l.y - 2.2 + sin(t * 9 + f.side) * 1.5) * f.side)
                 p += (w - p) * r
             }
+            // Looking at you, the front legs come up with the head and open out, and the others brace on the ground.
+            if f.i == 0 && look.x > 0.01 { p += (lens(SIMD2(l.x * 0.8, l.y * 0.9 * f.side)) - p) * look.x }
             if f.s < 1 { p.y += sin(f.s * .pi) * 0.28 * f.side }
             // Seen from above, a leg's knee is raised, so it shows as a nearly straight line with a slight outward
             // bend; the bend grows a little when the foot comes in close.
-            let hip = SIMD2(l.hip, hy), dv = p - hip, d = max(1e-6, simd_length(dv)), reach = hypot(l.x - l.hip, l.y - 0.9)
+            let hip = lens(SIMD2(l.hip, hy)), dv = p - hip, d = max(1e-6, simd_length(dv)), reach = hypot(l.x - l.hip, l.y - 0.9)
             var out = SIMD2(-dv.y, dv.x) / d
             if out.y * f.side < 0 { out = -out }
             let knee = hip + dv * 0.42 + out * (0.35 + max(0, reach - d) * 0.3)
-            strokes[n] = ([world(SIMD2(l.hip, hy)), world(knee)], 0.85 * s)
-            strokes[feet.count + n] = ([world(knee), world(p)], 0.5 * s)
+            strokes[n] = ([flat(hip), flat(knee)], 0.85 * s)
+            strokes[feet.count + n] = ([flat(knee), flat(p)], 0.5 * s)
         }
         // Body: abdomen and waist bend at the waist (the rope, plus curling up), then thorax, then the head, which
         // turns at the neck when curling.
-        let bend = max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95 - hips.x * 0.16
+        // Looking at you, it straightens out behind its head, so it faces you square.
+        let bend = (max(-0.7, min(0.7, wrap(atan2(y - tail.y, x - tail.x) - h))) + cu * 0.95 - hips.x * 0.16) * (1 - look.x)
         // Proportions after a real ant's: a narrow thorax, a small waist, an abdomen about twice as long as wide, and
         // a gap at each joint.
         let (bc, bs) = (cos(bend), sin(bend))
@@ -712,19 +732,24 @@ final class Ant {
         let lift = 1 + 0.18 * r, hx = 5.1 + 1.6 * r + tap * 0.4 * sin(t * 30) + abs(cos(gait)) * 0.35 * walking - nod
         let fills = [oval(-4.7, 0, 4.2, 2.6 * (1 + 0.03 * sin(t * 2 + phase)), waist), oval(0, 0, 0.8, 0.7, waist),
                      oval(0.8 + r, 0, 2.2 * lift, 1.4 * lift, { $0 }), oval(hx, 0, 2.3 * lift, 2.2 * lift, neck)]
+        // The antennae and mandibles go with the head as it is, unforeshortened, so reared up they still show in front
+        // of it.
+        let o = neck(SIMD2(hx, 0)), oAt = lens(o), om = pitch > 0.001 ? 1 / (1 - (o.x - pivot) * ps / 24) : 1
+        let onHead = { (p: SIMD2<Double>) in flat(oAt + (p - o) * om) }
         // Antennae, elbowed: up or drooped, drumming, the big wave; curled up, folded back and shorter.
         for side in [-1.0, 1.0] {
             let base = 0.7 + cu * 0.6 - antennae.x * 0.35 + tap * 0.25 * sin(t * 28 + side * 1.7) + wave * 0.6 * sin(t * 7 + side)
+                + look.x * 0.15
             let sc = 4.2 * (1 - 0.35 * cu), fu = 5.2 * (1 - 0.45 * cu)
             let root = SIMD2(hx + 1.6, side * 1.0), elbow = SIMD2(hx + 1.6 + cos(base) * sc, side * (1.0 + sin(base) * sc))
-            let tip = base - 0.9 - antennae.x * 0.2 + cu * 1.6
+            let tip = base - 0.9 - antennae.x * 0.2 + cu * 1.6 + look.x * 1.1
             let end = elbow + SIMD2(cos(tip) * fu, side * sin(tip) * fu)
-            strokes.append(([world(neck(root)), world(neck(elbow)), world(neck(end))], 0.7 * s))
+            strokes.append(([onHead(neck(root)), onHead(neck(elbow)), onHead(neck(end))], 0.7 * s))
         }
         // Mandibles: a short pair of hooks at the front of the head, curving in, with a gap between their tips.
         for side in [-1.0, 1.0] {
-            strokes.append(([world(neck(SIMD2(hx + 1.8 * lift, side * 1.0))), world(neck(SIMD2(hx + 2.8 * lift, side * 1.15))),
-                             world(neck(SIMD2(hx + 3.4 * lift, side * 0.6)))], 0.5 * s))
+            strokes.append(([onHead(neck(SIMD2(hx + 1.8 * lift, side * 1.0))), onHead(neck(SIMD2(hx + 2.8 * lift, side * 1.15))),
+                             onHead(neck(SIMD2(hx + 3.4 * lift, side * 0.6)))], 0.5 * s))
         }
         return (big, AntShape(id: id, fills: fills, strokes: strokes, centre: SIMD2(x, y), planted: feet.map { $0.s < 1 ? nil : $0.at }))
     }
