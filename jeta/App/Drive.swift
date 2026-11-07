@@ -50,6 +50,8 @@ final class Drive {
             view.talk?.hold(at: at)
             after(o["for"] as? Double ?? 1) { [weak self] in self?.view.talk?.letGo(); after(0.05, done) }
         case "/twist": twist(o["steps"] as? Int ?? 1, release: o["release"] as? Bool ?? true, done)
+        case "/scroll": view.page(by: o["by"] as? Int ?? 1); after(0.05, done)
+        case "/record": record(o["secs"] as? Double ?? 5, fps: o["fps"] as? Double ?? 12) { [weak self] in self?.send(c, $0) }
         default: done()
         }
     }
@@ -92,6 +94,59 @@ final class Drive {
         }
     }
 
+    /// What the screen draws, `fps` times a second for `secs`, as vectors (bench/pad-svg makes the README's pictures
+    /// of it): every shape layer's path, fill, stroke and width, and every text layer's words, font and frame.
+    private func record(_ secs: Double, fps: Double, _ done: @escaping ([String: Any]) -> Void) {
+        recorder = Recorder(secs: secs, fps: fps, take: { [weak self] in self?.snapshot() ?? [] }) { [weak self] frames in
+            guard let self else { return }
+            self.recorder = nil
+            done(["w": Double(self.view.bounds.width), "h": Double(self.view.bounds.height), "fps": fps, "frames": frames])
+        }
+    }
+
+    private var recorder: Recorder?
+
+    private func snapshot() -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        func white(_ c: CGColor?) -> Double? { c.flatMap { $0.alpha > 0 ? Double($0.components?.first ?? 1) : nil } }
+        for l in view.layer.sublayers ?? [] where !l.isHidden && l.opacity > 0.01 {
+            let m = l.transform, at = l.position, b = l.bounds
+            // The same layer from frame to frame (an ant's, a line's), so the SVG can move one element along.
+            var o: [String: Any] = ["o": Double(l.opacity), "id": ObjectIdentifier(l).hashValue]
+            if let sl = l as? CAShapeLayer, let p = sl.path, !p.isEmpty {
+                o["d"] = svg(p, offset: CGPoint(x: at.x - b.width * l.anchorPoint.x, y: at.y - b.height * l.anchorPoint.y))
+                if let f = white(sl.fillColor) { o["fill"] = f }
+                if let st = white(sl.strokeColor) { o["stroke"] = st; o["lw"] = Double(sl.lineWidth) }
+            } else if let t = l as? CATextLayer, let words = t.string as? String, !words.isEmpty {
+                let name = (t.font as? UIFont)?.fontName ?? ""
+                o["text"] = words; o["size"] = Double(t.fontSize); o["x"] = Double(at.x); o["y"] = Double(at.y)
+                o["w"] = Double(b.width); o["h"] = Double(b.height); o["sx"] = Double(m.m11); o["sy"] = Double(m.m22)
+                o["left"] = t.alignmentMode == .left
+                o["weight"] = name.contains("Bold") ? 700 : name.contains("Semibold") ? 600 : name.contains("Medium") ? 500 : 400
+            } else { continue }
+            out.append(o)
+        }
+        return out
+    }
+
+    private func svg(_ p: CGPath, offset d: CGPoint) -> String {
+        var s = ""
+        func n(_ v: CGFloat) -> String { String(format: "%.1f", Double(v)).replacingOccurrences(of: ".0", with: "") }
+        func pt(_ q: CGPoint) -> String { n(q.x + d.x) + " " + n(q.y + d.y) }
+        p.applyWithBlock { e in
+            let a = e.pointee.points
+            switch e.pointee.type {
+            case .moveToPoint: s += "M" + pt(a[0])
+            case .addLineToPoint: s += "L" + pt(a[0])
+            case .addQuadCurveToPoint: s += "Q" + pt(a[0]) + " " + pt(a[1])
+            case .addCurveToPoint: s += "C" + pt(a[0]) + " " + pt(a[1]) + " " + pt(a[2])
+            case .closeSubpath: s += "Z"
+            @unknown default: break
+            }
+        }
+        return s
+    }
+
     private func state() -> [String: Any] {
         let v = view, s = v.screen
         let ids = v.crowd.single ? ["face"] : v.crowd.sessions.map(\.id)
@@ -115,6 +170,26 @@ final class Drive {
         let body = (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
+    }
+}
+
+/// Takes a frame on the display's own tick, at most `fps` a second, so frames come when the screen draws.
+private final class Recorder: NSObject {
+    let secs: Double, gap: Double, take: () -> [[String: Any]], done: ([[String: Any]]) -> Void
+    var frames: [[String: Any]] = [], start = 0.0, last = -1.0, link: CADisplayLink?
+
+    init(secs: Double, fps: Double, take: @escaping () -> [[String: Any]], done: @escaping ([[String: Any]]) -> Void) {
+        self.secs = secs; gap = 1 / fps; self.take = take; self.done = done
+        super.init()
+        start = CACurrentMediaTime()
+        link = CADisplayLink(target: self, selector: #selector(tick))
+        link?.add(to: .main, forMode: .common)
+    }
+
+    @objc func tick() {
+        let t = CACurrentMediaTime() - start
+        if t >= secs { link?.invalidate(); link = nil; return done(frames) }
+        if t - last >= gap * 0.95 { last = t; frames.append(["t": t, "layers": take()]) }
     }
 }
 

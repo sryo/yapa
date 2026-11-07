@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Makes the README's pictures of the pad: animated SVGs recorded from the pad itself in a booted Simulator, so they
+show exactly what it draws. The pad runs with `-drive` (App/Drive.swift); each flow sends it hooks as Claude Code
+would and taps where a hand would, while `/record` takes every shape and text layer as vectors, 12 times a second.
+Each layer becomes one element whose points, place, size and opacity are animated (SMIL) from frame to frame and
+interpolated between, so it plays smoothly at any frame rate and needs no script.
+
+  docs/statuses.svg   ants in each situation: working, thinking, one finishing, one curled up, then one that needs
+                      you, allowed
+  docs/reply.svg      a finished turn's reply opened from its ant and paged through, then another session's
+                      question with its options, one tapped
+"""
+import json, os, re, subprocess, sys, threading, time, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIVE, HOOKS, CHE, BUNDLE = 8091, 8079, 8097, "com.sryo.yapa"
+
+
+class Che(BaseHTTPRequestHandler):
+    """A stand-in for che that takes the pick as the real one does, so the pad says it's about to send it."""
+    def log_message(self, *a): pass
+
+    def answer(self, o):
+        b = json.dumps(o).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+    def do_GET(self): self.answer({"sessions": {}})
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+        self.answer({"text": body, "enter_in": 2} if self.path.startswith("/say") else {})
+
+
+def sim(*a):
+    return subprocess.run(["xcrun", "simctl", *a], capture_output=True, text=True).stdout
+
+
+def drive(path, timeout=30, **o):
+    r = urllib.request.Request(f"http://127.0.0.1:{DRIVE}{path}", data=json.dumps(o).encode() if o or path != "/state" else None)
+    with urllib.request.urlopen(r, timeout=timeout) as f:
+        return json.load(f)
+
+
+def hook(event, sid, folder, wait=2, **more):
+    e = {"hook_event_name": event, "session_id": sid, "cwd": "/Users/you/" + folder, **more}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{HOOKS}/hook", data=json.dumps(e).encode()), timeout=wait) as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def held(event, sid, folder, **more):
+    threading.Thread(target=hook, args=(event, sid, folder, 60), kwargs=more, daemon=True).start()
+
+
+def launch():
+    sim("terminate", "booted", BUNDLE)
+    data = sim("get_app_container", "booted", BUNDLE, "data").strip()
+    try: os.remove(os.path.join(data, "Documents", "sessions.json"))
+    except FileNotFoundError: pass
+    sim("spawn", "booted", "defaults", "delete", BUNDLE)
+    sim("launch", "booted", BUNDLE, "-drive", str(DRIVE), "-che", f"127.0.0.1:{CHE}", "-yata", "http://127.0.0.1:9/parts")
+    for _ in range(60):
+        try: drive("/state"); break
+        except Exception: time.sleep(0.2)
+    hook("SessionStart", "warm", "warm"); hook("SessionEnd", "warm", "warm")
+
+
+def tap_ant(sid):
+    a = drive("/state")["ants"].get(sid)
+    drive("/tap", x=a["x"], y=a["y"])
+
+
+def tap_option(text):
+    o = next(p for p in drive("/state")["placed"] if p["style"] in ("option", "suggestion") and text in p["text"])
+    drive("/tap", x=o["x"] + o["w"] / 2, y=o["y"] + o["h"] / 2)
+
+
+def recording(secs, steps):
+    """Records `secs` of the screen while `steps` runs beside it; returns the recording."""
+    got = {}
+    t = threading.Thread(target=lambda: got.update(drive("/record", timeout=secs + 30, secs=secs, fps=12)))
+    t.start()
+    time.sleep(0.2)
+    steps()
+    t.join()
+    return got
+
+
+def statuses():
+    launch()
+    # Done long enough ago (95 s) to have curled up by the time the recording starts.
+    hook("UserPromptSubmit", "d", "notes"); hook("Stop", "d", "notes", last_assistant_message="Notes tidied.")
+    time.sleep(92)
+    hook("UserPromptSubmit", "a", "blog"); hook("PreToolUse", "a", "blog", tool_name="Bash", tool_input={"command": "make"})
+    hook("UserPromptSubmit", "b", "api")
+    hook("UserPromptSubmit", "c", "site"); hook("PreToolUse", "c", "site", tool_name="Bash", tool_input={"command": "npm test"})
+    time.sleep(8)
+
+    def steps():
+        time.sleep(1)
+        hook("Stop", "c", "site", last_assistant_message="Deployed.")
+        time.sleep(8)
+        held("PermissionRequest", "b", "api", tool_name="Bash", tool_input={"command": "git push origin main"})
+        time.sleep(5)
+        tap_option("Allow")
+    return recording(18, steps)
+
+
+def reply():
+    launch()
+    hook("UserPromptSubmit", "b", "blog")
+    hook("UserPromptSubmit", "a", "api"); hook("Stop", "a", "api", last_assistant_message=(
+        "Found the login bug. Sessions ended after five minutes because the cookie's lifetime was set in seconds "
+        "where the code meant minutes.\n\n"
+        "It's 30 days now, as the docs say, and a new test signs in, waits past the old limit and checks you're "
+        "still signed in.\n\n"
+        "All 182 tests pass. Nothing is committed yet: the change is two lines in auth/session.go and the test."))
+    time.sleep(7)
+
+    def steps():
+        time.sleep(1.5)
+        tap_ant("a")
+        time.sleep(3)
+        drive("/scroll", by=1)
+        time.sleep(3.5)
+        drive("/tap")
+        time.sleep(2)
+        hook("PreToolUse", "b", "blog", tool_name="mcp__ccd_turn__wrap_up",
+             tool_input={"recap": "Draft ready", "ask": "The post is ready. Publish it?", "actions": [{"label": "Publish"}, {"label": "Not yet"}]})
+        time.sleep(4)
+        tap_option("Publish")
+        # The Enter goes in two seconds later and the session starts on it, as the real one would.
+        time.sleep(2.3)
+        hook("UserPromptSubmit", "b", "blog")
+    return recording(19, steps)
+
+
+def num(v):
+    s = f"{v:.1f}"
+    return s[:-2] if s.endswith(".0") else s
+
+
+def colour(c):
+    v = int(round(min(1, max(0, c)) * 245))
+    return f"#{v:02x}{v:02x}{v:02x}"
+
+
+def key(e):
+    """What can't change along one element: a path's commands (so its points can glide), its paint; a line's words."""
+    if "d" in e: return ("d", re.sub(r"[-\d.\s]+", "", e["d"]), e.get("fill"), e.get("stroke"), e.get("lw"))
+    return ("text", e["text"], e["size"], e["weight"], e["left"], round(e["w"]), round(e["h"]))
+
+
+def track(segment, dur, last_t):
+    """One element and its animations: each frame's values at its own moment, interpolated between, and shown only
+    while its layer is (each segment of a layer with the same key is one element)."""
+    ts = [t for t, _ in segment]
+    end = min(dur, last_t + (ts[1] - ts[0] if len(ts) > 1 else 0.08))
+    a, b = ts[0] / dur, end / dur
+    rep = f'dur="{dur:.2f}s" repeatCount="indefinite"'
+    if a <= 0 and b >= 0.9999: show = ""
+    elif a <= 0: show = f'<animate attributeName="display" values="inline;none" keyTimes="0;{b:.4f}" calcMode="discrete" {rep}/>'
+    elif b >= 0.9999: show = f'<animate attributeName="display" values="none;inline" keyTimes="0;{a:.4f}" calcMode="discrete" {rep}/>'
+    else: show = f'<animate attributeName="display" values="none;inline;none" keyTimes="0;{a:.4f};{b:.4f}" calcMode="discrete" {rep}/>'
+
+    def anim(attr, vals, kind="animate", extra=""):
+        if len(set(vals)) < 2: return ""
+        times = [t / dur for t in ts]
+        if times[0] > 0: times, vals = [0] + times, [vals[0]] + vals
+        if times[-1] < 1: times, vals = times + [1], vals + [vals[-1]]
+        return (f'<{kind} attributeName="{attr}" {extra}values="{";".join(vals)}" '
+                f'keyTimes="{";".join(f"{t:.4f}" for t in times)}" {rep}/>')
+
+    e0 = segment[0][1]
+    hidden = ' display="none"' if show and a > 0 else ""
+    ops = [num(e["o"]) for _, e in segment]
+    if "d" in e0:
+        fill = colour(e0["fill"]) if "fill" in e0 else "none"
+        stroke = f' stroke="{colour(e0["stroke"])}" stroke-width="{num(e0["lw"])}"' if "stroke" in e0 else ""
+        return (f'<path d="{e0["d"]}" fill="{fill}"{stroke} opacity="{ops[0]}"{hidden}>'
+                + show + anim("d", [e["d"] for _, e in segment]) + anim("opacity", ops) + "</path>")
+    words = e0["text"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    moves = [f'{num(e["x"])} {num(e["y"])}' for _, e in segment]
+    scales = [f'{e["sx"]:.3f} {e["sy"]:.3f}' for _, e in segment]
+    x = -e0["w"] / 2 if e0["left"] else 0
+    return (f'<text transform="translate({moves[0]}) scale({scales[0]})" x="{num(x)}" y="{num(-e0["h"] / 2 + e0["size"] * 0.95)}" '
+            f'font-size="{num(e0["size"])}" font-weight="{e0["weight"]}" text-anchor="{"start" if e0["left"] else "middle"}" '
+            f'opacity="{ops[0]}"{hidden}>{words}' + show
+            + (anim("transform", moves, "animateTransform", 'type="translate" ') or
+               (f'<animateTransform attributeName="transform" type="translate" values="{moves[0]}" {rep}/>' if len(set(scales)) > 1 else ""))
+            + anim("transform", scales, "animateTransform", 'type="scale" additive="sum" ')
+            + anim("opacity", ops) + "</text>")
+
+
+def svg(rec, out):
+    w, h = rec["w"], rec["h"]
+    dur = rec["frames"][-1]["t"] + 1 / rec["fps"]
+    # Each layer's run of frames with one key is one element; a layer that changes key, or leaves, starts another.
+    segments, open_ = [], {}
+    for i, f in enumerate(rec["frames"]):
+        for e in f["layers"]:
+            k, s = key(e), open_.get(e["id"])
+            if s and s["key"] == k and s["last"] == i - 1:
+                s["frames"].append((f["t"], e)); s["last"] = i
+            else:
+                s = {"key": k, "frames": [(f["t"], e)], "last": i, "order": len(segments)}
+                segments.append(s); open_[e["id"]] = s
+    body = [track(s["frames"], dur, s["frames"][-1][0]) for s in segments]
+    open(out, "w").write(
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {num(w)} {num(h)}" width="{num(w * 0.75)}" height="{num(h * 0.75)}">\n'
+        f'<rect width="{num(w)}" height="{num(h)}" rx="28" fill="#000"/>\n'
+        f'<g stroke-linecap="round" stroke-linejoin="round" fill="#f5f5f5" font-family="-apple-system, system-ui, sans-serif">\n'
+        + "\n".join(body) + "\n</g>\n</svg>\n")
+    print(out, f"{os.path.getsize(out) // 1024} KB, {len(segments)} elements over {dur:.1f} s")
+
+
+def main():
+    if "Booted" not in sim("list", "devices", "booted"): raise SystemExit("pictures needs a booted Simulator")
+    app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
+    if app.returncode: raise SystemExit(app.stderr)
+    sim("install", "booted", os.path.join(ROOT, "jeta", app.stdout.strip().splitlines()[-1]))
+    os.makedirs(os.path.join(ROOT, "docs"), exist_ok=True)
+    threading.Thread(target=ThreadingHTTPServer(("127.0.0.1", CHE), Che).serve_forever, daemon=True).start()
+    only = sys.argv[1:]
+    for name, flow in (("statuses", statuses), ("reply", reply)):
+        if not only or name in only: svg(flow(), os.path.join(ROOT, "docs", name + ".svg"))
+    sim("terminate", "booted", BUNDLE)
+
+
+main()

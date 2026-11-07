@@ -229,8 +229,13 @@ final class FaceView: UIView {
         }
         guard g.state == .ended, screen.mode == .reply else { return }
         guard abs(d.y) > 20, abs(d.y) > abs(d.x) else { return }
-        pageWay = d.y < 0 ? -1 : 1
-        screen.scroll(by: d.y < 0 ? 1 : -1)
+        page(by: d.y < 0 ? 1 : -1)
+    }
+
+    /// Turns a reply's pages `n` forward (back when negative), as a drag up or down does.
+    func page(by n: Int) {
+        pageWay = n > 0 ? -1 : 1
+        screen.scroll(by: n)
     }
 
     /// Which way the drag under way went first, and whether it carries the text (nil until it moves).
