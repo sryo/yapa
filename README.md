@@ -1,4 +1,9 @@
-# yapa
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/yapa-dark.svg">
+    <img alt="yapa" src="docs/logo/yapa-light.svg" width="360">
+  </picture>
+</h1>
 
 Your agents don’t need faces.
 
