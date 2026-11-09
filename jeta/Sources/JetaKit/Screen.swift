@@ -283,10 +283,38 @@ public struct Screen {
         case .needs: return "needs you"
         case .working: return s.since.map { now - $0 < 60 ? "just started" : "working \(Screen.took(now - $0))" } ?? "working"
         case .finished(let at): return "done " + ago(now - at) + (s.unseen ? ", not seen" : "")
-        case .stale(let since): return "no news \(Screen.took(now - since))"
+        case .stale(let since): return "unsure, no news \(Screen.took(now - since))"
         case .failed: return "stopped on an error"
         case .quiet: return "quiet"
         }
+    }
+
+    /// What a session is on and how long since its last news, or, once it stopped, what it said.
+    static func step(_ s: SessionInfo, now: Double) -> String {
+        switch s.state {
+        case .working, .stale:
+            guard !s.doing.isEmpty else { return "" }
+            return s.doing + (s.progress.map { now - $0 >= 60 ? " for \(Screen.took(now - $0))" : "" } ?? "")
+        default: return s.said.isEmpty ? "" : "said: \(s.said)"
+        }
+    }
+
+    /// A session's subagents: those running and what each is on, else the last to stop in the last 10 min.
+    static func agents(_ s: SessionInfo, now: Double, short: Bool = false) -> String {
+        let running = s.agents.filter { $0.stopped == nil }
+        if !running.isEmpty {
+            let many = running.count > 1 ? "\(running.count) agents" : "1 agent"
+            return short ? many : many + ": " + running.map { $0.doing.isEmpty ? $0.type : "\($0.type) \($0.doing)" }.joined(separator: ", ")
+        }
+        guard !short, let last = s.agents.filter({ $0.stopped != nil }).max(by: { $0.stopped! < $1.stopped! }),
+              now - last.stopped! < 600 else { return "" }
+        return "\(last.type) agent done \(Screen.ago(now - last.stopped!))"
+    }
+
+    /// The question or actions of a session waiting on you, by the session's id or name.
+    func asks(_ s: SessionInfo) -> String {
+        let n = board.pending.first { $0.from == s.id } ?? board.pending.first { Screen.plain($0.session) == Screen.plain(s.name) }
+        return n.map { "asks: \($0.text)" } ?? ""
     }
 
     /// A length of time in minutes, or hours and minutes.
@@ -396,11 +424,16 @@ public struct Screen {
             return out
         case .roster:
             let rows = sessions.isEmpty ? board.roster.prefix(5).flatMap { wrap("\($0.session) · \($0.state)", .body, max: 1) }
-                // Every session, with what it's doing under it; more than four, one line each so they all fit.
+                // Every session, with what waits on you, what it's on or said and its subagents under it: a line each
+                // for one or two sessions, all on one line for three or four, and beside the name for more.
                 : sessions.count > 4 ? sessions.flatMap { s in
-                    wrap("\(s.name) · \(Screen.state(s, now: now))" + (s.doing.isEmpty ? "" : " · \(s.doing)"), .body, max: 1)
+                    let step = Screen.step(s, now: now)
+                    return wrap("\(s.name) · \(Screen.state(s, now: now))" + (step.isEmpty ? "" : " · \(step)"), .body, max: 1)
                 } : sessions.flatMap { s in
-                    wrap("\(s.name) · \(Screen.state(s, now: now))", .body, max: 1) + (s.doing.isEmpty ? [] : wrap(s.doing, .hint, max: 1))
+                    let step = Screen.step(s, now: now), few = sessions.count <= 2
+                    let under = [asks(s), step, Screen.agents(s, now: now, short: !few)].filter { !$0.isEmpty }
+                    return wrap("\(s.name) · \(Screen.state(s, now: now))", .body, max: 1)
+                        + (few ? under.flatMap { wrap($0, .hint, max: 1) } : under.isEmpty ? [] : wrap(under.joined(separator: " · "), .hint, max: 1))
                 }
             return (rows.isEmpty ? wrap("no sessions yet", .body) : rows) + wrap("tap: close · hold: ask the manager", .hint)
         case .reply:

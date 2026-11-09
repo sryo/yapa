@@ -373,6 +373,32 @@ def session_list():
     need(until(bare, 3), "a tap didn't close the session list")
 
 
+def session_list_detail():
+    hook("UserPromptSubmit", "a", "alpha")
+    hook("PreToolUse", "a", "alpha", tool_name="Agent", tool_input={"description": "find hooks"}, tool_use_id="t1")
+    hook("SubagentStart", "a", "alpha", agent_id="x1", agent_type="Explore")
+    hook("PreToolUse", "a", "alpha", tool_name="Grep", tool_input={"pattern": "hook"}, agent_id="x1", agent_type="Explore")
+    hook("UserPromptSubmit", "b", "beta")
+    hook("PreToolUse", "b", "beta", tool_name="Bash", tool_input={"command": "make"}, tool_use_id="t2")
+    hook("PostToolUseFailure", "b", "beta", tool_name="Bash", tool_input={"command": "make"}, tool_use_id="t2", error="exit 2")
+    texts = lambda s: [p["text"] for p in s["placed"]]
+    drive("/swipe", way="down")
+    s = until(lambda s: s["mode"] == "roster" and any("Explore Grep hook" in t for t in texts(s)))
+    need(s, f"the list didn't show alpha's Explore agent on its Grep: {texts(state())}")
+    need("Agent find hooks" in texts(s), f"the list didn't show alpha on its Agent call: {texts(s)}")
+    need("thinking" in texts(s) and not any(t.startswith("Bash make") for t in texts(s)),
+         f"beta's failed Bash still shows as its step: {texts(s)}")
+    drive("/tap")
+    need(until(bare, 3), "a tap didn't close the session list")
+    hook("SubagentStop", "a", "alpha", agent_id="x1", agent_type="Explore")
+    hook("Stop", "b", "beta", last_assistant_message="Make failed on exit 2.")
+    time.sleep(5.5)  # past Desk's 5 s grace, so beta reads as done
+    drive("/swipe", way="down")
+    s = until(lambda s: s["mode"] == "roster" and any("Explore agent done" in t for t in texts(s))
+              and "said: Make failed on exit 2." in texts(s))
+    need(s, f"the list didn't say alpha's agent finished and what beta said: {texts(state())}")
+
+
 def talk():
     hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
     s = until(lambda s: ant(s, "b"))
@@ -615,6 +641,7 @@ FLOWS = {
     "lone ant walks while its session works": lone_ant_works,
     "a request whose hook gave up leaves": hook_gave_up,
     "session list": session_list,
+    "session list says each session's step and subagents": session_list_detail,
     "talk to a session, then stop the Enter": talk,
     "dial: new session in a folder": dial_new_session,
     "dial: restart a part": dial_server,

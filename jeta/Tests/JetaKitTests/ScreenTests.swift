@@ -281,6 +281,38 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(Screen.took(3 * 3600 + 120), "3 h 2 min")
     }
 
+    // With one or two sessions the list says, for each, what waits on you, what it's on and how long since its
+    // last news, its subagents by type and what each is on, and what it last said; three or four, all on one line
+    // under it. A long step reads as working; no news with nothing running as unsure.
+    func testSessionListSaysAgentsWaitsAndReplies() {
+        var s = Screen()
+        s.now = 1000
+        var a = SessionInfo(id: "a", name: "pad", state: .working(reading: false), events: 3, doing: "Bash make test", since: 600)
+        a.progress = 1000 - 130
+        a.agents = [Subagent(id: "1", type: "Explore", doing: "Grep hook", started: 900),
+                    Subagent(id: "2", type: "Plan", doing: "", started: 950)]
+        var b = SessionInfo(id: "b", name: "che", state: .finished(at: 940), events: 2)
+        b.said = "Built the dial."
+        b.agents = [Subagent(id: "3", type: "Explore", doing: "Read a", started: 800, stopped: 930)]
+        var nb = NoticeBoard()
+        nb.take(["evt": "turn", "role": "assistant", "session_id": "b",
+                 "content": [["type": "text", "text": "jeta: che needs you · Commit it? · Yes | No"]]])
+        s.sessions = [a, b]
+        s.update(nb)
+        s.tap(); s.tap() // put the question away
+        XCTAssertEqual(s.mode, .face)
+        s.swipeDown()
+        XCTAssertEqual(Array(s.lines(width: 60).map(\.text).prefix(7)), [
+            "pad · working 6 min", "Bash make test for 2 min", "2 agents: Explore Grep hook, Plan",
+            "che · done 1 min ago", "asks: Commit it?", "said: Built the dial.", "Explore agent done 1 min ago"])
+        var c = SessionInfo(id: "c", name: "old", state: .stale(since: 300), events: 1, doing: "thinking", since: 200)
+        c.progress = 300
+        s.sessions = [a, b, c]
+        XCTAssertEqual(Array(s.lines(width: 60).map(\.text).prefix(6)), [
+            "pad · working 6 min", "Bash make test for 2 min · 2 agents", "che · done 1 min ago",
+            "asks: Commit it? · said: Built the dial.", "old · unsure, no news 11 min", "thinking for 11 min"])
+    }
+
     // A question and every one of its options fit on the SE's 568×320 landscape screen, however long the session's name and
     // the options, side by side or one per row; and nothing goes over the face's half when it needn't.
     func testQuestionsFitTheScreen() {

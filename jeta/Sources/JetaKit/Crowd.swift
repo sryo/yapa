@@ -17,10 +17,27 @@ public struct SessionInfo: Equatable {
     public var doing = "", since: Double?
     /// It finished a turn you haven't looked at yet.
     public var unseen: Bool
+    /// When it last made progress (any hook but a notification), while it works.
+    public var progress: Double?
+    /// The first plain line of what it last stopped on.
+    public var said = ""
+    /// Its subagents, running or stopped in the last 10 min, the oldest first.
+    public var agents: [Subagent] = []
     public init(id: String, name: String, state: SessionState, events: Int, parent: String? = nil, doing: String = "", since: Double? = nil,
                 unseen: Bool = false) {
         self.id = id; self.name = name; self.state = state; self.events = events; self.parent = parent
         self.doing = doing; self.since = since; self.unseen = unseen
+    }
+}
+
+/// A subagent a session started, by the id and type its hooks give.
+public struct Subagent: Equatable {
+    public var id, type: String
+    /// Its last tool call, in a few words.
+    public var doing: String
+    public var started: Double, stopped: Double?
+    public init(id: String, type: String, doing: String = "", started: Double, stopped: Double? = nil) {
+        self.id = id; self.type = type; self.doing = doing; self.started = started; self.stopped = stopped
     }
 }
 

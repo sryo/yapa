@@ -444,10 +444,12 @@ extension FaceView {
                 names[s.id] = n
                 return n
             }()
-            // Under the name, what it's doing and for how long, while it works.
+            // Under the name, what it's doing, for how long and with how many subagents, while it works.
             let info = crowd.sessions.first { $0.id == s.id }
-            name.string = info.map { i in i.since == nil ? s.name : s.name + "\n" + Screen.state(i, now: screen.now)
-                + (i.doing.isEmpty ? "" : " · " + i.doing) } ?? s.name
+            name.string = info.map { i in
+                let step = Screen.step(i, now: screen.now), agents = Screen.agents(i, now: screen.now, short: true)
+                return i.since == nil ? s.name : s.name + "\n" + Screen.state(i, now: screen.now)
+                    + (step.isEmpty ? "" : " · " + step) + (agents.isEmpty ? "" : " · " + agents) } ?? s.name
             name.isWrapped = true
             name.truncationMode = .end
             name.bounds = CGRect(x: 0, y: 0, width: 200, height: 30)

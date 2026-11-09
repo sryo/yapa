@@ -356,4 +356,76 @@ final class DeskTests: XCTestCase {
         _ = e.take(event("UserPromptSubmit", session: "s2"), at: 2)
         XCTAssertFalse(e.members(at: 3).last!.unseen)
     }
+
+    // A failed tool ends its step like a finished one: the session thinks again, no longer reading. One you
+    // interrupted ends the turn, since no Stop follows an interrupt, and you saw it.
+    func testPostToolUseFailureEndsTheStep() {
+        let d = Desk()
+        func me(at t: Double) -> SessionInfo { d.members(at: t).first! }
+        _ = d.take(event("UserPromptSubmit"), at: 0)
+        _ = d.take(event("PreToolUse", ["tool_name": "Grep", "tool_input": ["pattern": "x"]]), at: 1)
+        XCTAssertEqual(me(at: 1).state, .working(reading: true))
+        _ = d.take(event("PostToolUseFailure", ["tool_name": "Grep", "tool_input": ["pattern": "x"], "error": "no such file"]), at: 2)
+        XCTAssertEqual(me(at: 2).state, .working(reading: false))
+        XCTAssertEqual(me(at: 2).doing, "thinking")
+        _ = d.take(event("PreToolUse", push), at: 3)
+        _ = d.take(event("PostToolUseFailure", push.merging(["is_interrupt": true]) { $1 }), at: 4)
+        XCTAssertEqual(me(at: 10).state, .finished(at: 4), "interrupted: the turn is over")
+        XCTAssertFalse(me(at: 10).unseen, "you interrupted it, so you saw it")
+    }
+
+    // Subagents are kept by id and type, with when each started and stopped and what it last did; a Stop waits
+    // for those still running. One whose start was missed is picked up by its first tool call.
+    func testSubagentsByIdAndType() {
+        let d = Desk()
+        func me(at t: Double) -> SessionInfo { d.members(at: t).first! }
+        _ = d.take(event("UserPromptSubmit"), at: 0)
+        _ = d.take(event("PreToolUse", ["tool_name": "Agent", "tool_input": ["description": "find the hooks"]]), at: 1)
+        _ = d.take(event("SubagentStart", ["agent_id": "a1", "agent_type": "Explore"]), at: 2)
+        _ = d.take(event("PreToolUse", ["tool_name": "Grep", "tool_input": ["pattern": "hook"], "agent_id": "a1", "agent_type": "Explore"]), at: 3)
+        XCTAssertEqual(me(at: 3).doing, "Agent find the hooks", "the session is on its Agent call, not the subagent's Grep")
+        XCTAssertEqual(me(at: 3).state, .working(reading: false))
+        XCTAssertEqual(me(at: 3).agents, [Subagent(id: "a1", type: "Explore", doing: "Grep hook", started: 2)])
+        _ = d.take(event("PreToolUse", ["tool_name": "Read", "tool_input": ["file_path": "/x/a.swift"], "agent_id": "a2", "agent_type": "Plan"]), at: 4)
+        XCTAssertEqual(me(at: 4).agents.map(\.type), ["Explore", "Plan"])
+        _ = d.take(event("SubagentStop", ["agent_id": "a1", "agent_type": "Explore"]), at: 5)
+        XCTAssertEqual(me(at: 5).agents.first?.stopped, 5)
+        _ = d.take(event("Stop"), at: 6)
+        XCTAssertEqual(me(at: 20).state, .working(reading: false), "Plan still runs")
+        _ = d.take(event("SubagentStop"), at: 30)
+        XCTAssertEqual(me(at: 36).state, .finished(at: 30), "a stop with no id closes the oldest still running")
+        XCTAssertEqual(me(at: 36).agents.map(\.stopped), [5, 30])
+        _ = d.take(event("UserPromptSubmit"), at: 40 + 600)
+        XCTAssertEqual(me(at: 641).agents, [], "agents stopped 10 min ago are dropped")
+    }
+
+    // A session on one long tool call, or waiting on a subagent, is working however long it takes (up to an hour);
+    // one with nothing running and no news for 10 min is stale: the pad likely missed its end. Notifications
+    // aren't news of progress.
+    func testLongStepIsNotStale() {
+        let d = Desk()
+        func me(at t: Double) -> SessionInfo { d.members(at: t).first { $0.id == "s1" }! }
+        _ = d.take(event("PreToolUse", ["tool_name": "Bash", "tool_input": ["command": "make test"], "tool_use_id": "t1"]), at: 0)
+        XCTAssertEqual(me(at: 900).state, .working(reading: false), "a long step")
+        XCTAssertEqual(me(at: 900).progress, 0)
+        XCTAssertEqual(me(at: 3601).state, .stale(since: 0), "an hour with no news even of a long step")
+        _ = d.take(event("PostToolUse", ["tool_name": "Bash", "tool_input": ["command": "make test"], "tool_use_id": "t1"]), at: 3700)
+        _ = d.take(event("Notification", ["message": "Claude is waiting for your input"]), at: 4000)
+        XCTAssertEqual(me(at: 4301).state, .stale(since: 3700), "thinking 10 min with no news")
+        _ = d.take(event("UserPromptSubmit", session: "s2"), at: 0)
+        _ = d.take(event("SubagentStart", ["agent_id": "a"], session: "s2"), at: 1)
+        XCTAssertEqual(d.members(at: 900).first { $0.id == "s2" }?.state, .working(reading: false), "waiting on its subagent")
+        _ = d.take(event("Stop", session: "s3"), at: 5001)
+        _ = d.take(event("PreToolUse", ["tool_name": "Grep", "tool_input": ["pattern": "x"], "agent_id": "late"], session: "s3"), at: 5002)
+        _ = d.take(event("SubagentStop", ["agent_id": "late"], session: "s3"), at: 5003)
+        XCTAssertEqual(d.members(at: 5010).first { $0.id == "s3" }?.state, .finished(at: 5003), "a subagent at work after its Stop ends the turn when it stops")
+    }
+
+    // The text a session last stopped on, its first plain line, for the session list.
+    func testLastReplyIsSaid() {
+        let d = Desk()
+        _ = d.take(event("UserPromptSubmit"), at: 0)
+        _ = d.take(event("Stop", ["last_assistant_message": "## Built the dial.\nMore here.\njeta: clear x"]), at: 1)
+        XCTAssertEqual(d.members(at: 10).first?.said, "Built the dial.")
+    }
 }

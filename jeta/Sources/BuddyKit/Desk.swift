@@ -24,8 +24,11 @@ public final class Desk {
         /// A finished turn you haven't looked at yet, and when it finished by the wall clock (to compare with when the
         /// Claude app last showed the session).
         var unseen = false, finishedWall = 0.0
-        /// Subagents it started that haven't stopped, and a Stop that waits for them.
-        var subagents = 0, stopWaits = false
+        /// Its subagents by id, and a Stop that waits for those still running.
+        var agents: [String: Subagent] = [:], stopWaits = false
+        /// Its own tool calls that haven't ended, by id, and when it last made progress (any hook but a notification).
+        var tools: Set<String> = [], progress = 0.0
+        var runningAgents: Int { agents.values.filter { $0.stopped == nil }.count }
         /// The text the session last stopped on, and when.
         var reply: String?, replied = 0.0
     }
@@ -39,8 +42,9 @@ public final class Desk {
     public var wall: () -> Double = { Date().timeIntervalSince1970 }
     /// A session that stopped is shown done only this long after, since another turn often follows at once.
     public static let grace = 5.0
-    /// A session working with no news for this long is stale: the pad likely missed its Stop.
-    public static let staleAfter = 600.0
+    /// A session working with nothing running and no news for this long is stale: the pad likely missed its Stop.
+    /// One on a tool call or waiting on a subagent is on a long step, until an hour with no news.
+    public static let staleAfter = 600.0, longStep = 3600.0
     /// The session a tap brought forward: its prompt is the one shown and answered.
     public var focus: String?
     /// The folders sessions ran in, the latest first: where the dial offers to start a new one.
@@ -61,6 +65,16 @@ public final class Desk {
         var s = sessions[id] ?? Session(name: ((e["cwd"] as? String ?? "") as NSString).lastPathComponent, started: t)
         s.seen = t
         s.events += 1
+        if event != "Notification" { s.progress = t }
+        s.agents = s.agents.filter { $0.value.stopped.map { t - $0 < 600 } ?? true }
+        // A tool call inside a subagent is that subagent's; its start may have been missed.
+        let agent = e["agent_id"] as? String
+        if let a = agent {
+            var g = s.agents[a] ?? Subagent(id: a, type: e["agent_type"] as? String ?? "agent", started: t)
+            if event == "PreToolUse" { g.doing = Desk.doing(tool, input) }
+            if event != "SubagentStop" { s.agents[a] = g }
+        }
+        let call = e["tool_use_id"] as? String ?? "\(tool) \(detail(input))"
         sessions[id] = s
         sessions = sessions.filter { t - $0.value.seen < 7200 } // a session that went quiet for 2 h is gone
         // The Claude app asks AskUserQuestion's questions itself, with no permission request, so a hook waits on them
@@ -81,6 +95,12 @@ public final class Desk {
             return (h.id, [])
         case "SessionEnd":
             sessions[id] = nil
+        // A subagent still at work after its session stopped: the turn ends when it does.
+        case "PreToolUse" where agent != nil:
+            if sessions[id]?.running != true { sessions[id]?.stopWaits = true }
+            sessions[id]?.running = true
+            sessions[id]?.finished = nil
+            if sessions[id]?.turn == nil { sessions[id]?.turn = t }
         case "UserPromptSubmit", "PreToolUse":
             let fresh = sessions[id]?.running != true
             sessions[id]?.running = true
@@ -90,23 +110,33 @@ public final class Desk {
             sessions[id]?.stopWaits = false
             sessions[id]?.reading = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "LS"].contains(tool)
             if event == "UserPromptSubmit" || fresh || sessions[id]?.turn == nil { sessions[id]?.turn = t }
-            if event == "UserPromptSubmit" { sessions[id]?.doing = "thinking" }
+            if event == "UserPromptSubmit" { sessions[id]?.doing = "thinking"; sessions[id]?.tools = [] }
+            if event == "PreToolUse" { sessions[id]?.tools.insert(call) }
             if event == "PreToolUse" { sessions[id]?.doing = Desk.doing(tool, input) }
             if event == "PreToolUse" { msg = "\(s.name): \(tool) \(detail(input))" }
-        // A tool done, the model is thinking again until its next one.
-        case "PostToolUse" where sessions[id]?.running == true:
+        case "PostToolUse" where agent != nil, "PostToolUseFailure" where agent != nil:
+            break
+        // You interrupted it: no Stop follows, so its turn ends here, and you saw it.
+        case "PostToolUseFailure" where e["is_interrupt"] as? Bool == true:
+            finish(id, failed: false, at: t)
+            sessions[id]?.unseen = false
+        // A tool done or failed, the model is thinking again until its next one.
+        case "PostToolUse" where sessions[id]?.running == true, "PostToolUseFailure" where sessions[id]?.running == true:
+            sessions[id]?.tools.remove(call)
             sessions[id]?.doing = "thinking"; sessions[id]?.reading = false
-        case "SubagentStart":
-            sessions[id]?.subagents += 1
+        case "SubagentStart" where agent == nil:
+            count += 1
+            sessions[id]?.agents["\(count)"] = Subagent(id: "\(count)", type: e["agent_type"] as? String ?? "agent", started: t)
         case "SubagentStop":
-            let open = sessions[id]?.subagents ?? 0
-            sessions[id]?.subagents = max(0, open - 1)
+            // One with no id closes the oldest still running.
+            let key = agent ?? sessions[id]?.agents.values.filter { $0.stopped == nil }.min { ($0.started, $0.id) < ($1.started, $1.id) }?.id
+            if let k = key { sessions[id]?.agents[k]?.stopped = t }
             // The last subagent it waited on is done, so its turn is.
-            if sessions[id]?.subagents == 0, sessions[id]?.stopWaits == true { finish(id, failed: false, at: t) }
+            if sessions[id]?.runningAgents == 0, sessions[id]?.stopWaits == true { finish(id, failed: false, at: t) }
         case "Stop", "StopFailure":
             if let m = e["last_assistant_message"] as? String, !m.isEmpty { sessions[id]?.reply = m; sessions[id]?.replied = t }
             // A turn whose subagents are still at work isn't done until they are.
-            if event == "Stop", (sessions[id]?.subagents ?? 0) > 0 { sessions[id]?.stopWaits = true; break }
+            if event == "Stop", (sessions[id]?.runningAgents ?? 0) > 0 { sessions[id]?.stopWaits = true; break }
             finish(id, failed: event == "StopFailure", at: t)
         default:
             break
@@ -160,6 +190,13 @@ public final class Desk {
         return try? JSONSerialization.data(withJSONObject: turn)
     }
 
+    /// The first plain line of a reply: no headings, list marks or `jeta:` lines.
+    static func said(_ text: String) -> String {
+        let line = text.split(separator: "\n").lazy.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "#*-` ")) }
+            .first { !$0.isEmpty && !$0.hasPrefix("jeta:") } ?? ""
+        return line.count > 120 ? String(line.prefix(119)) + "…" : line
+    }
+
     /// A tool call in a few words: an MCP tool by its own name, then what it's on.
     static func doing(_ tool: String, _ input: [String: Any]) -> String {
         let name = tool.hasPrefix("mcp__") ? (tool.components(separatedBy: "__").last ?? tool).replacingOccurrences(of: "_", with: " ") : tool
@@ -175,6 +212,7 @@ public final class Desk {
         sessions[id]?.unseen = !failed
         sessions[id]?.finishedWall = wall()
         sessions[id]?.stopWaits = false
+        sessions[id]?.tools = []
     }
 
     /// You looked at a session's finished turn (its reply opened on the pad).
@@ -264,13 +302,18 @@ public final class Desk {
             let graced = s.finished.map { t - $0 < Desk.grace } ?? false
             let state: SessionState = held.contains { $0.session == id } ? .needs
                 : s.failed ? .failed
-                : s.running && t - s.seen >= Desk.staleAfter ? .stale(since: s.seen)
+                : s.running && t - s.progress >= (s.tools.isEmpty && s.runningAgents == 0 ? Desk.staleAfter : Desk.longStep)
+                    ? .stale(since: s.progress)
                 : s.running || graced ? .working(reading: s.reading)
                 : t - s.seen >= 1800 ? .quiet
                 : s.finished.map { .finished(at: $0) } ?? .quiet
             let working = s.running || graced
-            return SessionInfo(id: id, name: s.name, state: state, events: s.events, parent: s.parent,
-                               doing: working ? s.doing : "", since: working ? s.turn : nil, unseen: s.unseen)
+            var info = SessionInfo(id: id, name: s.name, state: state, events: s.events, parent: s.parent,
+                                   doing: working ? s.doing : "", since: working ? s.turn : nil, unseen: s.unseen)
+            info.progress = working ? s.progress : nil
+            info.said = s.reply.map(Desk.said) ?? ""
+            info.agents = s.agents.values.sorted { ($0.started, $0.id) < ($1.started, $1.id) }
+            return info
         }
     }
 
@@ -286,6 +329,7 @@ public final class Desk {
         let list: [[String: Any]] = sessions.map { id, s in
             var o: [String: Any] = ["id": id, "name": s.name, "started": s.started - t, "seen": s.seen - t, "events": s.events, "failed": s.failed]
             if let f = s.finished { o["finished"] = f - t }
+            o["progress"] = s.progress - t
             if s.running { o["running"] = true; o["turn"] = (s.turn ?? s.seen) - t; o["doing"] = s.doing; o["reading"] = s.reading }
             if s.named { o["named"] = true; o["parent"] = s.parent }
             if s.unseen { o["unseen"] = true; o["finishedWall"] = s.finishedWall }
@@ -306,6 +350,7 @@ public final class Desk {
                   let started = s["started"] as? Double else { continue }
             var v = Session(name: name, started: now + started)
             v.seen = now + seen
+            v.progress = now + (s["progress"] as? Double ?? seen)
             v.events = s["events"] as? Int ?? 0
             v.failed = s["failed"] as? Bool ?? false
             v.named = s["named"] as? Bool ?? false
