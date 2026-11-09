@@ -16,6 +16,9 @@ VERBOSE = "-v" in sys.argv
 
 # The stand-ins for che and yata: they remember what they were asked and answer as the real ones do.
 asked = []
+# What the stand-in che says became of each delivery it's asked about with /sent, in turn: a word for /sent's
+# `state`, or None for an answer without one (a che that doesn't know). Once they run out, every delivery was sent.
+delivered = []
 parts = {"parts": [{"name": "yata", "kind": "core", "on": True, "up": True, "watched": True},
                    {"name": "web", "kind": "site", "on": True, "up": True, "watched": True}],
          "disk_free_mb": 4000, "logs_mb": 3}
@@ -30,6 +33,9 @@ class Stub(BaseHTTPRequestHandler):
 
     def do_GET(self):
         asked.append(("GET", self.path, ""))
+        if self.path.startswith("/sent"):
+            st = delivered.pop(0) if delivered else "sent"
+            return self.answer({} if st is None else {"state": st, "sent": {"sent": True, "copied": False}.get(st)})
         self.answer(parts if self.path.startswith("/parts") else {"sessions": {}})
 
     def do_POST(self):
@@ -37,7 +43,7 @@ class Stub(BaseHTTPRequestHandler):
         asked.append(("POST", self.path, body))
         p = self.path
         if p.startswith("/talk"): self.answer({"text": "words from the pad", "enter_in": 0 if "dry" in p else 2, "lang": "en"})
-        elif p.startswith("/say"): self.answer({"text": body, "enter_in": 2})
+        elif p.startswith("/say"): self.answer({"text": body, "enter_in": 2, **({"id": len(asked)} if "session=" in p else {})})
         elif p.startswith("/new"): self.answer({"folder": body, "url": "claude://code/new"})
         elif p.startswith("/cancel"): self.answer({"cancelled": True})
         elif p.startswith("/parts/"): self.answer(parts)
@@ -178,6 +184,31 @@ def pick_action():
     time.sleep(0.5)
     got = said("/say", since)
     need(got and got[0][2].strip() == "Yes, commit" and "session=a" in got[0][1], f"che wasn't asked to type just the pick into alpha: {got}")
+
+
+def pick_says_where_it_went():
+    """After a pick's Enter the pad says what che says became of it, and never Sent on less than che's word."""
+    def pick(label, states, want):
+        delivered[:] = states
+        hook("UserPromptSubmit", "a", "alpha")
+        wrap_up("a", "alpha", "Commit the work?", [label, "Not yet"])
+        need(until(lambda s: option(s, label)), f"the actions for {label!r} never showed")
+        since = len(asked)
+        tap_option(label)
+        notes, end = [], time.time() + 12
+        while time.time() < end and not (notes and notes[-1].startswith(want[-1])):
+            n = state()["note"]
+            if n and (not notes or notes[-1] != n): notes.append(n)
+            time.sleep(0.1)
+        shown = [w for w in ("Pending:", "Sent:", "Copied:", "Not confirmed:") if any(n.startswith(w) for n in notes)]
+        need(shown == want, f"{label}: the pad said {notes}, not {want}")
+        asks = [a for a in asked[since:] if a[1].startswith("/sent")]
+        first = next((i for i, n in enumerate(notes) if n.startswith("Sent:")), None)
+        need(first is None or asks, f"{label}: the pad said Sent without asking che")
+    pick("Ship alpha", ["sent"], ["Sent:"])
+    pick("Copy alpha", ["copied"], ["Copied:"])
+    pick("Queue alpha", ["pending", "pending", "sent"], ["Pending:", "Sent:"])
+    pick("Ask alpha", [None], ["Not confirmed:"])
 
 
 def put_away_actions():
@@ -631,6 +662,7 @@ FLOWS = {
     "permission deny saying why": permission(None, words_check, words=True),
     "question answered": ask_question,
     "action picked": pick_action,
+    "a pick says whether it reached its session": pick_says_where_it_went,
     "actions put away and found again": put_away_actions,
     "two sessions with actions": two_with_actions,
     "an ant stands over its actions": ant_by_actions,

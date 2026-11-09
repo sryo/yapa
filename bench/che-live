@@ -5,7 +5,13 @@ opens a real session in the Claude app and types into it. Each pick is tapped on
 the session's transcript, or from the clipboard when it must go there: a pick for a session the app doesn't have, and
 one whose session doesn't come into focus in time (che run with CHE_WAIT=0), and one typed that the app never says
 it sent (che reading a copy of the app's log without its sendMessage lines). After each, the pad's screen is watched
-for a prompt left with no options, and for its note saying where the text went.
+for a prompt left with no options, and for its note saying where the text went: Sent once che has seen it arrive,
+Copied when it's on the clipboard.
+
+The same picks go to a Claude Code session running in a Terminal window the bench opens in the scratch folder, typed
+into its tab and read back from its transcript, and one whose tab another Terminal window covers before the Enter,
+which must end on the clipboard (and leaves its words unsent in that session's box, so it runs last). The bench
+closes both windows after.
 
 It acts on this Mac, though che gives the front back to whatever had it (Finder, during the bench) once the app's
 session link has raised the app, and the run counts each pick that kept the front. It turns the Claude app to a scratch session (in ~/.fium/scratch/che-live, with hooks
@@ -95,16 +101,60 @@ def scratch():
     return None
 
 
+def osa(script):
+    return subprocess.run(["osascript", "-e", script], capture_output=True, text=True).stdout.strip()
+
+
+def tty_of(pid):
+    return subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+
+
+def terminal_session():
+    """A Claude Code session started in a new Terminal window in SCRATCH: (its id, its tab's tty, its pid)."""
+    # The new shell gets Terminal's sender's environment, and claude started under another session's CLAUDE_*
+    # variables runs as its child: no transcript, no session record.
+    clean = "unset $(env | cut -d= -f1 | grep '^CLAUDE')"
+    tty = osa(f'tell application "Terminal" to return tty of (do script "cd {SCRATCH} && {clean}; exec claude")')
+    if not tty.startswith("/dev/"): raise SystemExit("couldn't open a Terminal window: " + tty)
+    def found():
+        for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
+            try: o = json.load(open(f))
+            except Exception: continue
+            if o.get("cwd") == SCRATCH and "/dev/" + tty_of(o.get("pid", 0)) == tty: return o["sessionId"], tty, o["pid"]
+        return None
+    got = until(found, 30)
+    if not got: raise SystemExit("claude never started in the Terminal window on " + tty)
+    time.sleep(2)
+    return got
+
+
+def other_window():
+    """A second Terminal window, to cover the session's tab: its id."""
+    osa('tell application "Terminal" to do script ""')
+    return osa('tell application "Terminal" to return id of front window')
+
+
+def close_terminal(tty, pid, other):
+    try: os.kill(pid, 15)
+    except Exception: pass
+    time.sleep(1)
+    osa(f'tell application "Terminal"\nclose (every window whose tty of selected tab is "{tty}")\n'
+        + (f'close (every window whose id is {other})\n' if other else "") + 'end tell')
+
+
 def transcript(cli):
     found = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{cli}.jsonl"))
     return open(found[0], encoding="utf-8", errors="replace").read() if found else ""
 
 
 class Che:
-    """che built from this tree, on its own port, with its log kept for the refusals."""
+    """che built from this tree, on its own port, with its log kept for the refusals. It runs as a launchd job, as
+    `mac/install` runs it, so the Accessibility and Automation grants it types with are its own, not those of whatever
+    started the bench."""
     def __init__(self, wait, unsent=False):
         self.log = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"che-live-{os.getpid()}.log")
-        env = {**os.environ, "CHE_PORT": str(CHE), "CHE_ENTER": "1", "CHE_WAIT": str(wait)}
+        self.label = f"com.sryo.yapa.che-live-{os.getpid()}"
+        env = {"CHE_PORT": str(CHE), "CHE_ENTER": "1", "CHE_WAIT": str(wait)}
         self.copying = False
         if unsent:
             # che reads a copy of the Claude app's log that leaves out its sendMessage lines, so it sees a session
@@ -114,7 +164,9 @@ class Che:
             env["CHE_APPLOG"] = fake
             self.copying = True
             threading.Thread(target=self.mirror, args=(fake,), daemon=True).start()
-        self.p = subprocess.Popen([BIN], env=env, stdout=subprocess.DEVNULL, stderr=open(self.log, "a"))
+        subprocess.run(["launchctl", "remove", self.label], capture_output=True)
+        subprocess.run(["launchctl", "submit", "-l", self.label, "-o", "/dev/null", "-e", self.log, "--",
+                        "/usr/bin/env", *[f"{k}={v}" for k, v in env.items()], BIN], check=True)
         if not until(lambda: self.up(), 10): raise SystemExit("che never started: " + open(self.log).read()[-500:])
 
     def up(self):
@@ -130,7 +182,14 @@ class Che:
                 if not line: time.sleep(0.02); continue
                 if b"LocalSessions.sendMessage:" not in line: out.write(line); out.flush()
 
-    def stop(self): self.copying = False; self.p.terminate(); self.p.wait()
+    def stop(self):
+        self.copying = False
+        subprocess.run(["launchctl", "remove", self.label], capture_output=True)
+        until(lambda: not self.up(), 5)
+
+    def typed(self, token, secs=15):
+        """Waits for che to say it typed the pick with `token` somewhere other than the clipboard."""
+        return until(lambda: any(token in l and "-> sendTo" in l for l in open(self.log, errors="replace")), secs)
 
 
 def build_che():
@@ -201,8 +260,10 @@ def empty_prompts(seen):
                and not any(p["style"] in ("option", "suggestion") for p in s.get("placed", [])))
 
 
-def run_path(name, sid, expect, wait, unsent=False):
-    """Runs REPS picks (one for the clipboard paths) and returns each one's (ok, ms, empty screens, why)."""
+def run_path(name, sid, expect, wait, unsent=False, cover=None):
+    """Runs REPS picks (one for the clipboard paths) and returns each one's (ok, ms, empty screens, why). With `cover`
+    (a Terminal window's id), that window is brought over the session's tab as soon as che has typed, before the
+    Enter."""
     che = Che(wait, unsent)
     results = []
     try:
@@ -221,6 +282,9 @@ def run_path(name, sid, expect, wait, unsent=False):
                 results.append((False, None, 0, "the action never showed on the pad", 0))
                 say("FAIL " + name + ": the action never showed on the pad"); continue
             watch, seen = watching
+            if cover:
+                che.typed(token)
+                osa(f'tell application "Terminal" to set index of (first window whose id is {cover}) to 1')
             if expect == "session":
                 got = until(lambda: token in transcript(sid) and time.time(), 25)
                 ok, why = bool(got), "" if got else "the pick never reached the session's transcript"
@@ -238,6 +302,10 @@ def run_path(name, sid, expect, wait, unsent=False):
                 ok, why = False, f"the pad never said it was copied: {sorted(set(notes))}"
             if ok and expect == "session" and not any("tap to stop" in n for n in notes):
                 ok, why = False, f"the pad never said it was typed: {sorted(set(notes))}"
+            if ok and expect == "session" and not any(n.startswith("Sent:") for n in notes):
+                ok, why = False, f"the pad never said it was sent: {sorted(set(notes))}"
+            if ok and expect == "clipboard" and any(n.startswith("Sent:") for n in notes):
+                ok, why = False, f"the pad said a pick on the clipboard was sent: {sorted(set(notes))}"
             results.append((ok, (got - t) * 1000 if ok and expect == "session" else None, empty_prompts(seen), why, int(kept)))
             if kept: say(f"     {name}: {front()} kept the front from Finder")
             if VERBOSE or why: say(("ok   " if ok else "FAIL ") + name + (": " + why if why else ""))
@@ -251,7 +319,7 @@ def main():
     if "Booted" not in sim("list", "devices", "booted"): raise SystemExit("che-live needs a booted Simulator")
     if not "Claude.app/Contents/MacOS/Claude" in subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True).stdout: raise SystemExit("che-live needs the Claude app running")
     say(f"che-live: puts Finder in front and has che type into a scratch session in {SCRATCH} in the Claude app behind it; "
-        f"{REPS + 1} short turns there; the clipboard and the session in front are put back after")
+        f"{REPS + 1} short turns there and {REPS} in a Terminal window it opens there; the clipboard and the session in front are put back after")
     global BIN
     BIN = build_che()
     app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
@@ -273,13 +341,21 @@ def main():
         lacking, r2 = run_path("a session the app lacks, to the clipboard", str(uuid.uuid4()), "clipboard", 3)
         unfocused, r3 = run_path("a session that didn't focus, to the clipboard", cli, "clipboard", 0)
         unsent, r4 = run_path("typed but never sent, to the clipboard", cli, "clipboard", 3, unsent=True)
+        tab = other = None
+        tab = terminal_session()
+        other = other_window()
+        osa(f'tell application "Terminal" to set index of (first window whose tty of selected tab is "{tab[1]}") to 1')
+        in_tab, r5 = run_path("typed into its Terminal tab", tab[0], "session", 3)
+        covered, r6 = run_path("a Terminal tab covered before the Enter, to the clipboard", tab[0], "clipboard", 3, cover=other)
     finally:
+        if tab: close_terminal(tab[1], tab[2], other)
         sim("terminate", "booted", BUNDLE, check=False)
         subprocess.run(["pbcopy"], input=clip, text=True)
         if front: subprocess.run(["open", f"claude://code/continue?session={front}&source=desktop_action"])
 
-    every = typed + lacking + unfocused + unsent
+    every = typed + lacking + unfocused + unsent + in_tab + covered
     ms = [r[1] for r in typed if r[1] is not None]
+    tab_ms = [r[1] for r in in_tab if r[1] is not None]
     runs = os.path.join(os.environ.get("FIUM_HOME", os.path.expanduser("~/.fium")), "runs", "yapa")
     os.makedirs(runs, exist_ok=True)
     path = os.path.join(runs, f"che-live-{int(time.time())}.json")
@@ -291,12 +367,15 @@ def main():
         "picks_lacking_not_copied": m("lower", "quality", [sum(not r[0] for r in lacking)]),
         "picks_unfocused_not_copied": m("lower", "quality", [sum(not r[0] for r in unfocused)]),
         "picks_unsent_not_copied": m("lower", "quality", [sum(not r[0] for r in unsent)]),
+        "picks_terminal_missed": m("lower", "quality", [sum(not r[0] for r in in_tab)]),
+        "picks_terminal_covered_not_copied": m("lower", "quality", [sum(not r[0] for r in covered)]),
         "empty_option_screens": m("lower", "quality", [sum(r[2] for r in every)]),
-        "che_refusals": m("lower", "quality", [r1 + r2 + r3 + r4]),
+        "che_refusals": m("lower", "quality", [r1 + r2 + r3 + r4 + r5 + r6]),
         "picks_that_kept_the_front": m("lower", "quality", [sum(r[4] for r in every)]),
         **({"pick_to_text_ms": m("lower", "time", ms)} if ms else {}),
+        **({"pick_to_terminal_text_ms": m("lower", "time", tab_ms)} if tab_ms else {}),
     }, "limits": {"picks_typed_missed": 0, "picks_lacking_not_copied": 0, "picks_unfocused_not_copied": 0, "picks_unsent_not_copied": 0,
-                  "empty_option_screens": 0, "che_refusals": 0, "picks_that_kept_the_front": 0},
+                  "picks_terminal_missed": 0, "picks_terminal_covered_not_copied": 0, "empty_option_screens": 0, "che_refusals": 0, "picks_that_kept_the_front": 0},
        "failed": [r[3] for r in every if not r[0]]}, open(path, "w"))
     print(path)
 

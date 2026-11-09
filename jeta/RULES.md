@@ -42,3 +42,4 @@ the code and its check.
 | T8 | All text creeps along a slow drift. | `testTextDriftsSoNoLineSitsStill`, `bench/jeta-text` |
 | T9 | Nobody near for three minutes and nothing happening: the backlight dims; anything that needs you brings it back. | `testRestsOnlyWhenNothingNeedsYou` |
 | T10 | Only a tap approves; no answer, a timeout or the phone off gives no decision. A request whose hook gave up leaves the pad. | `testR3_NeverApprovedWithoutATap`, flow "a request whose hook gave up leaves" |
+| T11 | After a pick or words are typed into their session and the Enter is in, the pad says what became of them as che says it: Sent once the session has them, Pending while che hasn't seen them arrive, Copied when they're on the Mac's clipboard instead, Not confirmed when che doesn't say; never Sent on less than che's word. | flow "a pick says whether it reached its session", `bench/che-live` |

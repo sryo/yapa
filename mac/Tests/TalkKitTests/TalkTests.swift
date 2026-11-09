@@ -159,3 +159,94 @@ final class NamedTests: XCTestCase {
         XCTAssertNil(n["x"])
     }
 }
+
+final class TerminalTests: XCTestCase {
+    // R7: a session the Claude app doesn't have is found by its exact id among the records Claude Code keeps for each
+    // running session, and only while the process the record names is the same one (a reused pid isn't it).
+    func testR7_FindsARunningSessionByItsExactId() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func record(_ pid: Int32, _ id: String, _ start: String) throws {
+            let o: [String: Any] = ["pid": pid, "sessionId": id, "cwd": "/x/\(pid)", "procStart": start, "kind": "interactive", "status": "idle"]
+            try JSONSerialization.data(withJSONObject: o).write(to: root.appendingPathComponent("\(pid).json"))
+        }
+        try record(11, "cli-a", "Mon Nov  9 05:59:25 2026")
+        try record(12, "cli-ab", "Mon Nov  9 06:00:00 2026")
+        try record(13, "cli-c", "Mon Nov  9 06:01:00 2026")
+        try Data("not json".utf8).write(to: root.appendingPathComponent("14.json"))
+        let starts: [Int32: String] = [11: "Mon Nov  9 05:59:25 2026", 12: "Mon Nov  9 06:00:00 2026", 13: "Tue Nov 10 01:00:00 2026"]
+        XCTAssertEqual(liveSession(cli: "cli-a", in: root) { starts[$0] }, LiveSession(pid: 11, cwd: "/x/11", status: "idle"))
+        XCTAssertEqual(liveSession(cli: "cli-ab", in: root) { starts[$0] }?.pid, 12)
+        XCTAssertNil(liveSession(cli: "cli-c", in: root) { starts[$0] }, "pid 13 now runs something else")
+        XCTAssertNil(liveSession(cli: "cli-z", in: root) { starts[$0] })
+        XCTAssertNil(liveSession(cli: "cli-a", in: root.appendingPathComponent("missing")) { starts[$0] })
+    }
+
+    // R7: keys typed into a session's tab reach its prompt only while it's idle or busy (queued); a dialog up
+    // (waiting) would take them as its answer and shell mode would run them, and a record that doesn't say is neither.
+    func testR7_TypesOnlyIntoAPromptThatTakesText() {
+        for s in ["idle", "busy"] { XCTAssertTrue(LiveSession(pid: 1, cwd: "", status: s).takesText, s) }
+        for s in ["waiting", "shell", nil] { XCTAssertFalse(LiveSession(pid: 1, cwd: "", status: s).takesText, s ?? "nil") }
+    }
+
+    // R7: a process's start reads as Claude Code's record writes it (ps's lstart, in UTC), so the two compare.
+    func testR7_ProcessStartReadsLikeTheRecord() throws {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "lstart=", "-p", "\(getpid())"]
+        ps.environment = ["TZ": "UTC"]
+        let out = Pipe()
+        ps.standardOutput = out
+        try ps.run()
+        ps.waitUntilExit()
+        let want = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(processStart(getpid()), want)
+        XCTAssertNil(processStart(-1))
+    }
+
+    // R7: a session's terminal is the tty its process reads from; one with none (run with -p, or gone) has no tab.
+    func testR7_ASessionsTerminalIsItsTTY() {
+        XCTAssertNil(controllingTTY(-1))
+        if let t = controllingTTY(getpid()) { XCTAssertTrue(t.hasPrefix("/dev/tty"), t) }
+    }
+
+    // R7: what che typed counts as arrived only when the session's transcript has it as the user's prompt, or as one
+    // queued while the session was busy; the same words in a reply, a tool's output or a longer prompt don't.
+    func testR7_ArrivedOnlyWhenTheTranscriptHasThePrompt() throws {
+        func line(_ o: [String: Any]) -> String { String(decoding: try! JSONSerialization.data(withJSONObject: o), as: UTF8.self) }
+        let prompt = line(["type": "user", "message": ["role": "user", "content": "Yes, commit"]])
+        let blocks = line(["type": "user", "message": ["role": "user", "content": [["type": "text", "text": "Yes, commit"]]]])
+        let queued = line(["type": "attachment", "attachment": ["type": "queued_command", "prompt": "Yes, commit"]])
+        let queuedBlocks = line(["type": "attachment", "attachment": ["type": "queued_command", "prompt": [["type": "text", "text": "Yes, commit"]]]])
+        let reply = line(["type": "assistant", "message": ["role": "assistant", "content": [["type": "text", "text": "Yes, commit"]]]])
+        let tool = line(["type": "user", "message": ["role": "user", "content": [["type": "tool_result", "content": "Yes, commit"]]]])
+        let longer = line(["type": "user", "message": ["role": "user", "content": "Yes, commit it all"]])
+        for t in [prompt, blocks, queued, queuedBlocks] { XCTAssertTrue(prompted(transcript: "x\n" + t + "\n", text: "Yes, commit"), t) }
+        for t in [reply, tool, longer, "Yes, commit", ""] { XCTAssertFalse(prompted(transcript: t, text: "Yes, commit"), t) }
+        // A line still being written isn't read yet.
+        XCTAssertFalse(prompted(transcript: String(prompt.dropLast(3)), text: "Yes, commit"))
+    }
+
+    // R7: a session's transcript is the file named by its id, in whichever project folder Claude Code put it.
+    func testR7_FindsTheTranscriptById() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("projects-\(UUID().uuidString)")
+        let dir = root.appendingPathComponent("-Users-x-alpha")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: dir.appendingPathComponent("cli-a.jsonl"))
+        XCTAssertEqual(transcript(cli: "cli-a", in: root)?.lastPathComponent, "cli-a.jsonl")
+        XCTAssertNil(transcript(cli: "cli-b", in: root))
+        XCTAssertNil(transcript(cli: "../x", in: root), "an id is a file name, never a path")
+    }
+
+    // R8: /sent says what became of a delivery in one of three words, and keeps `sent` for a true or false answer.
+    func testR8_SentSaysSentPendingOrCopied() {
+        XCTAssertEqual(sentReply(.sent)["state"] as? String, "sent")
+        XCTAssertEqual(sentReply(.sent)["sent"] as? Bool, true)
+        XCTAssertEqual(sentReply(.copied)["sent"] as? Bool, false)
+        XCTAssertEqual(sentReply(.pending)["state"] as? String, "pending")
+        XCTAssertTrue(sentReply(.pending)["sent"] is NSNull)
+        XCTAssertTrue(sentReply(nil)["state"] is NSNull)
+    }
+}

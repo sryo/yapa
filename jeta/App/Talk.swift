@@ -17,8 +17,9 @@ final class Talk: NSObject {
     private var to: String?
     private let browser = NWBrowser(for: .bonjour(type: "_che._tcp", domain: nil), using: .tcp)
     private var mac: NWEndpoint?, recorder: AVAudioRecorder?, began = 0.0, enterBy = 0.0, shown = 0
-    /// The delivery che is checking reached its session, by che's id; nil once its Enter was stopped.
-    private var checking: Int?
+    /// The delivery che is checking reached its session, by che's id (less than 0 for one che can't check, counting
+    /// `sends`); nil once its Enter was stopped.
+    private var checking: Int?, sends = 0
     private var before = Mood.idle
     /// The Mac's address on the home network, from the hooks it sends: che is reached there first, since Bonjour can
     /// hand back a link-local address che doesn't know the pad by, and refuses.
@@ -151,17 +152,45 @@ final class Talk: NSObject {
             if text.isEmpty { return self.show("Didn't catch that", for: 3) }
             self.show(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)", for: max(wait, 2))
             self.enterBy = CACurrentMediaTime() + wait
-            // Typed into a Claude app session: once the Enter is in, che says whether the app sent it, and when it
-            // didn't the text is on the Mac's clipboard instead.
-            guard let id = json["id"] as? Int, wait > 0 else { return }
+            guard wait > 0 else { return }
+            // Typed into the session it was for (che's id) or, with no session named, into whatever was in front.
+            self.sends += 1
+            let id = json["id"] as? Int ?? -self.sends
             self.checking = id
             DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
                 guard self.checking == id else { return }
-                self.post("/sent?id=\(id)", Data(), method: "GET") { json in
-                    if self.checking == id, json?["sent"] as? Bool == false { self.show("Copied: \(text)", for: 3) }
-                }
+                guard id > 0 else { return self.show("Typed: \(text)", for: 3) }
+                self.show("Sending: \(text)")
+                self.ask(id, text, tries: 10)
             }
         }
+    }
+
+    /// Asks che what became of delivery `id` once its Enter is in, and says so: Sent once the session has it, Copied
+    /// when it's on the Mac's clipboard instead, Pending while che hasn't seen it arrive (asked again, `tries` more
+    /// times), and Not confirmed when che doesn't say. Never Sent on less than che's word.
+    private func ask(_ id: Int, _ text: String, tries: Int) {
+        post("/sent?id=\(id)", Data(), method: "GET") { json in
+            guard self.checking == id else { return }
+            switch Talk.delivery(json) {
+            case "sent": self.show("Sent: \(text)", for: 3)
+            case "copied": self.show("Copied: \(text)", for: 3)
+            case "pending" where tries > 0:
+                self.show("Pending: \(text)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.ask(id, text, tries: tries - 1) }
+            case "pending": self.show("Pending: \(text)", for: 4)
+            default: self.show("Not confirmed: \(text)", for: 4)
+            }
+        }
+    }
+
+    /// /sent's answer in a word: its `state`, or from `sent` alone (a che that says only true or false); nil when che
+    /// didn't answer.
+    static func delivery(_ json: [String: Any]?) -> String? {
+        guard let json else { return nil }
+        if let s = json["state"] as? String { return s }
+        if let b = json["sent"] as? Bool { return b ? "sent" : "copied" }
+        return json["sent"] is NSNull ? "pending" : nil
     }
 
     /// A note given `for` seconds goes by itself then, unless another took its place.

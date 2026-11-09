@@ -5,7 +5,8 @@ import TalkKit
 // che: the pad posts a clip to /talk on release; this hears it and types the text into Claude.
 // /say takes the text itself (an option picked on the pad). ?dry on either types nothing (for the benches).
 // ?session=<id> names the Claude Code session a face on the pad stands for: when it's one of the Claude app's, the
-// app is brought forward on that session first, so the words land there and not in whatever was in front.
+// app is brought forward on that session first, so the words land there and not in whatever was in front; when it
+// runs in a Terminal tab, that tab is.
 // /cancel stops the Enter that follows the text.
 // Only this Mac and the hosts in CHE_FROM (the pad's address, comma-separated) may post.
 let env = ProcessInfo.processInfo.environment
@@ -18,9 +19,22 @@ let transcriber = Transcriber((env["CHE_LANGS"] ?? "en_US,es_ES").split(separato
 func log(_ s: String) { FileHandle.standardError.write(Data("che: \(s)\n".utf8)) }
 
 var target: Route = .clipboard
-/// Run once the pending Enter is pressed (not when it's cancelled): checks the text reached its session.
-var afterEnter: (() -> Void)?
-let enter = PendingEnter(after: enterDelay) { key(36, to: target); afterEnter?(); afterEnter = nil }
+/// Asked just before the pending Enter: false when what was typed is no longer in front to take it, and then the
+/// Enter isn't pressed.
+var stillThere: () async -> Bool = { true }
+/// Run once the pending Enter is due (not when it's cancelled), told whether it was pressed: checks the text reached
+/// its session.
+var afterEnter: ((Bool) -> Void)?
+let enter = PendingEnter(after: enterDelay) {
+    let check = stillThere, after = afterEnter
+    stillThere = { true }
+    afterEnter = nil
+    Task { @MainActor in
+        let there = await check()
+        if there { key(36, to: target) }
+        after?(there)
+    }
+}
 
 func post(_ e: CGEvent?, to r: Route) {
     if case .sendTo(let pid) = r { e?.postToPid(pid) } else { e?.post(tap: .cghidEventTap) }
@@ -100,9 +114,134 @@ func open(session cli: String) async -> Bool? {
     return false
 }
 
-/// What became of each delivery into a Claude app session, by the id /say and /talk answered with: true once the app
-/// says it sent the text, false when it didn't within 4 s of the Enter (the text is then on the clipboard).
-var sent: [Int: Bool] = [:], deliveries = 0
+/// What became of each delivery into a session, by the id /say and /talk answered with.
+var sent: [Int: Delivery] = [:], deliveries = 0
+
+let claudeHome = env["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+let terminalBundle = "com.apple.Terminal"
+
+/// Runs AppleScript against Terminal in osascript, given 3 s; nil when it fails. In che's own process the script's
+/// reply never came back, and nothing che waits on may hold up the pad's other requests.
+func terminal(_ script: String) async -> String? {
+    let p = Process(), out = Pipe(), err = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = ["-e", "tell application id \"\(terminalBundle)\"\n\(script)\nend tell"]
+    p.standardOutput = out
+    p.standardError = err
+    let done = AsyncStream<Void> { c in p.terminationHandler = { _ in c.yield(); c.finish() } }
+    guard (try? p.run()) != nil else { return nil }
+    let timer = DispatchWorkItem { p.terminate() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timer)
+    for await _ in done {}
+    timer.cancel()
+    guard p.terminationStatus == 0 else {
+        log("Terminal: \(String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))")
+        return nil
+    }
+    return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .newlines)
+}
+
+/// Whether che may control Terminal, asked without waiting on the user: the first time, macOS asks them (off the
+/// main thread, so che keeps answering) and this delivery goes to the clipboard.
+func mayControlTerminal() -> Bool {
+    let target = NSAppleEventDescriptor(bundleIdentifier: terminalBundle)
+    let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false)
+    if status == noErr { return true }
+    if status == OSStatus(errAEEventWouldRequireUserConsent) {
+        log("asking to control Terminal: allow it, then picks reach Terminal sessions")
+        DispatchQueue.global().async { _ = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, true) }
+    } else {
+        log("can't control Terminal (\(status)): allow che in System Settings > Privacy & Security > Automation")
+    }
+    return false
+}
+
+/// Whether Terminal is in front showing the tab on `tty`, so keys sent to it land in that tab and nowhere else.
+func showing(_ tty: String) async -> Bool {
+    guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == terminalBundle else { return false }
+    // A closed session's tab keeps its tty, which a new one can be given: only a tab running something counts.
+    return await terminal("if (count windows) > 0 then return {tty, busy} of selected tab of front window") == "\(tty), true"
+}
+
+/// Brings Terminal forward on the tab where session `cli` runs: its tty once that tab is in front; nil when no
+/// Terminal tab runs it (it isn't running, runs in another terminal, or with no terminal at all) or the tab didn't
+/// come forward within focusWait s.
+func open(terminal cli: String) async -> String? {
+    guard let s = liveSession(cli: cli, in: claudeHome.appendingPathComponent("sessions"), started: processStart),
+          let tty = controllingTTY(s.pid) else {
+        log("session \(cli) isn't running in a terminal on this Mac")
+        return nil
+    }
+    guard s.takesText else {
+        log("session \(cli) is \(s.status ?? "in an unknown state"), not at its prompt: typing there would answer or run something else")
+        return nil
+    }
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: terminalBundle).first else {
+        log("session \(cli) runs on \(tty), and Terminal isn't running")
+        return nil
+    }
+    guard mayControlTerminal() else { return nil }
+    guard await terminal("""
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if tty of t is "\(tty)" and busy of t then
+                        set selected of t to true
+                        set index of w to 1
+                        return "found"
+                    end if
+                end repeat
+            end repeat
+            """) == "found" else {
+        log("session \(cli) runs on \(tty), which is no Terminal tab")
+        return nil
+    }
+    handBack = NSWorkspace.shared.frontmostApplication
+    app.activate()
+    for _ in 0..<Int(focusWait * 10) {
+        if await showing(tty) {
+            // Keys sent the moment Terminal says it's in front are lost: its window takes them a moment later.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if await showing(tty) { return tty }
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    giveBack()
+    log("Terminal didn't show \(tty) within \(focusWait) s")
+    return nil
+}
+
+/// Watches session `cli`'s transcript, from `offset` on, for the text as a prompt of the user's (taken, or queued
+/// while the session is busy). The front goes back after 4 s either way; past that the delivery stays pending, since
+/// the text is in its session's box, for up to 2 minutes.
+func confirm(_ id: Int, transcript cli: String, from offset: UInt64, text: String) {
+    Task { @MainActor in
+        var file = transcript(cli: cli, in: claudeHome.appendingPathComponent("projects"))
+        // Only what's new is read each time; a line still being written waits in `part` for the rest.
+        var at = offset, part = Data()
+        for i in 0..<(80 + 232) {
+            file = file ?? transcript(cli: cli, in: claudeHome.appendingPathComponent("projects"))
+            if let f = file, let h = try? FileHandle(forReadingFrom: f) {
+                try? h.seek(toOffset: at)
+                let new = h.readDataToEndOfFile()
+                try? h.close()
+                at += UInt64(new.count)
+                part += new
+                let nl = part.lastIndex(of: 10)
+                let lines = nl.map { String(decoding: part[...$0], as: UTF8.self) } ?? ""
+                if let nl { part = Data(part[(nl + 1)...]) }
+                if prompted(transcript: lines, text: text) {
+                    sent[id] = .sent
+                    if i < 80 { giveBack() }
+                    return
+                }
+            }
+            if i == 80 { giveBack(); log("session \(cli) hasn't taken the text yet; still watching") }
+            try? await Task.sleep(nanoseconds: i < 80 ? 50_000_000 : 500_000_000)
+        }
+        log("session \(cli) never showed the text in its transcript")
+    }
+}
 
 func copy(_ text: String) {
     NSPasteboard.general.clearContents()
@@ -119,24 +258,30 @@ func confirm(_ id: Int, session local: String, text: String) {
                 try? h.seek(toOffset: from)
                 let new = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
                 try? h.close()
-                if wasSent(log: new, session: local) { sent[id] = true; giveBack(); return }
+                if wasSent(log: new, session: local) { sent[id] = .sent; giveBack(); return }
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         log("the Claude app didn't send the text to \(local) within 4 s; it's on the clipboard")
         copy(text)
-        sent[id] = false
+        sent[id] = .copied
         giveBack()
     }
 }
 
-/// Puts the text where route() says (into the Claude app's process when it's for a session the app opened), or on
-/// the clipboard when it mustn't go anywhere but a session that didn't open; Enter follows after enterDelay unless
-/// the pad cancels it.
-func deliver(_ text: String, clipboard: Bool = false, app: Bool = false) -> Route {
+/// Puts the text where route() says (into the Claude app's process when it's for a session the app opened, into the
+/// front when that's a session's Terminal tab), or on the clipboard when it mustn't go anywhere but a session that
+/// didn't open; Enter follows after enterDelay unless the pad cancels it.
+func deliver(_ text: String, clipboard: Bool = false, app: Bool = false, front: Bool = false) -> Route {
     let claude = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundle).first?.processIdentifier
-    var r = clipboard ? .clipboard : app ? claude.map { .sendTo($0) } ?? .clipboard
+    let terminalPid = NSRunningApplication.runningApplications(withBundleIdentifier: terminalBundle).first?.processIdentifier
+    var r = clipboard ? .clipboard : front ? terminalPid.map { .sendTo($0) } ?? .clipboard : app ? claude.map { .sendTo($0) } ?? .clipboard
         : route(frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, claude: claude)
+    // Keys posted to Terminal go to its key window, so it must still be in front, as it was showing the tab a moment ago.
+    if front && NSWorkspace.shared.frontmostApplication?.bundleIdentifier != terminalBundle {
+        log("Terminal lost the front before the text was typed; it's on the clipboard")
+        r = .clipboard
+    }
     if r != .clipboard && !AXIsProcessTrusted() {
         log("can't type: allow \(CommandLine.arguments[0]) in System Settings > Privacy & Security > Accessibility; text is on the clipboard")
         r = .clipboard
@@ -161,19 +306,44 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
 /// /say both answer.
 @MainActor func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, path: String) async {
     let q = query(path), dry = q["dry"] != nil
-    // Words for a session go there or nowhere: one the app doesn't have (a terminal's) or didn't open leaves them on
-    // the clipboard, since anywhere else would be the wrong place.
-    var opened: Bool?
-    if !dry, let s = q["session"] { opened = await open(session: s) == true }
-    let to = dry ? "none" : "\(deliver(text, clipboard: opened == false, app: opened == true))" + (opened == true ? " in \(q["session"]!)" : "")
+    // Words for a session go there or nowhere: one in neither the app nor a Terminal tab, or that didn't come
+    // forward, leaves them on the clipboard, since anywhere else would be the wrong place.
+    var opened: Bool?, tab: String?
+    if !dry, let s = q["session"] {
+        switch await open(session: s) {
+        case true?: opened = true
+        case false?: opened = false
+        case nil: tab = await open(terminal: s); opened = tab != nil
+        }
+    }
+    let offset = q["session"].flatMap { transcript(cli: $0, in: claudeHome.appendingPathComponent("projects")) }
+        .flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? UInt64 } ?? 0
+    let r = dry ? nil : deliver(text, clipboard: opened == false, app: opened == true && tab == nil, front: tab != nil)
+    let to = r.map { "\($0)" + (opened == true ? " in \(q["session"]!)" : "") } ?? "none"
     log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
-    var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": dry || to == "clipboard" ? 0 : enterDelay]
-    // Typed into one of the app's sessions with an Enter to follow: the pad asks /sent?id= once it's pressed.
-    if opened == true, to != "clipboard", enterDelay > 0, let s = q["session"], let local = desktopSession(cli: s, in: sessions) {
+    var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": r == nil || r == .clipboard ? 0 : enterDelay]
+    // Typed into a session with an Enter to follow: the pad asks /sent?id= once it's pressed.
+    if opened == true, r != .clipboard, enterDelay > 0, let s = q["session"] {
         deliveries += 1
         let id = deliveries
-        afterEnter = { confirm(id, session: local, text: text) }
-        out["id"] = id
+        sent[id] = .pending
+        if let tab {
+            // The tab must still be in front for the Enter: one pressed elsewhere would send something else.
+            stillThere = { await showing(tab) }
+            afterEnter = { pressed in
+                guard pressed else {
+                    log("Terminal no longer showed \(tab) for the Enter; the text is on the clipboard")
+                    copy(text)
+                    sent[id] = .copied
+                    return giveBack()
+                }
+                confirm(id, transcript: s, from: offset, text: text)
+            }
+            out["id"] = id
+        } else if let local = desktopSession(cli: s, in: sessions) {
+            afterEnter = { _ in confirm(id, session: local, text: text) }
+            out["id"] = id
+        } else { sent[id] = nil; giveBack() }
     } else { giveBack() }
     reply(c, "200 OK", out)
 }
@@ -192,14 +362,15 @@ func handle(_ c: NWConnection, _ r: Request) {
         reply(c, "200 OK", ["sessions": list])
     case ("POST", "/cancel"):
         afterEnter = nil
+        stillThere = { true }
         giveBack()
         reply(c, "200 OK", ["cancelled": enter.cancel()])
-    // Whether delivery `id` reached its session: answered once known, or null after 6 s.
+    // Whether delivery `id` reached its session: answered once sent or copied, or as it stands after 6 s.
     case ("GET", let p) where p.hasPrefix("/sent"):
         let id = Int(query(p)["id"] ?? "") ?? 0
         Task { @MainActor in
-            for _ in 0..<120 where sent[id] == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
-            reply(c, "200 OK", ["sent": sent[id].map { $0 as Any } ?? NSNull()])
+            for _ in 0..<120 where sent[id] == nil || sent[id] == .pending { try? await Task.sleep(nanoseconds: 50_000_000) }
+            reply(c, "200 OK", sentReply(sent[id]))
         }
     // The pad's dial starts a session in a folder: the Claude app opens it behind whatever is in front.
     case ("POST", let p) where p.hasPrefix("/new"):
