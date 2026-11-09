@@ -151,8 +151,9 @@ final class Talk: NSObject {
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
             if text.isEmpty { return self.show("Didn't catch that", for: 3) }
             self.show(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)", for: max(wait, 2))
-            self.enterBy = CACurrentMediaTime() + wait
+            // Copied text has no Enter to stop, and leaves a tap to stop the Enter of whatever che typed before.
             guard wait > 0 else { return }
+            self.enterBy = CACurrentMediaTime() + wait
             // Typed into the session it was for (che's id) or, with no session named, into whatever was in front.
             self.sends += 1
             let id = json["id"] as? Int ?? -self.sends

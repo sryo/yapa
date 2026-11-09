@@ -19,6 +19,9 @@ asked = []
 # What the stand-in che says became of each delivery it's asked about with /sent, in turn: a word for /sent's
 # `state`, or None for an answer without one (a che that doesn't know). Once they run out, every delivery was sent.
 delivered = []
+# Like che, the stand-in types one delivery at a time: until the last typed one's Enter is due (or cancelled), text
+# goes to the clipboard, answered with no Enter to wait for.
+enter_wait, box_until = 2, 0.0
 parts = {"parts": [{"name": "yata", "kind": "core", "on": True, "up": True, "watched": True},
                    {"name": "web", "kind": "site", "on": True, "up": True, "watched": True}],
          "disk_free_mb": 4000, "logs_mb": 3}
@@ -39,13 +42,19 @@ class Stub(BaseHTTPRequestHandler):
         self.answer(parts if self.path.startswith("/parts") else {"sessions": {}})
 
     def do_POST(self):
+        global box_until
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
         asked.append(("POST", self.path, body))
         p = self.path
         if p.startswith("/talk"): self.answer({"text": "words from the pad", "enter_in": 0 if "dry" in p else 2, "lang": "en"})
-        elif p.startswith("/say"): self.answer({"text": body, "enter_in": 2, **({"id": len(asked)} if "session=" in p else {})})
+        elif p.startswith("/say"):
+            wait = 0 if time.time() < box_until else enter_wait
+            if wait and "dry" not in p: box_until = time.time() + wait
+            self.answer({"text": body, "enter_in": wait, **({"id": len(asked)} if "session=" in p else {})})
         elif p.startswith("/new"): self.answer({"folder": body, "url": "claude://code/new"})
-        elif p.startswith("/cancel"): self.answer({"cancelled": True})
+        elif p.startswith("/cancel"):
+            box_until = 0.0
+            self.answer({"cancelled": True})
         elif p.startswith("/parts/"): self.answer(parts)
         else: self.answer({})
 
@@ -248,6 +257,33 @@ def two_with_actions():
     need(not said("/cancel", 0), "picking the second stopped the first one's Enter")
     hook("UserPromptSubmit", "a", "alpha")
     need(until(bare, 4), f"text stayed up with nothing left to answer: {state()['mode']}")
+
+
+def pick_while_one_waits():
+    """A pick while another's Enter is still to come is Copied, never typed into it, and a tap still stops that Enter."""
+    global enter_wait
+    enter_wait = 8
+    try:
+        hook("UserPromptSubmit", "a", "alpha"); hook("UserPromptSubmit", "b", "beta")
+        wrap_up("a", "alpha", "Commit alpha?", ["Commit alpha", "Leave alpha"])
+        wrap_up("b", "beta", "Push beta?", ["Push beta", "Leave beta"])
+        need(until(lambda s: option(s, "alpha") or option(s, "beta")), "neither session's actions showed")
+        for _ in range(3):
+            if option(state(), "Push beta"): break
+            drive("/swipe", way="left")
+        since = len(asked)
+        tap_option("Push beta")
+        hook("UserPromptSubmit", "b", "beta")
+        need(until(lambda s: option(s, "Commit alpha"), 4), f"alpha's actions weren't there after beta's: {[p['text'] for p in state()['placed']]}")
+        tap_option("Commit alpha")
+        need(until(lambda s: (s["note"] or "").startswith("Copied: Commit alpha"), 2),
+             f"alpha's pick, made while beta's Enter waited, wasn't said Copied: {state()['note']}")
+        need(not said("/cancel", since), "picking the second stopped the first one's Enter")
+        drive("/tap", x=20, y=20)
+        time.sleep(0.4)
+        need(said("/cancel", since), "after a copied pick, a tap didn't stop the first one's pending Enter")
+    finally:
+        enter_wait = 2
 
 
 def awake_while_waiting():
@@ -665,6 +701,7 @@ FLOWS = {
     "a pick says whether it reached its session": pick_says_where_it_went,
     "actions put away and found again": put_away_actions,
     "two sessions with actions": two_with_actions,
+    "a pick while another's Enter waits is copied": pick_while_one_waits,
     "an ant stands over its actions": ant_by_actions,
     "actions answered at the desk": answered_at_desk,
     "ants stay awake while something waits": awake_while_waiting,
@@ -691,6 +728,8 @@ FLOWS = {
 
 
 def launch():
+    global box_until
+    box_until = 0.0
     sim("terminate", "booted", BUNDLE, check=False)
     data = sim("get_app_container", "booted", BUNDLE, "data").strip()
     for f in ("sessions.json",):

@@ -25,14 +25,25 @@ var stillThere: () async -> Bool = { true }
 /// Run once the pending Enter is due (not when it's cancelled), told whether it was pressed: checks the text reached
 /// its session.
 var afterEnter: ((Bool) -> Void)?
+/// The box's one delivery at a time, and the turn of the one now in it: text that comes while another is on its way
+/// in goes to the clipboard, never into the box with it.
+let box = OneAtATime()
+var inBox: Int?
+/// Ends the turn of the delivery in the box, once its Enter is in and it's done with the front, or it was given up.
+func done() {
+    giveBack()
+    if let t = inBox { box.release(t) }
+    inBox = nil
+}
 let enter = PendingEnter(after: enterDelay) {
-    let check = stillThere, after = afterEnter
+    let check = stillThere, after = afterEnter, turn = inBox
     stillThere = { true }
     afterEnter = nil
     Task { @MainActor in
         let there = await check()
         if there { key(36, to: target) }
-        after?(there)
+        // A delivery che follows ends its turn once it's seen arriving or given up; one it doesn't, now.
+        if let after { after(there) } else if let turn, inBox == turn { done() }
     }
 }
 
@@ -232,11 +243,11 @@ func confirm(_ id: Int, transcript cli: String, from offset: UInt64, text: Strin
                 if let nl { part = Data(part[(nl + 1)...]) }
                 if prompted(transcript: lines, text: text) {
                     sent[id] = .sent
-                    if i < 80 { giveBack() }
+                    if i < 80 { done() }
                     return
                 }
             }
-            if i == 80 { giveBack(); log("session \(cli) hasn't taken the text yet; still watching") }
+            if i == 80 { done(); log("session \(cli) hasn't taken the text yet; still watching") }
             try? await Task.sleep(nanoseconds: i < 80 ? 50_000_000 : 500_000_000)
         }
         log("session \(cli) never showed the text in its transcript")
@@ -258,14 +269,14 @@ func confirm(_ id: Int, session local: String, text: String) {
                 try? h.seek(toOffset: from)
                 let new = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
                 try? h.close()
-                if wasSent(log: new, session: local) { sent[id] = .sent; giveBack(); return }
+                if wasSent(log: new, session: local) { sent[id] = .sent; done(); return }
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         log("the Claude app didn't send the text to \(local) within 4 s; it's on the clipboard")
         copy(text)
         sent[id] = .copied
-        giveBack()
+        done()
     }
 }
 
@@ -306,6 +317,22 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
 /// /say both answer.
 @MainActor func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, path: String) async {
     let q = query(path), dry = q["dry"] != nil
+    var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": 0]
+    if !dry {
+        guard let turn = box.take() else {
+            // Another delivery is on its way into its session, its Enter not in yet: typing now would add these words
+            // to that prompt, and taking the front would cost it its Enter. The front stays as it is.
+            log("\(Int(ms)) ms \(lang) -> clipboard, another delivery not yet entered: \(text)")
+            copy(text)
+            if q["session"] != nil {
+                deliveries += 1
+                sent[deliveries] = .copied
+                out["id"] = deliveries
+            }
+            return reply(c, "200 OK", out)
+        }
+        inBox = turn
+    }
     // Words for a session go there or nowhere: one in neither the app nor a Terminal tab, or that didn't come
     // forward, leaves them on the clipboard, since anywhere else would be the wrong place.
     var opened: Bool?, tab: String?
@@ -321,7 +348,7 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     let r = dry ? nil : deliver(text, clipboard: opened == false, app: opened == true && tab == nil, front: tab != nil)
     let to = r.map { "\($0)" + (opened == true ? " in \(q["session"]!)" : "") } ?? "none"
     log("\(Int(ms)) ms \(lang) -> \(to): \(text)")
-    var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": r == nil || r == .clipboard ? 0 : enterDelay]
+    out["enter_in"] = r == nil || r == .clipboard ? 0 : enterDelay
     // Typed into a session with an Enter to follow: the pad asks /sent?id= once it's pressed.
     if opened == true, r != .clipboard, enterDelay > 0, let s = q["session"] {
         deliveries += 1
@@ -335,7 +362,7 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
                     log("Terminal no longer showed \(tab) for the Enter; the text is on the clipboard")
                     copy(text)
                     sent[id] = .copied
-                    return giveBack()
+                    return done()
                 }
                 confirm(id, transcript: s, from: offset, text: text)
             }
@@ -344,7 +371,9 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
             afterEnter = { _ in confirm(id, session: local, text: text) }
             out["id"] = id
         } else { sent[id] = nil; giveBack() }
-    } else { giveBack() }
+    } else if dry {
+        // Typed nothing and took nothing, so the front and the box are left to whatever else is on its way in.
+    } else if r == .clipboard || enterDelay == 0 { done() } else { giveBack() }
     reply(c, "200 OK", out)
 }
 
@@ -363,8 +392,10 @@ func handle(_ c: NWConnection, _ r: Request) {
     case ("POST", "/cancel"):
         afterEnter = nil
         stillThere = { true }
-        giveBack()
-        reply(c, "200 OK", ["cancelled": enter.cancel()])
+        let cancelled = enter.cancel()
+        // Text still on its way in keeps its turn; once its Enter won't come, the box is free.
+        if cancelled { done() } else { giveBack() }
+        reply(c, "200 OK", ["cancelled": cancelled])
     // Whether delivery `id` reached its session: answered once sent or copied, or as it stands after 6 s.
     case ("GET", let p) where p.hasPrefix("/sent"):
         let id = Int(query(p)["id"] ?? "") ?? 0

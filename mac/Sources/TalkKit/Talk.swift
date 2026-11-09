@@ -94,6 +94,24 @@ public final class PendingEnter {
     }
 }
 
+/// Who may type into a box: one delivery at a time, from the moment che starts bringing its session forward until its
+/// Enter is pressed or given up. Text typed while another waits for its Enter would join it as one prompt.
+public final class OneAtATime {
+    var held: Int?, last = 0
+    public init() {}
+
+    /// A turn of one's own, or nil while another delivery holds the box.
+    public func take() -> Int? {
+        guard held == nil else { return nil }
+        last += 1
+        held = last
+        return last
+    }
+
+    /// Ends turn `t`; a turn already ended, or another's, is left alone.
+    public func release(_ t: Int) { if held == t { held = nil } }
+}
+
 /// Whether a peer may post: this Mac always, else only the listed hosts (an IPv4-mapped address counts as its IPv4).
 public func allowed(_ host: String, from hosts: [String]) -> Bool {
     let h = host.hasPrefix("::ffff:") ? String(host.dropFirst(7)) : host

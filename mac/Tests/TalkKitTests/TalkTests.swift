@@ -249,4 +249,33 @@ final class TerminalTests: XCTestCase {
         XCTAssertTrue(sentReply(.pending)["sent"] is NSNull)
         XCTAssertTrue(sentReply(nil)["state"] is NSNull)
     }
+
+    // R8: one delivery types at a time. From the moment che starts bringing a session forward until its Enter is
+    // pressed (after the async check that its tab is still in front) or cancelled, a second can't type: it goes to
+    // the clipboard instead of joining the first in the box, and the first's turn ends only by its own hand.
+    func testR8_ASecondDeliveryWhileOneIsPendingIsNotTyped() async {
+        let turn = OneAtATime()
+        guard let first = turn.take() else { return XCTFail("nothing holds the box yet") }
+        XCTAssertNil(turn.take(), "a second while the first brings its session forward")
+        var pressed: [Int] = []
+        let enter = PendingEnter(after: 0.05) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000)  // the check that the tab is still in front
+                pressed.append(first)
+                turn.release(first)
+            }
+        }
+        enter.arm()
+        XCTAssertNil(turn.take(), "a second while the first's Enter waits")
+        try? await Task.sleep(nanoseconds: 90_000_000)
+        XCTAssertTrue(pressed.isEmpty)
+        XCTAssertNil(turn.take(), "a second while the first's Enter is being pressed")
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(pressed, [first])
+        guard let second = turn.take() else { return XCTFail("the box is free once the first's Enter is in") }
+        turn.release(first)
+        XCTAssertNil(turn.take(), "a late release of the first doesn't free the second's turn")
+        turn.release(second)
+        XCTAssertNotNil(turn.take())
+    }
 }
