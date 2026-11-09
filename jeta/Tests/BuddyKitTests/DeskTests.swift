@@ -96,6 +96,19 @@ final class DeskTests: XCTestCase {
         XCTAssertNil(d.decide(["cmd": "permission", "id": g, "decision": "once"]), "nothing left to approve")
     }
 
+    func testR3_SubagentHookDoesNotReleaseParentsPermission() {
+        let d = Desk()
+        let waiting = d.take(event("PermissionRequest", push), at: 1).hold!
+        let child = ["agent_id": "child-1", "agent_type": "Explore", "tool_name": "Grep",
+                     "tool_input": ["pattern": "foo"]] as [String: Any]
+        XCTAssertTrue(d.take(event("SubagentStart", child), at: 2).settled.isEmpty)
+        XCTAssertTrue(d.take(event("PreToolUse", child), at: 3).settled.isEmpty)
+        XCTAssertTrue(d.take(event("PostToolUse", child), at: 4).settled.isEmpty)
+        XCTAssertTrue(d.take(event("SubagentStop", child), at: 5).settled.isEmpty)
+        XCTAssertEqual(d.asked()?.id, waiting)
+        XCTAssertEqual(decision(d.decide(["cmd": "permission", "id": waiting, "decision": "once"])), "allow")
+    }
+
     // R3: an app that restarted never reuses an id: the Buddy core hides a prompt whose id it already answered.
     func testR3_PromptIDsDifferAcrossRestarts() {
         XCTAssertNotEqual(Desk().take(event("PermissionRequest", push), at: 1).hold, Desk().take(event("PermissionRequest", push), at: 1).hold)

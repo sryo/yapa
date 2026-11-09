@@ -143,7 +143,7 @@ public final class Desk {
         }
         // Any later step of the session means its waiting request was answered in the terminal; a background hook for
         // that same call, arriving late, doesn't.
-        guard event != "Notification" else { return (nil, []) }
+        guard event != "Notification", agent == nil else { return (nil, []) }
         let done = held.filter { $0.session == id && !(event == "PreToolUse" && $0.tool == tool && $0.input == input as NSDictionary) }
         return (nil, release(done))
     }
