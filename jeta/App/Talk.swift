@@ -123,8 +123,14 @@ final class Talk: NSObject {
 
     /// Types the text on the Mac as if it had been spoken (an option picked on the screen), with the same notes.
     func say(_ text: String, to session: String?) {
-        deliver("/say", Data(text.utf8), to: session)
+        // A pick the Mac never answered may have been typed all the same: sent again, it goes under the key it had,
+        // so che takes it once.
+        let pick = "\(session ?? "")\n\(text)"
+        let key = unanswered[pick] ?? UUID().uuidString
+        unanswered[pick] = key
+        deliver("/say", Data(text.utf8), to: session, key: key) { [weak self] in self?.unanswered[pick] = nil }
     }
+    private var unanswered: [String: String] = [:]
 
     /// Starts a Claude Code session on the Mac in `folder`, in the Claude app; `done` says how it went, in a few words.
     func newSession(in folder: String, done: @escaping (String) -> Void) {
@@ -143,13 +149,22 @@ final class Talk: NSObject {
         }
     }
 
-    private func deliver(_ path: String, _ body: Data, to session: String?) {
+    private func deliver(_ path: String, _ body: Data, to session: String?, key: String? = nil, answered: (() -> Void)? = nil) {
         show("Sending…")
-        let query = session.flatMap { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-"])) }
-        post(path + (query.map { "?session=\($0)" } ?? ""), body) { [weak self] json in
+        let query = [session.flatMap { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(["-"])) }.map { "session=\($0)" },
+                     key.map { "key=\($0)" }].compactMap { $0 }.joined(separator: "&")
+        post(path + (query.isEmpty ? "" : "?" + query), body) { [weak self] json in
             guard let self, let json else { return self?.show(self?.trouble ?? "", for: 4) ?? () }
+            answered?()
             let text = json["text"] as? String ?? "", wait = json["enter_in"] as? Double ?? 0
             if text.isEmpty { return self.show("Didn't catch that", for: 3) }
+            // che had this pick already: what became of it the first time, with nothing typed again.
+            if json["again"] as? Bool == true {
+                guard let id = json["id"] as? Int else { return self.show((json["typed"] as? Bool == true ? "Typed: " : "Copied: ") + text, for: 3) }
+                self.checking = id
+                self.show("Sending: \(text)")
+                return self.ask(id, text, tries: 10)
+            }
             self.show(wait > 0 ? "\(text)  ·  tap to stop" : "Copied: \(text)", for: max(wait, 2))
             // Copied text has no Enter to stop, and leaves a tap to stop the Enter of whatever che typed before.
             guard wait > 0 else { return }

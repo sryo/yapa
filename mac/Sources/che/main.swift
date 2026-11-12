@@ -313,11 +313,29 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
     c.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
 }
 
+/// What each pick the pad named with a key was answered.
+var answered: [String: [String: Any]] = [:]
+
 /// Delivers the text unless dry, in the session the pad named if the Claude app has it, and answers what /talk and
 /// /say both answer.
 @MainActor func answer(_ c: NWConnection, _ text: String, lang: String, ms: Double, path: String) async {
     let q = query(path), dry = q["dry"] != nil
     var out: [String: Any] = ["text": text, "lang": lang, "ms": ms, "enter_in": 0]
+    // The pad sends a pick again, under the same key, when no answer reached it: it was taken the first time, so it's
+    // answered with what became of it then (its id for /sent, or whether it was typed) and nothing is typed twice.
+    if let k = q["key"] {
+        if var first = answered[k] {
+            first["typed"] = (first["enter_in"] as? Double ?? 0) > 0
+            first["again"] = true
+            first["enter_in"] = 0
+            return reply(c, "200 OK", first)
+        }
+        answered[k] = out
+    }
+    let reply = { (c: NWConnection, status: String, o: [String: Any]) in
+        if let k = q["key"] { answered[k] = o }
+        reply(c, status, o)
+    }
     if !dry {
         guard let turn = box.take() else {
             // Another delivery is on its way into its session, its Enter not in yet: typing now would add these words

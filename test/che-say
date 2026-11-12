@@ -25,4 +25,10 @@ for h in 'Origin: http://evil.example' 'Sec-Fetch-Site: cross-site'; do
     [ "$code" = 403 ] || { echo "FAIL: /say from a browser ($h) answered $code, not 403"; exit 1; }
 done
 grep -q 'pwned' "$log" && { echo "FAIL: che took a browser's words: $(cat "$log")"; exit 1; }
+# The pad names each pick with a key and sends it again under the same one when no answer came: che takes it once.
+curl -s --data-binary 'once only' 'http://127.0.0.1:18079/say?dry&key=k1' | grep -q '"text":"once only"' || { echo "FAIL: /say with a key didn't answer"; exit 1; }
+out=$(curl -s --data-binary 'once only' 'http://127.0.0.1:18079/say?dry&key=k1')
+echo "$out" | grep -q '"again":true' || { echo "FAIL: the same key again wasn't answered as a repeat: $out"; exit 1; }
+[ "$(grep -c 'once only' "$log")" = 1 ] || { echo "FAIL: che took one key's words more than once: $(cat "$log")"; exit 1; }
+curl -s --data-binary 'once only' 'http://127.0.0.1:18079/say?dry&key=k2' | grep -q '"again"' && { echo "FAIL: another key was taken for a repeat"; exit 1; }
 echo "ok r5 say"

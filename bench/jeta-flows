@@ -6,7 +6,7 @@ only if all of that happened. The pad runs with `-drive` (App/Drive.swift), whic
 this Mac and says what's on the screen; che and yata are stand-ins here, so nothing is typed into a real session.
 Prints the path of a K1 run file; `-v` also says what each flow did.
 """
-import json, math, os, subprocess, sys, threading, time, urllib.request
+import json, math, os, subprocess, sys, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,6 +48,12 @@ class Stub(BaseHTTPRequestHandler):
         p = self.path
         if p.startswith("/talk"): self.answer({"text": "words from the pad", "enter_in": 0 if "dry" in p else 2, "lang": "en"})
         elif p.startswith("/say"):
+            # Like che, it types a pick once: one sent again under the same key is answered with what became of it.
+            key = urllib.parse.parse_qs(urllib.parse.urlsplit(p).query).get("key", [None])[0]
+            again = key and any(f"key={key}" in a[1] for a in asked[:-1])
+            if again: return self.answer({"text": body, "enter_in": 0, "again": True, "id": len(asked)})
+            # Its answer to a pick that says so never arrives, though it typed it.
+            if "lost" in body: return time.sleep(11)
             wait = 0 if time.time() < box_until else enter_wait
             if wait and "dry" not in p: box_until = time.time() + wait
             self.answer({"text": body, "enter_in": wait, **({"id": len(asked)} if "session=" in p else {})})
@@ -173,6 +179,30 @@ def words_check(d, since):
     need(said("/talk?dry", since), "the words weren't heard dry, so they may have been typed")
 
 
+def long_request():
+    """A request too long for one screen is read to its last word, page by page, its buttons on every page."""
+    parts = [f"part{i}" for i in range(1, 301)] + ["x" * 120, "the-very-end"]
+    hook("UserPromptSubmit", "a", "alpha")
+    t = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": " ".join(parts)})
+    need(until(lambda s: s["asking"] and option(s, "Deny")), "the request never showed its buttons")
+    drive("/tap")
+    s = until(lambda s: s["mode"] == "detail" and s["pages"] and s["pages"][1] > 1)
+    need(s, f"the request's detail didn't open in pages: {state()['pages']}")
+    read = []
+    for page in range(s["pages"][1]):
+        s = until(lambda s: s["pages"][0] == page, 3)
+        need(s, f"a drag up didn't turn to page {page + 1}: {state()['pages']}")
+        need(option(s, "Allow") and option(s, "Deny"), f"page {page + 1} lost its buttons")
+        read += [p["text"] for p in s["placed"] if p["style"] == "body" and p["text"] not in read]
+        drive("/drag", dy=-150, speed=0)
+    text = " ".join(read)
+    missing = [p for p in parts[:300] + parts[301:] if p not in text.split()]
+    need(not missing and "x" * 120 in text.replace(" ", ""), f"read to the end, the request lacked {missing[:5]} of {len(parts)} words")
+    need(not any("…" in r for r in read), f"a line of the request was cut: {[r for r in read if '…' in r][:2]}")
+    tap_option("Allow")
+    allow_check(decision(t), 0)
+
+
 def ask_question():
     hook("UserPromptSubmit", "a", "alpha")
     q = {"question": "Which colour?", "header": "Colour", "multiSelect": False, "options": [{"label": "red"}, {"label": "blue"}]}
@@ -218,6 +248,25 @@ def pick_says_where_it_went():
     pick("Copy alpha", ["copied"], ["Copied:"])
     pick("Queue alpha", ["pending", "pending", "sent"], ["Pending:", "Sent:"])
     pick("Ask alpha", [None], ["Not confirmed:"])
+
+
+def pick_again_typed_once():
+    """A pick whose answer never came is sent again under the same key, so che types it once; another pick has its own."""
+    hook("UserPromptSubmit", "a", "alpha")
+    wrap_up("a", "alpha", "Commit the work?", ["Answer lost", "Not yet"])
+    need(until(lambda s: option(s, "Answer lost")), "the actions never showed")
+    since = len(asked)
+    tap_option("Answer lost")
+    need(until(lambda s: "didn't answer" in s["note"], 14), f"the pad didn't say the Mac didn't answer: {state()['note']!r}")
+    tap_option("Answer lost")
+    need(until(lambda s: s["note"].startswith("Sent:"), 6), f"picked again, the pad didn't say Sent: {state()['note']!r}")
+    key = lambda a: urllib.parse.parse_qs(urllib.parse.urlsplit(a[1]).query).get("key", [""])[0]
+    keys = [key(a) for a in said("/say", since)]
+    need(len(keys) == 2 and keys[0] and keys[0] == keys[1], f"the pick sent again didn't carry the first one's key: {keys}")
+    tap_option("Not yet")
+    time.sleep(0.5)
+    keys = [key(a) for a in said("/say", since)]
+    need(len(keys) == 3 and keys[2] and keys[2] != keys[0], f"another pick didn't get a key of its own: {keys}")
 
 
 def put_away_actions():
@@ -712,6 +761,7 @@ def dial_back():
 
 FLOWS = {
     "permission allow": permission("Allow", allow_check),
+    "a long request is read whole, then allowed": long_request,
     "permission this session": permission("This session", session_check, suggestions=True),
     "permission deny": permission("Deny", deny_check),
     "permission stop": permission("Stop", stop_check),
@@ -719,6 +769,7 @@ FLOWS = {
     "question answered": ask_question,
     "action picked": pick_action,
     "a pick says whether it reached its session": pick_says_where_it_went,
+    "a pick sent again is typed once": pick_again_typed_once,
     "actions put away and found again": put_away_actions,
     "two sessions with actions": two_with_actions,
     "a pick while another's Enter waits is copied": pick_while_one_waits,
