@@ -157,13 +157,13 @@ final class NamedTests: XCTestCase {
         }
         try write(["sessionId": "local_m", "cliSessionId": "m0", "lastAssistantCliSessionId": "m1", "title": "Old iPhone SE project ideas",
                    "lastFocusedAt": 1793823472486])
-        try write(["sessionId": "local_k", "cliSessionId": "k", "title": "Jailbreak the SE and deploy yapad",
+        try write(["sessionId": "local_k", "cliSessionId": "k", "title": "Jailbreak the SE and deploy yata",
                    "spawnedFrom": ["sessionId": "local_m", "name": "jailbreak"]])
         try write(["sessionId": "local_f", "cliSessionId": "f", "title": "Fork", "forkedFromSessionId": "local_k"])
         try write(["sessionId": "local_x", "cliSessionId": "x", "title": "Not asked for"])
         let n = named(["m1", "k", "f"], in: root.deletingLastPathComponent().deletingLastPathComponent())
         XCTAssertEqual(n["m1"], Named(name: "Old iPhone SE project", title: "Old iPhone SE project ideas", parent: nil, focused: 1793823472.486))
-        XCTAssertEqual(n["k"], Named(name: "jailbreak", title: "Jailbreak the SE and deploy yapad", parent: "m1"))
+        XCTAssertEqual(n["k"], Named(name: "jailbreak", title: "Jailbreak the SE and deploy yata", parent: "m1"))
         XCTAssertEqual(n["f"]?.parent, "k")
         XCTAssertNil(n["x"])
     }
