@@ -80,15 +80,23 @@ final class FaceView: UIView {
     /// The permission request the pad can answer, shown with its buttons; nil when none is waiting.
     func ask(_ a: Asked?) {
         guard let a else { return screen.answered() }
+        let was = screen.asking
         screen.ask(a)
+        if screen.asking != was { askedAt = CACurrentMediaTime() }
     }
 
     func ask(_ p: Prompt?) {
         guard let p else { return screen.answered() }
         let parts = p.hint.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
         let (who, what) = parts.count == 2 ? (parts[0], parts[1]) : ("Claude", p.hint)
+        let was = screen.asking
         screen.ask(session: who, what.isEmpty ? p.tool : "\(p.tool): \(what)")
+        if screen.asking != was { askedAt = CACurrentMediaTime() }
     }
+
+    /// When the request showing came up, and when the finger now on the glass landed: one that was already down
+    /// can't have meant the request's buttons.
+    private var askedAt = 0.0, downAt = 0.0
 
     func answered(by session: String) {
         board.answered(by: session)
@@ -108,10 +116,11 @@ final class FaceView: UIView {
     }
 
     // On the bare face a tap wakes it and draws its eyes to the finger; with text up it opens or closes the detail.
-    @objc private func tapped(_ g: UITapGestureRecognizer) { tap(at: g.location(in: self)) }
+    @objc private func tapped(_ g: UITapGestureRecognizer) { tap(at: g.location(in: self), began: downAt) }
 
-    /// A tap at `p`, from the finger or from test/jeta-flows' driver.
-    func tap(at p: CGPoint) {
+    /// A tap at `p` by a finger that landed at `began` (now, unless said), from the finger or from test/jeta-flows'
+    /// driver.
+    func tap(at p: CGPoint, began: Double = CACurrentMediaTime()) {
         // A tap right after talking stops the pending Enter; one on an option is that option, not a stop.
         if option(at: p) == nil, talk?.tapped() == true { return }
         // A tap puts the dial away.
@@ -122,6 +131,8 @@ final class FaceView: UIView {
         // A tap on an option sends it to the manager, like `server: 8443`; it pops and the face glances at it.
         // A permission request is answered only by its buttons: Allow or Deny, never a tap anywhere else.
         if screen.asking != nil, let (i, o) = option(at: p) {
+            // The request came up under a finger already down: lifting it there answers nothing.
+            guard began >= askedAt else { return }
             switch screen.pick(i) {
             case .decide(let allow):
                 guard onDecide?(allow ? "once" : "deny", nil) == true else { return }
@@ -315,6 +326,7 @@ final class FaceView: UIView {
     override func touchesBegan(_ t: Set<UITouch>, with e: UIEvent?) {
         screen.attend()
         track(e)
+        downAt = CACurrentMediaTime()
         let down = e?.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled } ?? []
         motion.press(down.count == 1 ? down.first.flatMap { option(at: $0.location(in: self)) }?.1.key : nil, at: CACurrentMediaTime())
     }

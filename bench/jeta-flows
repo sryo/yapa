@@ -203,6 +203,20 @@ def long_request():
     allow_check(decision(t), 0)
 
 
+def touch_before_request():
+    """A finger already down when a request shows can't have meant its buttons: lifting on one answers nothing."""
+    hook("UserPromptSubmit", "a", "alpha")
+    t = held("PermissionRequest", "a", "alpha", tool_name="Bash", tool_input={"command": "git push"})
+    s = until(lambda s: s["asking"] and option(s, "Allow"))
+    need(s, "the request never showed its buttons")
+    o = option(s, "Allow")
+    drive("/tap", x=o["x"] + o["w"] / 2, y=o["y"] + o["h"] / 2, began=-30)  # the finger landed 30 s ago
+    time.sleep(0.6)
+    need(t.result is None and state()["asking"], f"a touch from before the request answered it: {t.result}")
+    tap_option("Allow")
+    allow_check(decision(t), 0)
+
+
 def ask_question():
     hook("UserPromptSubmit", "a", "alpha")
     q = {"question": "Which colour?", "header": "Colour", "multiSelect": False, "options": [{"label": "red"}, {"label": "blue"}]}
@@ -762,6 +776,7 @@ def dial_back():
 FLOWS = {
     "permission allow": permission("Allow", allow_check),
     "a long request is read whole, then allowed": long_request,
+    "a touch from before a request doesn't answer it": touch_before_request,
     "permission this session": permission("This session", session_check, suggestions=True),
     "permission deny": permission("Deny", deny_check),
     "permission stop": permission("Stop", stop_check),

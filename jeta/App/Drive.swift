@@ -37,7 +37,8 @@ final class Drive {
         let at = CGPoint(x: o["x"] as? Double ?? Double(view.bounds.midX), y: o["y"] as? Double ?? Double(view.bounds.midY))
         let done = { [weak self] in guard let self else { return }; self.send(c, self.state()) }
         switch r.path {
-        case "/tap": view.tap(at: at); after(0.05, done)
+        // `began`: how many seconds before now the finger landed, as a negative number.
+        case "/tap": view.tap(at: at, began: CACurrentMediaTime() + (o["began"] as? Double ?? 0)); after(0.05, done)
         case "/swipe":
             let left = o["way"] as? String == "left"
             if o["way"] as? String == "down" { view.swipeDown() }
