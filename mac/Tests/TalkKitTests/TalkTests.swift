@@ -32,6 +32,15 @@ final class TalkTests: XCTestCase {
         XCTAssertEqual(Request(Data("POST /cancel HTTP/1.1\r\n\r\n".utf8))?.path, "/cancel")
     }
 
+    // A request a web page made says so in its headers; the pad's and curl's never do.
+    func testARequestFromABrowserIsKnown() {
+        func r(_ headers: String) -> Request? { Request(Data("POST /say HTTP/1.1\r\nHost: yapa\r\n\(headers)Content-Length: 0\r\n\r\n".utf8)) }
+        XCTAssertEqual(r("")?.browser, false)
+        XCTAssertEqual(r("Origin: http://evil.example\r\n")?.browser, true)
+        XCTAssertEqual(r("origin: null\r\n")?.browser, true)
+        XCTAssertEqual(r("Sec-Fetch-Site: cross-site\r\n")?.browser, true)
+    }
+
     // R3: text goes to a terminal or Claude in front; else straight to the Claude app behind; else the clipboard.
     func testR3_RoutesToClaudeOrATerminalNeverElsewhere() {
         XCTAssertEqual(route(frontmost: "com.apple.Terminal", claude: 7), .typeFrontmost)

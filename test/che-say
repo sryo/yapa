@@ -19,4 +19,10 @@ out=$(printf 'POST /say?dry HTTP/1.1\r\nHost: yapa\r\nContent-Length: %d\r\nConn
 echo "$out" | grep -q '"text":"server: 8443"' || { echo "FAIL: a chosen line framed like Talk's didn't reach /say: $out"; exit 1; }
 code=$(printf '\377\376' | curl -s -o /dev/null -w '%{http_code}' --data-binary @- http://127.0.0.1:18079/say?dry)
 [ "$code" = 400 ] || { echo "FAIL: /say with a non-UTF-8 body answered $code, not 400"; exit 1; }
+# A web page open on this Mac can reach 127.0.0.1 too: what a browser sends is refused, and nothing is typed.
+for h in 'Origin: http://evil.example' 'Sec-Fetch-Site: cross-site'; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "$h" --data-binary 'echo pwned' http://127.0.0.1:18079/say?dry)
+    [ "$code" = 403 ] || { echo "FAIL: /say from a browser ($h) answered $code, not 403"; exit 1; }
+done
+grep -q 'pwned' "$log" && { echo "FAIL: che took a browser's words: $(cat "$log")"; exit 1; }
 echo "ok r5 say"

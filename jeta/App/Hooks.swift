@@ -92,6 +92,8 @@ final class HookListener {
     }
 
     private func handle(_ c: NWConnection, _ r: HTTPRequest) {
+        // A web page on the home network reaches the pad like a hook does; it isn't one.
+        guard !r.browser else { return send(c, Data(#"{"error":"the pad doesn't answer web pages"}"#.utf8), status: "403 Forbidden") }
         guard r.method == "POST", r.path.hasPrefix("/hook"), var e = (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] else {
             return send(c, Data(#"{"error":"POST /hook takes a Claude Code hook event"}"#.utf8), status: "404 Not Found")
         }

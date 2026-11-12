@@ -133,6 +133,14 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual(r?.body, Data("abcd".utf8))
     }
 
+    // A request a web page made says so in its headers; a hook's curl never does.
+    func testARequestFromABrowserIsKnown() {
+        func r(_ headers: String) -> HTTPRequest? { HTTPRequest(Data("POST /hook HTTP/1.1\r\nHost: x\r\n\(headers)Content-Length: 0\r\n\r\n".utf8)) }
+        XCTAssertEqual(r("")?.browser, false)
+        XCTAssertEqual(r("Origin: http://evil.example\r\n")?.browser, true)
+        XCTAssertEqual(r("sec-fetch-mode: no-cors\r\n")?.browser, true)
+    }
+
     // R1: each session's state comes from its own hooks: working (reading while it reads or searches), needs you,
     // finished, failed, and quiet after 30 min with nothing; in the order the sessions started.
     func testR1_EachSessionsState() {

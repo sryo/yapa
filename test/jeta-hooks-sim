@@ -19,5 +19,8 @@ out=$(hook 2 '{"hook_event_name":"SessionEnd","session_id":"t","cwd":"/x/yapa"}'
 [ "$out" = 200 ] || { echo "FAIL: SessionEnd answered $out"; exit 1; }
 out=$(curl -s -m 2 -w '%{http_code}' http://127.0.0.1:8079/nope)
 case "$out" in *404) ;; *) echo "FAIL: anything but POST /hook should be a 404: $out"; exit 1 ;; esac
+# A web page on the home network can reach the pad too: what a browser sends is refused.
+out=$(curl -s -m 2 -o /dev/null -w '%{http_code}' -H 'Origin: http://evil.example' --data-binary '{"hook_event_name":"UserPromptSubmit","session_id":"evil","cwd":"/x/evil"}' http://127.0.0.1:8079/hook)
+[ "$out" = 403 ] || { echo "FAIL: a hook from a browser answered $out, not 403"; exit 1; }
 xcrun simctl terminate booted com.sryo.yapa
 echo "ok jeta hooks"

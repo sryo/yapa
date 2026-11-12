@@ -38,11 +38,14 @@ public func pick(_ heard: [Heard]) -> Heard? {
 /// One HTTP/1.1 request, parsed only once its whole body (Content-Length) has arrived.
 public struct Request {
     public let method: String, path: String, body: Data
+    /// A web page made it: browsers add Origin to what a page posts and Sec-Fetch-* to all it asks for.
+    public let browser: Bool
     public init?(_ data: Data) {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)),
               let head = String(data: data[..<end.lowerBound], encoding: .utf8) else { return nil }
         let lines = head.components(separatedBy: "\r\n"), first = lines[0].split(separator: " ")
         guard first.count >= 2 else { return nil }
+        browser = lines.dropFirst().contains { $0.lowercased().hasPrefix("origin:") || $0.lowercased().hasPrefix("sec-fetch-") }
         let length = lines.dropFirst().compactMap { line -> Int? in
             let kv = line.split(separator: ":", maxSplits: 1)
             return kv.count == 2 && kv[0].lowercased() == "content-length" ? Int(kv[1].trimmingCharacters(in: .whitespaces)) : nil

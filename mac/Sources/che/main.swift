@@ -378,6 +378,11 @@ func reply(_ c: NWConnection, _ status: String, _ json: [String: Any]) {
 }
 
 func handle(_ c: NWConnection, _ r: Request) {
+    // A web page open on this Mac reaches 127.0.0.1 like the pad does; che types for neither it nor its scripts.
+    guard !r.browser else {
+        log("refused a request from a web page: \(r.method) \(r.path.prefix(40))")
+        return reply(c, "403 Forbidden", ["error": "che doesn't answer web pages"])
+    }
     switch (r.method, r.path) {
     // The pad's names for the sessions its hooks report: GET /sessions?ids=a,b.
     case ("GET", let p) where p.hasPrefix("/sessions"):
