@@ -1,0 +1,14 @@
+Clips still to record through the pad's own microphone: the kind of short reply that names files, commands and
+identifiers, in English and in Spanish with English names in it. Each becomes NN.wav (16 kHz mono, as the pad
+records it) beside NN.txt holding its line, and bench/che counts it from then on.
+
+11  Rename Desk.swift to SessionDesk.swift.
+12  Run fium check and then swift test.
+13  Open jeta/App/Hooks.swift and look at the handle function.
+14  Use git rebase onto main, not merge.
+15  Set CHE_ENTER to zero in the LaunchAgent.
+16  The bug is in TextMotion, not in Screen.
+17  Corré bench jeta-flows y decime qué falla.
+18  Cambiá el timeout del hook a diez segundos.
+19  Hacé el commit y después un push a main.
+20  Revisá el archivo settings.json antes de seguir.
