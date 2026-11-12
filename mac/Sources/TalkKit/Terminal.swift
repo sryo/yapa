@@ -71,6 +71,8 @@ public func prompted(transcript: String, text: String) -> Bool {
         if o["type"] as? String == "user", let m = o["message"] as? [String: Any], says(m["content"]) { return true }
         if o["type"] as? String == "attachment", let a = o["attachment"] as? [String: Any],
            a["type"] as? String == "queued_command", says(a["prompt"]) { return true }
+        // A busy session writes the prompt it queued at once; its queued_command comes only once a turn takes it.
+        if o["type"] as? String == "queue-operation", o["operation"] as? String == "enqueue", says(o["content"]) { return true }
     }
     return false
 }

@@ -219,10 +219,12 @@ final class TerminalTests: XCTestCase {
         let blocks = line(["type": "user", "message": ["role": "user", "content": [["type": "text", "text": "Yes, commit"]]]])
         let queued = line(["type": "attachment", "attachment": ["type": "queued_command", "prompt": "Yes, commit"]])
         let queuedBlocks = line(["type": "attachment", "attachment": ["type": "queued_command", "prompt": [["type": "text", "text": "Yes, commit"]]]])
+        // A busy session writes the queued prompt at once, and its queued_command only once a turn takes it.
+        let enqueued = line(["type": "queue-operation", "operation": "enqueue", "content": "Yes, commit"])
         let reply = line(["type": "assistant", "message": ["role": "assistant", "content": [["type": "text", "text": "Yes, commit"]]]])
         let tool = line(["type": "user", "message": ["role": "user", "content": [["type": "tool_result", "content": "Yes, commit"]]]])
         let longer = line(["type": "user", "message": ["role": "user", "content": "Yes, commit it all"]])
-        for t in [prompt, blocks, queued, queuedBlocks] { XCTAssertTrue(prompted(transcript: "x\n" + t + "\n", text: "Yes, commit"), t) }
+        for t in [prompt, blocks, queued, queuedBlocks, enqueued] { XCTAssertTrue(prompted(transcript: "x\n" + t + "\n", text: "Yes, commit"), t) }
         for t in [reply, tool, longer, "Yes, commit", ""] { XCTAssertFalse(prompted(transcript: t, text: "Yes, commit"), t) }
         // A line still being written isn't read yet.
         XCTAssertFalse(prompted(transcript: String(prompt.dropLast(3)), text: "Yes, commit"))
