@@ -19,4 +19,8 @@ $left"
 while read -r c; do f=${c%% *}; [ -e "$f" ] || [ "$f" = go ] || [ "$f" = swift ] || fail "bench/checks runs $f, which doesn't exist"; done < bench/checks
 # Benches are named for the project they measure: jeta-*, che, yata; size is the whole repo.
 for old in face chord notice pad ptt health; do [ -e "bench/$old" ] && fail "bench/$old is named for the project now (see AGENTS.md)"; done
+# Every file of this repo that AGENTS.md points at is there.
+for f in $(grep -oE '`(jeta|mac|bench|test|cmd|phone|launchd)/[A-Za-z0-9_./-]+`' AGENTS.md | tr -d '`' | sort -u); do
+  [ -e "$f" ] || fail "AGENTS.md points at $f, which doesn't exist"
+done
 exit 0

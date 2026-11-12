@@ -7,6 +7,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/ssh" <<FAKE
 #!/bin/sh
+echo "\$*" >> "$tmp/asked"
 while [ \$# -gt 1 ]; do shift; done
 case "\$1" in
   *trollstorehelper*) exit 0 ;;
@@ -18,9 +19,18 @@ FAKE
 printf '#!/bin/sh\n' > "$tmp/bin/scp"
 printf '#!/bin/sh\n' > "$tmp/bin/sleep"
 chmod +x "$tmp/bin/"*
-install() { PATH="$tmp/bin:$PATH" jeta/install > "$tmp/out" 2>&1; }
+install() { HOME="$tmp/home" YAPA_HOST= PATH="$tmp/bin:$PATH" jeta/install > "$tmp/out" 2>&1; }
+
+# It goes to the phone `./ya install` saved, and with none saved says how to save one instead of guessing an address.
+mkdir -p "$tmp/home"
+install && { echo "jeta-install: went ahead with no phone saved:"; cat "$tmp/out"; exit 1; }
+grep -q "ya install" "$tmp/out" || { echo "jeta-install: with no phone saved it didn't say to run ./ya install; it said:"; cat "$tmp/out"; exit 1; }
+[ -e "$tmp/asked" ] && { echo "jeta-install: reached for a phone with none saved: $(cat "$tmp/asked")"; exit 1; }
+mkdir -p "$tmp/home/.config/yapa" && echo root@10.9.8.7 > "$tmp/home/.config/yapa/host"
 
 install && { echo "jeta-install: succeeded with the app not running:"; cat "$tmp/out"; exit 1; }
+grep -q "root@10.9.8.7" "$tmp/asked" || { echo "jeta-install: didn't go to the saved phone: $(cat "$tmp/asked")"; exit 1; }
+grep -v "root@10.9.8.7" "$tmp/asked" | grep -q . && { echo "jeta-install: went somewhere other than the saved phone: $(cat "$tmp/asked")"; exit 1; }
 grep -qi "locked" "$tmp/out" || { echo "jeta-install: didn't say the phone may be locked; it said:"; cat "$tmp/out"; exit 1; }
 grep -qi "heartbeats" "$tmp/out" && { echo "jeta-install: blamed heartbeats when the app never started:"; cat "$tmp/out"; exit 1; }
 
