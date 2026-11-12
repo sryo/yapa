@@ -220,8 +220,8 @@ final class FaceView: UIView {
     @objc private func dragged(_ g: UIPanGestureRecognizer) {
         let d = g.translation(in: self)
         if g.state == .began { sideways = abs(d.x) > abs(d.y) }
-        // Sideways the text goes between sessions; up and down, reading, between the pages of a reply.
-        guard sideways || screen.mode == .reply else { return }
+        // Sideways the text goes between sessions; up and down, reading, between the pages of a reply or a request.
+        guard sideways || screen.reads else { return }
         let pull = Double(sideways ? d.x : d.y)
         if g.state == .began || g.state == .changed { slide(by: pull, across: sideways); return }
         if g.state == .ended || g.state == .cancelled {

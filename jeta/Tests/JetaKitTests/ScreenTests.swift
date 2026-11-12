@@ -166,6 +166,34 @@ final class ScreenTests: XCTestCase {
         f.answered(); XCTAssertEqual(f.mode, .face)
     }
 
+    // What a request would do is never cut: its detail pages like a reply, to its last word, a word too long for a
+    // line goes on to the next, and its buttons stay on every page.
+    func testARequestIsReadWhole() {
+        let words = (1...150).map { "word\($0)" }.joined(separator: " ")
+        let long = String(repeating: "x", count: 100)
+        var s = Screen()
+        s.ask(Asked(id: "1", session: "yapa", tool: "Bash", text: "Bash: \(words) \(long) end"))
+        s.tap()
+        XCTAssertEqual(s.mode, .detail)
+        guard let pages = s.pages(width: 320, height: 568)?.of else { return XCTFail("a request's detail has no pages") }
+        XCTAssertGreaterThan(pages, 1)
+        var read: [Int: String] = [:]
+        for page in 0..<pages {
+            let lines = s.lines(width: Screen.columns(width: 320, height: 568, open: true))
+            for l in lines { if let r = l.row, r.offset >= 0, r.offset < 7 { read[r.index] = l.text } }
+            XCTAssertEqual(lines.filter { $0.style == .suggestion || $0.style == .option }.map(\.text), ["Allow", "Deny", "Stop"], "page \(page)")
+            XCTAssertEqual(lines.contains { $0.text.contains("swipe up: more") }, page + 1 < pages, "page \(page)")
+            s.scroll(by: 1)
+        }
+        let all = read.sorted { $0.key < $1.key }.map(\.value)
+        XCTAssertEqual(all.joined(separator: " ").replacingOccurrences(of: "x x", with: "xx"), "Bash: \(words) \(long) end")
+        XCTAssertFalse(all.contains { $0.contains("…") })
+        // A new request starts at its first page.
+        s.ask(Asked(id: "2", session: "yapa", tool: "Bash", text: "Bash: \(words)"))
+        s.tap(); if s.mode != .detail { s.tap() }
+        XCTAssertEqual(s.pages(width: 320, height: 568)?.page, 0)
+    }
+
     func testR10_QuestionsStepWithBoxes() {
         var s = Screen()
         s.ask(Asked(id: "1", session: "yapa", tool: "AskUserQuestion", text: "", questions: [

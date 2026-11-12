@@ -403,13 +403,12 @@ private func detail(_ input: [String: Any]) -> String {
     return one.count > 80 ? String(one.prefix(79)) + "…" : one
 }
 
-/// What a tool call would do, enough to judge it: the command and why, the file and the start of what goes in it.
+/// What a tool call would do, whole, since it's what you allow: the command and why, the file and what goes in it.
 func full(_ input: [String: Any]) -> String {
     let s = { (k: String) in input[k] as? String }
     let parts = [s("command"), s("description").map { "(\($0))" }, s("file_path") ?? s("path") ?? s("url"),
                  s("new_string") ?? s("content"), s("pattern"), s("query"), s("prompt")].compactMap { $0 }
-    let one = parts.joined(separator: " ").split(whereSeparator: \.isNewline).joined(separator: " ")
-    return one.count > 400 ? String(one.prefix(399)) + "…" : one
+    return parts.joined(separator: " ").split(whereSeparator: \.isNewline).joined(separator: " ")
 }
 
 /// Whether an address is on the home network: private, link-local or loopback, IPv4 or IPv6.

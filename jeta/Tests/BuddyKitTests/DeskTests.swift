@@ -236,6 +236,14 @@ final class DeskTests: XCTestCase {
         XCTAssertEqual(d.asked()?.text, "Bash: git push origin main (Push)")
     }
 
+    // What you're asked to allow reaches the pad whole, however long.
+    func testARequestReachesThePadWhole() {
+        let d = Desk()
+        let long = (1...300).map { "arg\($0)" }.joined(separator: " ")
+        _ = d.take(["hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash", "tool_input": ["command": long]], at: 1)
+        XCTAssertEqual(d.asked()?.text, "Bash: \(long)")
+    }
+
     // R2: every folder a session ran in is kept, the latest first and each once, for the dial's new session.
     func testR2_FoldersSessionsRanIn() {
         let d = Desk()

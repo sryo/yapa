@@ -102,6 +102,7 @@ public struct Screen {
         guard asking != n else { return }
         asking = n
         folded = false
+        scroll = 0
         if mode == .face || mode == .roster || mode == .reply { mode = .question }
     }
 
@@ -272,8 +273,9 @@ public struct Screen {
 
     /// Scrolls the reply `by` pages of lines, forward positive.
     public mutating func scroll(by n: Int) {
-        guard mode == .reply else { return }
-        let count = shownReply.map { Screen.plain($0.text).reduce(0) { $0 + $1.count / 30 + 1 } } ?? 0
+        guard reads else { return }
+        let count = mode == .detail ? asking?.text.count ?? 0
+            : shownReply.map { Screen.plain($0.text).reduce(0) { $0 + $1.count / 30 + 1 } } ?? 0
         scroll = max(0, min(scroll + n * (Screen.readLines - 1), max(0, count)))
     }
     /// How long ago, coarse: it changes at most once a minute.
@@ -336,17 +338,24 @@ public struct Screen {
     /// The reply's lines showing, which page that is and how many there are; `around` adds a page's worth of
     /// lines on each side, past the ones showing.
     func window(width: Int, around: Bool = false) -> (lines: [Line], page: Int, pages: Int)? {
-        guard let r = shownReply else { return nil }
-        let all = Screen.plain(r.text).flatMap { Screen.wrap($0, .body, width: width) }, step = Screen.readLines - 1
+        // A request's text is what you'd allow, so it's read to the letter: no word of it cut, however long.
+        let request = mode == .detail ? asking?.text : nil
+        guard let text = request ?? shownReply?.text else { return nil }
+        let all = request != nil ? Screen.wrap(text, .body, width: width, whole: true)
+            : Screen.plain(text).flatMap { Screen.wrap($0, .body, width: width) }
+        let step = Screen.readLines - 1
         let from = min(scroll, max(0, all.count - Screen.readLines)), to = min(all.count, from + Screen.readLines)
         let row = { (i: Int) -> Line in var l = all[i]; l.row = (i, i - from); return l }
         let lines = (from..<to).map(row) + (around ? (max(0, from - step)..<from).map(row) + (to..<min(all.count, to + step)).map(row) : [])
         return (lines, (from + step - 1) / step, max(1, (all.count - 2) / step + 1))
     }
 
-    /// Reading a reply: the page showing and how many, for the dots beside it.
+    /// Text read a page at a time is up: a reply, or what a request would do.
+    public var reads: Bool { mode == .reply || (mode == .detail && asking != nil) }
+
+    /// Reading a reply or a request: the page showing and how many, for the dots beside it.
     public func pages(width w: Double, height h: Double) -> (page: Int, of: Int)? {
-        guard mode == .reply, let p = window(width: Screen.columns(width: w, height: h, open: true)) else { return nil }
+        guard reads, let p = window(width: Screen.columns(width: w, height: h, open: true)) else { return nil }
         return (p.page, p.pages)
     }
 
@@ -389,9 +398,14 @@ public struct Screen {
         return all.filter { $0.style != .hint } + Screen.wrap(note, .hint, width: width, max: 2)
     }
 
-    static func wrap(_ s: String, _ style: Style, width: Int, max: Int = .max) -> [Line] {
+    /// `whole` keeps every letter: a word longer than a line goes on to the next instead of being cut.
+    static func wrap(_ s: String, _ style: Style, width: Int, max: Int = .max, whole: Bool = false) -> [Line] {
         var out: [String] = [], line = ""
-        for word in s.split(separator: " ") {
+        let words = s.split(separator: " ").flatMap { w -> [Substring] in
+            guard whole, w.count > width else { return [w] }
+            return stride(from: 0, to: w.count, by: width).map { w.dropFirst($0).prefix(width) }
+        }
+        for word in words {
             if line.isEmpty { line = String(word) }
             else if line.count + 1 + word.count <= width { line += " " + word }
             else { out.append(line); line = String(word) }
@@ -417,9 +431,11 @@ public struct Screen {
                 + wrap(options.isEmpty ? "tap more · hold: answer" : "tap one, or hold to answer", .hint)
         case .detail:
             guard let n = current else { return [] }
-            var out = wrap("\(n.session) · \(asking == nil ? "waiting on you" : "asks")", .title) + wrap(n.text, .body, max: asking == nil ? 5 : 9)
+            let w = asking == nil ? nil : window(width: width, around: true)
+            var out = wrap("\(n.session) · \(asking == nil ? "waiting on you" : "asks")", .title) + (w?.lines ?? wrap(n.text, .body, max: 5))
             out += Screen.options(n)
-            out += wrap(asking == nil ? "hold: answer · swipe: next · tap: close" : "tap: close", .hint)
+            out += wrap(asking == nil ? "hold: answer · swipe: next · tap: close"
+                        : (w.map { $0.page + 1 < $0.pages } == true ? "swipe up: more · " : "") + "tap: close", .hint)
             if asking == nil, board.pending.count > 1 { out.append(Line(text: "\(page + 1) / \(board.pending.count)", style: .hint)) }
             return out
         case .roster:
