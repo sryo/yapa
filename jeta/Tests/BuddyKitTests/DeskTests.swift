@@ -387,6 +387,30 @@ final class DeskTests: XCTestCase {
         XCTAssertFalse(me(at: 10).unseen, "you interrupted it, so you saw it")
     }
 
+    // An interrupt stops its subagents with it, so the session's next turn isn't left waiting on them; one still at
+    // work (in the background) runs again on its next tool call, and its turn ends when it stops.
+    func testInterruptStopsSubagents() {
+        let d = Desk()
+        func me(at t: Double) -> SessionInfo { d.members(at: t).first! }
+        _ = d.take(event("UserPromptSubmit"), at: 0)
+        _ = d.take(event("SubagentStart", ["agent_id": "a1", "agent_type": "Explore"]), at: 1)
+        _ = d.take(event("PreToolUse", ["tool_name": "Grep", "tool_input": ["pattern": "x"], "agent_id": "a1"]), at: 2)
+        _ = d.take(event("PostToolUseFailure", ["tool_name": "Grep", "tool_input": ["pattern": "x"], "agent_id": "a1",
+                                                "is_interrupt": true]), at: 3)
+        XCTAssertEqual(me(at: 10).state, .finished(at: 3), "interrupted in a subagent: the turn is over")
+        XCTAssertEqual(me(at: 10).agents.map(\.stopped), [3])
+        _ = d.take(event("UserPromptSubmit"), at: 20)
+        _ = d.take(event("Stop"), at: 21)
+        XCTAssertEqual(me(at: 30).state, .finished(at: 21), "the next turn isn't left waiting on the interrupted subagent")
+        _ = d.take(event("UserPromptSubmit"), at: 40)
+        _ = d.take(event("SubagentStart", ["agent_id": "b1", "agent_type": "general-purpose"]), at: 41)
+        _ = d.take(event("PostToolUseFailure", push.merging(["is_interrupt": true]) { $1 }), at: 42)
+        _ = d.take(event("PreToolUse", ["tool_name": "Read", "tool_input": ["file_path": "/x"], "agent_id": "b1"]), at: 50)
+        XCTAssertEqual(me(at: 60).state, .working(reading: false), "b1 kept working in the background")
+        _ = d.take(event("SubagentStop", ["agent_id": "b1"]), at: 70)
+        XCTAssertEqual(me(at: 80).state, .finished(at: 70))
+    }
+
     // Subagents are kept by id and type, with when each started and stopped and what it last did; a Stop waits
     // for those still running. One whose start was missed is picked up by its first tool call.
     func testSubagentsByIdAndType() {

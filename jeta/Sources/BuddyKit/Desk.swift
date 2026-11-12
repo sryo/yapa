@@ -67,11 +67,12 @@ public final class Desk {
         s.events += 1
         if event != "Notification" { s.progress = t }
         s.agents = s.agents.filter { $0.value.stopped.map { t - $0 < 600 } ?? true }
-        // A tool call inside a subagent is that subagent's; its start may have been missed.
+        // A tool call inside a subagent is that subagent's; its start may have been missed, and one taken for
+        // stopped by an interrupt (one in the background) is running after all.
         let agent = e["agent_id"] as? String
         if let a = agent {
             var g = s.agents[a] ?? Subagent(id: a, type: e["agent_type"] as? String ?? "agent", started: t)
-            if event == "PreToolUse" { g.doing = Desk.doing(tool, input) }
+            if event == "PreToolUse" { g.doing = Desk.doing(tool, input); g.stopped = nil }
             if event != "SubagentStop" { s.agents[a] = g }
         }
         let call = e["tool_use_id"] as? String ?? "\(tool) \(detail(input))"
@@ -114,12 +115,14 @@ public final class Desk {
             if event == "PreToolUse" { sessions[id]?.tools.insert(call) }
             if event == "PreToolUse" { sessions[id]?.doing = Desk.doing(tool, input) }
             if event == "PreToolUse" { msg = "\(s.name): \(tool) \(detail(input))" }
-        case "PostToolUse" where agent != nil, "PostToolUseFailure" where agent != nil:
-            break
-        // You interrupted it: no Stop follows, so its turn ends here, and you saw it.
+        // You interrupted it, there or in a subagent: no Stop follows, so its turn ends here, and you saw it. Its
+        // subagents were interrupted with it, and send no SubagentStop.
         case "PostToolUseFailure" where e["is_interrupt"] as? Bool == true:
             finish(id, failed: false, at: t)
             sessions[id]?.unseen = false
+            for (k, g) in sessions[id]?.agents ?? [:] where g.stopped == nil { sessions[id]?.agents[k]?.stopped = t }
+        case "PostToolUse" where agent != nil, "PostToolUseFailure" where agent != nil:
+            break
         // A tool done or failed, the model is thinking again until its next one.
         case "PostToolUse" where sessions[id]?.running == true, "PostToolUseFailure" where sessions[id]?.running == true:
             sessions[id]?.tools.remove(call)
