@@ -6,12 +6,17 @@ only if all of that happened. The pad runs with `-drive` (App/Drive.swift), whic
 this Mac and says what's on the screen; che and yata are stand-ins here, so nothing is typed into a real session.
 Prints the path of a K1 run file; `-v` also says what each flow did.
 """
-import json, math, os, subprocess, sys, threading, time, urllib.parse, urllib.request
+import json, math, os, socket, subprocess, sys, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DRIVE, STUB, HOOKS = 8091, 8095, 8079
 BUNDLE = "com.sryo.yapa"
+# `--phone` runs the flows on the SE itself, at the address `./ya install` saved, instead of in the Simulator.
+PHONE = "--phone" in sys.argv and (open(os.path.expanduser("~/.config/yapa/host")).read().strip() if os.path.exists(os.path.expanduser("~/.config/yapa/host")) else sys.exit("no phone saved: run ./ya install root@<ip> first"))
+# Where the hooks go (the pad) and where the pad finds the stand-ins (this Mac), as each sees the other.
+PAD = MAC = "127.0.0.1"
+DOCS = "/var/mobile/Containers/Data/Application/*/Documents"
 VERBOSE = "-v" in sys.argv
 
 # The stand-ins for che and yata: they remember what they were asked and answer as the real ones do.
@@ -80,7 +85,7 @@ def state(): return drive("/state")
 
 def hook(event, sid, folder, wait=2, **more):
     e = {"hook_event_name": event, "session_id": sid, "cwd": "/Users/x/" + folder, **more}
-    r = urllib.request.Request(f"http://127.0.0.1:{HOOKS}/hook", data=json.dumps(e).encode())
+    r = urllib.request.Request(f"http://{PAD}:{HOOKS}/hook", data=json.dumps(e).encode())
     try:
         with urllib.request.urlopen(r, timeout=wait) as f:
             b = f.read().decode()
@@ -814,53 +819,91 @@ FLOWS = {
 }
 
 
+def ssh(script, check=True):
+    return subprocess.run(["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", PHONE, script], capture_output=True, text=True, check=check)
+
+
 def launch():
+    """A fresh pad, told where its driver and the stand-ins are by the `drive` file in its Documents: a phone's
+    app can't be started with arguments, so the Simulator's is told the same way."""
     global box_until
     box_until = 0.0
-    sim("terminate", "booted", BUNDLE, check=False)
-    data = sim("get_app_container", "booted", BUNDLE, "data").strip()
-    for f in ("sessions.json",):
-        try: os.remove(os.path.join(data, "Documents", f))
+    told = f"-drive {DRIVE} -che {MAC}:{STUB} -yata http://{MAC}:{STUB}/parts"
+    if PHONE:
+        ssh(f"killall jeta 2>/dev/null; d=$(dirname {DOCS}/buddy.log); rm -f $d/sessions.json; echo '{told}' > $d/drive; uiopen --bundleid {BUNDLE}")
+    else:
+        sim("terminate", "booted", BUNDLE, check=False)
+        docs = os.path.join(sim("get_app_container", "booted", BUNDLE, "data").strip(), "Documents")
+        try: os.remove(os.path.join(docs, "sessions.json"))
         except FileNotFoundError: pass
-    sim("spawn", "booted", "defaults", "delete", BUNDLE, check=False)
-    sim("launch", "booted", BUNDLE, "-drive", str(DRIVE), "-che", f"127.0.0.1:{STUB}", "-yata", f"http://127.0.0.1:{STUB}/parts")
+        os.makedirs(docs, exist_ok=True)
+        open(os.path.join(docs, "drive"), "w").write(told)
+        sim("spawn", "booted", "defaults", "delete", BUNDLE, check=False)
+        sim("launch", "booted", BUNDLE)
     for _ in range(60):
-        try: state(); hook("SessionStart", "warm", "warm"); hook("SessionEnd", "warm", "warm"); return
+        try:
+            if "frame_ms" not in state(): raise SystemExit("the pad doesn't say how long its frames take")
+            hook("SessionStart", "warm", "warm"); hook("SessionEnd", "warm", "warm"); return
         except Exception: time.sleep(0.2)
-    raise SystemExit("the pad never answered its driver")
+    raise SystemExit("the pad never answered its driver" + (": is the phone unlocked, with miga in front?" if PHONE else ""))
 
 
 def main():
-    if "Booted" not in sim("list", "devices", "booted"):
-        raise SystemExit("jeta-flows needs a booted Simulator")
-    app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
-    if app.returncode: raise SystemExit(app.stderr)
-    sim("install", "booted", os.path.join(ROOT, "jeta", app.stdout.strip().splitlines()[-1]))
-    sim("privacy", "booted", "grant", "microphone", BUNDLE, check=False)
-    server = ThreadingHTTPServer(("127.0.0.1", STUB), Stub)
+    global PAD, MAC
+    forward = None
+    if PHONE:
+        # The SE itself: this tree's pad installed on it, its driver reached through an ssh forward (it listens on
+        # the phone's loopback only), hooks sent over Wi-Fi as Claude Code's are, and the stand-ins on this Mac.
+        PAD = PHONE.split("@")[-1]
+        if ssh("true", check=False).returncode: raise SystemExit(f"the phone at {PAD} didn't answer over ssh: is it on?")
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); probe.connect((PAD, 9)); MAC = probe.getsockname()[0]
+        app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "device"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
+        if app.returncode: raise SystemExit(app.stderr)
+        subprocess.run(["scp", "-q", os.path.join(ROOT, "build/jeta/jeta.ipa"), f"{PHONE}:/var/mobile/jeta.ipa"], check=True)
+        ssh("killall jeta 2>/dev/null; $(ls /var/containers/Bundle/Application/*/TrollStore.app/trollstorehelper) install /var/mobile/jeta.ipa")
+        forward = subprocess.Popen(["ssh", "-N", "-L", f"{DRIVE}:127.0.0.1:{DRIVE}", PHONE])
+    else:
+        if "Booted" not in sim("list", "devices", "booted"):
+            raise SystemExit("jeta-flows needs a booted Simulator")
+        app = subprocess.run([os.path.join(ROOT, "jeta/build-app"), "sim"], capture_output=True, text=True, cwd=os.path.join(ROOT, "jeta"))
+        if app.returncode: raise SystemExit(app.stderr)
+        sim("install", "booted", os.path.join(ROOT, "jeta", app.stdout.strip().splitlines()[-1]))
+        sim("privacy", "booted", "grant", "microphone", BUNDLE, check=False)
+    server = ThreadingHTTPServer(("0.0.0.0" if PHONE else "127.0.0.1", STUB), Stub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     only = [a for a in sys.argv[1:] if not a.startswith("-")]
-    failed = []
-    for name, flow in FLOWS.items():
-        if only and not any(o in name for o in only): continue
-        launch()
-        try:
-            flow(); why = ""
-        except Fail as x: why = str(x)
-        except Exception as x: why = f"{type(x).__name__}: {x}"
-        if why: failed.append(name)
-        if VERBOSE or why: print(("FAIL " if why else "ok   ") + name + (": " + why if why else ""), file=sys.stderr)
-    sim("terminate", "booted", BUNDLE, check=False)
+    failed, frames = [], []
+    try:
+        for name, flow in FLOWS.items():
+            if only and not any(o in name for o in only): continue
+            launch()
+            try:
+                flow(); why = ""
+            except Fail as x: why = str(x)
+            except Exception as x: why = f"{type(x).__name__}: {x}"
+            if why: failed.append(name)
+            try: frames.append(state()["frame_ms"])
+            except Exception: pass
+            if VERBOSE or why: print(("FAIL " if why else "ok   ") + name + (": " + why if why else ""), file=sys.stderr)
+    finally:
+        # The phone goes back to being the pad: its own che and yata, no driver.
+        if PHONE:
+            ssh(f"killall jeta 2>/dev/null; rm -f {DOCS}/drive; uiopen --bundleid {BUNDLE}", check=False)
+            forward.terminate()
+        else:
+            sim("terminate", "booted", BUNDLE, check=False)
     ran = len([n for n in FLOWS if not only or any(o in n for o in only)])
     runs = os.path.join(os.environ.get("FIUM_HOME", os.path.expanduser("~/.fium")), "runs", "yapa")
     os.makedirs(runs, exist_ok=True)
-    path = os.path.join(runs, f"flows-{int(time.time())}.json")
+    on = "phone_" if PHONE else ""
+    path = os.path.join(runs, f"{on}flows-{int(time.time())}.json")
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip()
     dirty = bool(subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, cwd=ROOT).stdout.strip())
-    json.dump({"commit": commit, "dirty": dirty,
-               "metrics": {"flows_failed": {"dir": "lower", "kind": "quality", "samples": [len(failed)]},
-                           "flows_completed": {"dir": "higher", "kind": "quality", "samples": [ran - len(failed)]}},
-               "limits": {"flows_failed": 0}, "failed": failed}, open(path, "w"))
+    metrics = {on + "flows_failed": {"dir": "lower", "kind": "quality", "samples": [len(failed)]},
+               on + "flows_completed": {"dir": "higher", "kind": "quality", "samples": [ran - len(failed)]}}
+    # How long the SE takes over a frame, ants and text and all; a Mac's Simulator says nothing about that.
+    if PHONE: metrics["phone_frame_ms"] = {"dir": "lower", "kind": "time", "noisy": True, "samples": frames}
+    json.dump({"commit": commit, "dirty": dirty, "metrics": metrics, "limits": {on + "flows_failed": 0}, "failed": failed}, open(path, "w"))
     print(path)
 
 

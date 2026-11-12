@@ -1,9 +1,10 @@
 import Network
 import UIKit
 
-/// test/jeta-flows' hands and eyes: launched with `-drive <port>` (the Simulator only), the pad takes taps, swipes,
-/// holds and two-finger twists over HTTP on this Mac, through the same code the gestures reach, and says what's on
-/// the screen. `-che host:port` and `-yata <url>` point it at stand-ins, so nothing is typed into a real session.
+/// bench/jeta-flows' hands and eyes: told `-drive <port>` (by arguments in the Simulator, by the `drive` file in
+/// Documents on the phone), the pad takes taps, swipes, holds and two-finger twists over HTTP from its own loopback
+/// (this Mac, or an ssh forward to the phone), through the same code the gestures reach, and says what's on the
+/// screen. `-che host:port` and `-yata <url>` point it at stand-ins, so nothing is typed into a real session.
 final class Drive {
     private let view: FaceView, listener: NWListener
 
@@ -175,7 +176,7 @@ final class Drive {
                 ["text": $0.line.text, "cx": $0.cx, "home": $0.line.x + $0.line.width / 2, "cy": $0.cy, "homeY": $0.line.y + $0.line.height / 2,
                  "o": $0.opacity, "band": $0.line.band != nil]
             },
-            "size": [v.bounds.width, v.bounds.height],
+            "size": [v.bounds.width, v.bounds.height], "frame_ms": v.frameMs,
             "pages": s.pages(width: Double(v.bounds.width), height: Double(v.bounds.height)).map { [$0.page, $0.of] } ?? NSNull(),
             "dial": ["open": v.dial.isOpen, "current": v.dial.current?.title ?? "", "path": v.dial.path, "note": v.dial.note],
             "sessions": v.crowd.sessions.map { ["id": $0.id, "name": $0.name, "state": "\($0.state)"] },

@@ -352,8 +352,12 @@ final class FaceView: UIView {
         }
     }
 
+    /// How long the pad's own work for a frame takes, in ms: a running mean, for the bench on the phone.
+    private(set) var frameMs = 0.0
+
     @objc private func tick(_ l: CADisplayLink) {
         let t = CACurrentMediaTime(), f = face.frame(at: t)
+        defer { frameMs += ((CACurrentMediaTime() - t) * 1000 - frameMs) * 0.05 }
         // Fingers held still still settle into a chord.
         if !fingers.isEmpty { feedChord(at: t) }
         // Asleep only breathes, so 30 fps keeps it smooth for less power.
@@ -647,9 +651,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let controller = FaceController()
         window?.rootViewController = controller
         buddy = BuddyLink(view: controller.view as! FaceView)
-        #if targetEnvironment(simulator)
-        drive = Drive(view: controller.view as! FaceView, args: CommandLine.arguments)
-        #endif
+        // The bench's driver: on only when asked for, by arguments or, since a phone's app is started without any,
+        // by the same words in a `drive` file in Documents (which only root over ssh can put there).
+        let told = (try? String(contentsOf: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("drive"))) ?? ""
+        drive = Drive(view: controller.view as! FaceView, args: CommandLine.arguments + told.split(whereSeparator: \.isWhitespace).map(String.init))
         window?.makeKeyAndVisible()
         // To try the screens without the Buddy link: launch with `-jeta "jeta: server needs you · Which hostname?"`.
         let args = CommandLine.arguments
