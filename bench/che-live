@@ -315,7 +315,17 @@ def run_path(name, sid, expect, wait, unsent=False, cover=None):
     return results, refused
 
 
+def away():
+    # It takes the front, so it runs only while the user is away (fium L3); `--now` is the user saying go.
+    try: return subprocess.run(["fium", "away"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired): return None
+
+
 def main():
+    if "--now" not in sys.argv:
+        r = away()
+        if not r or r.returncode: raise SystemExit(f"che-live takes the front and types into your sessions, so it runs only while you're away "
+                                                   f"({(r.stdout.strip() if r else '') or 'fium away did not answer'}); --now runs it anyway")
     if "Booted" not in sim("list", "devices", "booted"): raise SystemExit("che-live needs a booted Simulator")
     if not "Claude.app/Contents/MacOS/Claude" in subprocess.run(["ps", "-axo", "comm"], capture_output=True, text=True).stdout: raise SystemExit("che-live needs the Claude app running")
     say(f"che-live: puts Finder in front and has che type into a scratch session in {SCRATCH} in the Claude app behind it; "
